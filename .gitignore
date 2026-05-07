@@ -1,0 +1,9 @@
+.venv/*
+build/*
+
+gifs/*
+oldgifs/*
+figures/*
+data/*
+
+*.md

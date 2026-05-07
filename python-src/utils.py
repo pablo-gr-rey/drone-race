@@ -1,0 +1,234 @@
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from enum import IntEnum
+from typing import TYPE_CHECKING, Callable, Generic, Optional, TypeVar
+
+import numpy as np
+
+if TYPE_CHECKING:
+    from environment import BaseEnvironment
+
+
+def roundTrack(s: float) -> np.ndarray:
+    return np.array([np.cos(2 * np.pi * s), np.sin(2 * np.pi * s)]) * 10
+
+
+def lissajous(s: float, radius: float, s_radius: float, period: int) -> np.ndarray:
+    R = radius + s_radius * np.sin(period * np.pi * s)
+    return np.array([np.cos(2 * np.pi * s), np.sin(2 * np.pi * s)]) * R
+
+
+def flower(s: float, radius: float, s_radius: float) -> np.ndarray:
+    theta = 2 * np.pi * s
+    x, y = np.cos(theta) * radius, np.sin(theta) * radius
+    return np.array([x + s_radius * np.sin(theta * theta), y + s_radius * np.cos(theta * theta)])
+
+
+class MSG_TYPE(IntEnum):
+    MSG_HEADER = 0
+    MSG_STATE = 1
+    MSG_EVENT = 2
+    MSG_DONE = 3
+
+
+class EVENT_TYPE(IntEnum):
+    EVT_COLLISION = 0
+    EVT_OUTSIDE = 1
+    EVT_WINNER = 2
+    EVT_TRUNCATED = 3
+
+
+class CONTROLLER_TYPE(IntEnum):
+    CONT_DUMMY = 0
+    CONT_PID = 1
+    CONT_MPPI = 2
+
+    @classmethod
+    def fromConfig(cls, config: "ControllerConfig") -> "CONTROLLER_TYPE":
+        if isinstance(config, DummyConfig):
+            return CONTROLLER_TYPE.CONT_DUMMY
+        elif isinstance(config, PIDConfig):
+            return CONTROLLER_TYPE.CONT_PID
+        elif isinstance(config, MPPIConfig):
+            return CONTROLLER_TYPE.CONT_MPPI
+
+        raise ValueError("Unknown controller config")
+
+
+AddStateType = TypeVar(
+    "AddStateType"
+)  # for certain environments, state can contain more than the physical positions & velocities (example: additional state = number of laps & lastS in TrackEnvironment). if this is not the case, this should just be NoneType
+
+
+@dataclass
+class BaseEnvironmentConfig(Generic[AddStateType]):
+    nAgents: int = 2
+    dim: int = 2
+    dt: float = 0.1
+
+    sendStates: bool = True
+    nRaceLines: int = 1  # number of race lines (at least 1, centerline; can specify more for PID following a given line)
+    # they all should be concatenated & specified in trackPoints (which contains nLines arrays of size nSamples * dim), and then the line config in PID specifies the offset (offset=0: following centerline from 0 to nSamples-1; offset=1: following arbitrary raceline from nSamples to 2*nSamples-1, etc)
+
+    init_state: list | np.ndarray = field(default_factory=lambda: [])
+    add_state: Optional[AddStateType] = None
+
+    minDist: float = 0.2
+    posNoiseLevel: float = 0.0
+    speedNoiseLevel: float = 0.0
+    actionNoiseLevel: float = 0.0
+
+    maxSpeed: np.ndarray = field(default_factory=lambda: np.array([]))  # in L_2 norm
+    maxAccel: np.ndarray = field(default_factory=lambda: np.array([]))  # in L_inf norm
+
+    def __post_init__(self) -> None:
+        defaultMaxSpeed: float = 0.5
+        defaultAccel: float = 1
+
+        self.stateDim = self.nAgents * self.dim * 2
+        self.actionDim = self.nAgents * self.dim
+
+        if self.maxSpeed.shape == (0,):
+            self.maxSpeed = np.full(self.nAgents, defaultMaxSpeed)
+        if self.maxAccel.shape == (0,):
+            self.maxAccel = np.full(self.nAgents, defaultAccel)
+
+        self.init_state = np.array(self.init_state).flatten().astype(np.float32)
+
+
+ConfigType = TypeVar("ConfigType", bound=BaseEnvironmentConfig)
+
+
+@dataclass
+class SimpleEnvironmentConfig(BaseEnvironmentConfig):
+    gateRadius: float = 0.3
+
+    arenaMinY: float = -5
+    arenaSide: float = 2
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.arenaMin = np.array([-self.arenaSide if i != 1 else self.arenaMinY for i in range(self.dim)])
+        self.arenaMax = np.array([self.arenaSide if i != 1 else 0 for i in range(self.dim)])
+
+
+@dataclass
+class TrackEnvironmentConfig(BaseEnvironmentConfig):
+    centerline: Optional[Callable[[float], np.ndarray]] = None  # function [0,1] -> middle of the track
+    trackWidth: float = 2.0
+    nTrackSamples: int = 500  # track is discretized with this number of samples
+    nWinLaps: int = 1
+
+    targetDistance: float = 0.1  # simple controllers will try to go to the track point at s + targetDistance
+
+    trackPoints: Optional[np.ndarray] = None
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.centerline is not None and self.trackPoints is None:
+            # sample centerline
+            sGrid = np.linspace(0, 1, self.nTrackSamples, endpoint=False)
+            self.trackPoints = np.array([self.centerline(s) for s in sGrid])
+            mm, m = 0.0, np.inf
+            for i in range(self.nTrackSamples):
+                d = np.linalg.norm(self.trackPoints[(i + 1) % self.nTrackSamples] - self.trackPoints[i])
+                mm = max(mm, d)
+                m = min(m, d)
+            print(f"minimum distance between 2 consecutive points: {m} max: {mm}")
+
+
+@dataclass
+class ControllerConfig:
+    kind: CONTROLLER_TYPE = CONTROLLER_TYPE.CONT_DUMMY
+
+    def __post_init__(self):
+        self.kind = CONTROLLER_TYPE.fromConfig(self)
+
+    def getDefaultName(self) -> str:
+        if isinstance(self, DummyConfig):
+            return "Dummy"
+        elif isinstance(self, PIDConfig):
+            return "PID"
+        elif isinstance(self, MPPIConfig):
+            return "MPPI"
+
+        raise ValueError("Unknown controller config")
+
+
+@dataclass
+class DummyConfig(ControllerConfig):
+    pass
+
+
+@dataclass
+class PIDConfig(ControllerConfig):
+    kp: float = 1.0
+    kd: float = 0.5
+
+    repulsionFactor: float = 0.5
+    repulsionPower: float = 2.0
+    repulsionDistFactor: float = 10.0
+
+    racelineIndex: int = 0
+
+
+@dataclass
+class MPPIConfig(ControllerConfig, Generic[AddStateType]):
+    nSamples: int = 100
+    nTimesteps: int = 20
+    inv_temperature: float = 10
+
+    samplingNoise: float = 1.0
+
+    collDistFactor: float = 1.0
+
+    # running cost is the sum of the distance to the opponents oppDistCost / dist^oppDistCost, or 0 if dist > oppDistThreshold * config.minDist
+    oppDistWeight: float = 1
+    oppDistPower: float = 2
+    oppDistThresholdFactor: float = 3
+    boundaryCost: float = 10
+    boundaryThresholdFactor: float = 1.5
+    outsideCost: float = 1000
+    oppOutsideCost: float = 100
+    collisionCost: float = 10000
+    winCost: float = 1000
+
+    # final cost: - distance to the gate * finalDistWeight + min(opp. dist to the gate) * finalOppDistWeight - finalSpeedWeight * dot(finalSpeed, targetDirection)
+    finalAdvWeight: float = 10
+    finalOppAdvWeight: float = 5
+    finalSpeedWeight: float = 5
+
+    # only used by local Python simulation
+    opponentPredictors: Optional[list[Callable[[int, np.ndarray, AddStateType], np.ndarray]]] = (
+        None  # should be the list of modeled getControl() method of opponents
+    )
+
+    # only used by zmq
+    opponentConfig: ControllerConfig = field(default_factory=lambda: DummyConfig())
+
+
+class Controller(ABC, Generic[ConfigType, AddStateType]):
+    def __init__(self, name: str, envConfig: ConfigType):
+        self.name = name
+        self.envConfig = envConfig
+        self.environment: "Optional[BaseEnvironment[ConfigType, AddStateType]]" = None
+
+    def setEnvironment(self, env: "BaseEnvironment[ConfigType, AddStateType]"):
+        self.environment = env
+
+    @abstractmethod
+    def getControl(self, agent: int, state: np.ndarray, addState: AddStateType) -> np.ndarray: ...
+
+    @classmethod
+    def fromConfig(cls, envConfig: ConfigType, config: ControllerConfig, name: Optional[str] = None) -> "Controller":
+        from controllers import MPPIController, PIDController
+
+        if name is None:
+            name = config.getDefaultName()
+
+        if isinstance(config, PIDConfig):
+            return PIDController(envConfig, config, name)
+        elif isinstance(config, MPPIConfig):
+            return MPPIController(envConfig, config, name)
+
+        raise ValueError("Unknown config")
