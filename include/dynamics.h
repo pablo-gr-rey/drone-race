@@ -31,4 +31,4 @@ std::pair<float, float> cpuProjectOnTrack(const std::vector<float>& trackPoints,
 }
 
 // return the centerline sampled at given s
-std::vector<float> cpuSampleCenterline(const std::vector<float>& trackPoints, int nSamples, int dim, float s);
+std::vector<float> cpuSampleCenterline(const std::vector<float>& trackPoints, int nSamples, int dim, float s, int racelineIndex);

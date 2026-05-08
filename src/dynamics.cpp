@@ -28,7 +28,7 @@
 // }
 
 // sample the centerline at the given s (linear interpolation)
-std::vector<float> cpuSampleCenterline(const std::vector<float>& trackPoints, int nSamples, int dim, float s)
+std::vector<float> cpuSampleCenterline(const std::vector<float>& trackPoints, int nSamples, int dim, float s, int racelineIndex)
 {
     std::vector<float> out(dim);
 
@@ -39,7 +39,7 @@ std::vector<float> cpuSampleCenterline(const std::vector<float>& trackPoints, in
     float t = idx_f - idx0;
 
     for (int d = 0; d < dim; d++)
-        out[d] = (1.0f - t) * trackPoints[idx0 * dim + d] + t * trackPoints[idx1 * dim + d];
+        out[d] = (1.0f - t) * trackPoints[(nSamples * racelineIndex + idx0) * dim + d] + t * trackPoints[(nSamples * racelineIndex + idx1) * dim + d];
 
     return out;
 }

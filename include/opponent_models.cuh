@@ -21,9 +21,9 @@ __device__ inline void predictOpponent(
         break;
 
     case OpponentModelType::PID: {
+        // we follow target at a distance cfg.targetDistance on our actual raceline index (raceline always contain nSamples points and are concatenated, with raceline 0 being the centerline)
         float target[MAX_DIM];
-        sampleCenterline(trackPoints, nTP, cfg.dim,
-            S[opp] + cfg.targetDistance, target);
+        sampleCenterline(trackPoints + cfg.nTrackSamples * pid.racelineIndex, nTP, cfg.dim, S[opp] + cfg.targetDistance, target);
 
         float pos[MAX_DIM], vel[MAX_DIM];
         for (int d = 0; d < cfg.dim; d++)

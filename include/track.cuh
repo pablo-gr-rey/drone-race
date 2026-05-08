@@ -6,9 +6,7 @@
 
 // ── Linear interpolation of pre-sampled centerline ───────────────────
 // trackPoints: (nSamples, dim)  row-major
-__device__ inline void sampleCenterline(const float* trackPoints,
-    int nSamples, int dim,
-    float s, float* out)
+__device__ inline void sampleCenterline(const float* trackPoints, int nSamples, int dim, float s, float* out)
 {
     s = s - floorf(s);                      // wrap to [0,1)
     float idx_f = s * nSamples;
@@ -16,8 +14,7 @@ __device__ inline void sampleCenterline(const float* trackPoints,
     int   idx1 = min(idx0 + 1, nSamples - 1);
     float t = idx_f - idx0;
     for (int d = 0; d < dim; d++)
-        out[d] = (1.0f - t) * trackPoints[idx0 * dim + d]
-        + t * trackPoints[idx1 * dim + d];
+        out[d] = (1.0f - t) * trackPoints[idx0 * dim + d] + t * trackPoints[idx1 * dim + d];
 }
 
 // ── Project position onto sampled track ──────────────────────────────

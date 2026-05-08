@@ -254,7 +254,21 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
 std::vector<float> SimulationEngine::getTarget(int agent, const float* S, int racelineIndex) const
 {
     // TODO: handle racelineIndex!
-    return cpuSampleCenterline(envConfig.trackPoints, envConfig.nTrackSamples, envConfig.dim, std::fmod(S[agent] + envConfig.targetDistance, 1.0f));
+    std::vector<float> ans = cpuSampleCenterline(envConfig.trackPoints, envConfig.nTrackSamples, envConfig.dim, std::fmod(S[agent] + envConfig.targetDistance, 1.0f), racelineIndex);
+
+    // if (racelineIndex == 1)
+    // {
+    //     std::cout << "for S = " << S[agent] << ": sampled ";
+    //     for (int i = 0; i < envConfig.dim; i++)
+    //         std::cout << ans[i] << ' ';
+    //     int ind = racelineIndex * envConfig.nTrackSamples + (int) (S[agent] * envConfig.nTrackSamples);
+    //     std::cout << "sampling on this single S (from ind " << ind << ") ";
+    //     for (int i = 0; i < envConfig.dim; i++)
+    //         std::cout << envConfig.trackPoints[ind * envConfig.dim + i] << ' ';
+    //     std::cout << '\n';
+    // }
+
+    return ans;
 }
 
 float SimulationEngine::getAdvance(int agent, const float* S, const float* laps) const
