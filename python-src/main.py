@@ -109,7 +109,8 @@ def buildOptimalRaceline():
         json.dump(info, f, cls=NpJsonEncoder, indent=4)
 
 
-def loadRaceline(trackWidth: float | int, nSamples: int) -> np.ndarray:
+def loadRaceline(centerline: np.ndarray, trackWidth: float | int) -> np.ndarray:
+    "load the raceline and return its sampled version arr of shape nSamples*dim, such that arr[k] is the point of the raceline (linearly interpolated) closest to centerline[k]. this allows keeping a single S value across the track for raceline-following PID"
     with open(f"../data/opt-line-trackWidth-{trackWidth}.json") as f:
         data = json.load(f)
 
@@ -118,22 +119,41 @@ def loadRaceline(trackWidth: float | int, nSamples: int) -> np.ndarray:
     # we want to interpolate points to have nSamples data and keep them regularly spaced
     # since points are generated from a trajectory, they won't have the same distance between two consecutive points
 
-    N, dim = points.shape
-    
-    # we compute the cumulated distance between points
-    diffs = np.diff(points, axis=0)
-    distances = np.sqrt(np.sum(diffs**2, axis=1))
-    accumulated_dist = np.concatenate(([0], np.cumsum(distances)))
-    
-    # new grid samples
-    new_dist = np.linspace(0, accumulated_dist[-1], nSamples)
-    
-    # interpolate
+    nSamples, dim = centerline.shape
+
+    seg_start = points
+    seg_end = np.roll(points, -1, axis=0)
+
+    seg_vec = seg_end - seg_start
+    seg_len2 = np.clip(np.sum(seg_vec**2, axis=1), a_min=1e-12, a_max=None)
+
     new_points = np.zeros((nSamples, dim))
-    for d in range(dim):
-        new_points[:, d] = np.interp(new_dist, accumulated_dist, points[:, d])
-        
+
+    for k in range(nSamples):
+        p = centerline[k]
+        w = p - seg_start
+        t = np.sum(w * seg_vec, axis=1) / seg_len2
+        t = np.clip(t, 0.0, 1.0)
+        candidates = seg_start + t[:, None] * seg_vec
+        d2 = np.sum((candidates - p)**2, axis=1)
+        new_points[k] = candidates[np.argmin(d2)]
+
     return new_points
+
+    # # we compute the cumulated distance between points
+    # diffs = np.diff(points, axis=0)
+    # distances = np.sqrt(np.sum(diffs**2, axis=1))
+    # accumulated_dist = np.concatenate(([0], np.cumsum(distances)))
+    
+    # # new grid samples
+    # new_dist = np.linspace(0, accumulated_dist[-1], nSamples)
+    
+    # # interpolate
+    # new_points = np.zeros((nSamples, dim))
+    # for d in range(dim):
+    #     new_points[:, d] = np.interp(new_dist, accumulated_dist, points[:, d])
+        
+    # return new_points
 
 
 def mainZMQ():
@@ -141,9 +161,9 @@ def mainZMQ():
     # nAgents = 1
     dim = 2
     nTrackSamples = 1000
+    racelineWidth = 3
 
     centerline: Callable[[float], np.ndarray] = lambda s: lissajous(s, 10, 2, 8)  # noqa: E731
-    raceline = loadRaceline(2, nTrackSamples)
     # centerline: Callable[[float], np.ndarray] = lambda s: flower(s, 10.0, 2.0)
 
     if nAgents > 1:
@@ -175,7 +195,8 @@ def mainZMQ():
         # maxSpeed=np.array([2, 2]),
         targetDistance=0.02,
         nWinLaps=1,
-        minDist=1.2,
+        minDist=0.1,
+        # minDist=1.2,
         # minDist=1.75,
         dt=0.1,
     )
@@ -232,7 +253,11 @@ def mainZMQ():
 
     assert config.trackPoints is not None
     config.nRaceLines = 2
+    raceline = loadRaceline(config.trackPoints, racelineWidth)
     config.trackPoints = np.concatenate([config.trackPoints, raceline])
+
+    for i in range(0, 1000, 100):
+        print (f"i = {i} s = {i / 1000} centerline[i] = {config.trackPoints[i]}; raceline[i] = {raceline[i]}; dist = {np.linalg.norm(config.trackPoints[i] - raceline[i])}")
 
     mppisolo = MPPIConfig(
         nSamples=100000,
@@ -252,6 +277,7 @@ def mainZMQ():
 
     pidconfig = PIDConfig(kp=10, kd=5, repulsionFactor=20)
     blindpidconfig = PIDConfig(kp=10, kd=5, repulsionFactor=0)
+    pidconfig1 = PIDConfig(kp=10, kd=5, repulsionFactor=0, racelineIndex=1)
 
     dummyconfig = DummyConfig()
 
@@ -261,7 +287,8 @@ def mainZMQ():
     # mppiconfig2.opponentConfig = pidconfig
     # mppiconfig.opponentConfig = blindpidconfig
 
-    cont_configs: list[ControllerConfig] = [pidconfig, mppiconfig]
+    cont_configs: list[ControllerConfig] = [pidconfig1, dummyconfig]
+    # cont_configs: list[ControllerConfig] = [pidconfig, mppiconfig]
     # cont_configs: list[ControllerConfig] = [blindpidconfig, mppiconfig]
     # cont_configs: list[ControllerConfig] = [mppiconfig, mppiconfig2]
     # cont_configs: list[ControllerConfig] = [mppiconfig, blindpidconfig]
@@ -457,7 +484,6 @@ def plotSensResults(collDistFactor: float = 1, fastMPPI: bool = True):
 
 
 if __name__ == "__main__":
-    print (loadRaceline(0, 10))
     mainZMQ()
     # buildOptimalRaceline()
     # computeResults(1, False)
