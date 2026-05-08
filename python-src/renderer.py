@@ -347,7 +347,7 @@ class EnvironmentRenderer:
         if not name.endswith(".gif"):
             name = name + ".gif"
 
-        save_path = os.path.join("gifs", name)
+        save_path = os.path.join("..", "gifs", name)
         os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
 
         imgs: list[Image.Image] = []

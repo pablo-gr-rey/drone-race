@@ -105,24 +105,45 @@ def buildOptimalRaceline():
         "mppiConfig": dataclasses.asdict(mppisolo),
     }
 
-    with open(f"data/opt-line-trackWidth-{trackWidth}.json", "w") as f:
+    with open(f"../data/opt-line-trackWidth-{trackWidth}.json", "w") as f:
         json.dump(info, f, cls=NpJsonEncoder, indent=4)
 
 
-def loadRaceline(trackWidth: float | int) -> np.ndarray:
-    with open(f"data/opt-line-trackWidth-{trackWidth}.json") as f:
+def loadRaceline(trackWidth: float | int, nSamples: int) -> np.ndarray:
+    with open(f"../data/opt-line-trackWidth-{trackWidth}.json") as f:
         data = json.load(f)
 
-    return data["points"]
+    points = np.array(data["points"])
+
+    # we want to interpolate points to have nSamples data and keep them regularly spaced
+    # since points are generated from a trajectory, they won't have the same distance between two consecutive points
+
+    N, dim = points.shape
+    
+    # we compute the cumulated distance between points
+    diffs = np.diff(points, axis=0)
+    distances = np.sqrt(np.sum(diffs**2, axis=1))
+    accumulated_dist = np.concatenate(([0], np.cumsum(distances)))
+    
+    # new grid samples
+    new_dist = np.linspace(0, accumulated_dist[-1], nSamples)
+    
+    # interpolate
+    new_points = np.zeros((nSamples, dim))
+    for d in range(dim):
+        new_points[:, d] = np.interp(new_dist, accumulated_dist, points[:, d])
+        
+    return new_points
 
 
 def mainZMQ():
     nAgents = 2
     # nAgents = 1
     dim = 2
+    nTrackSamples = 1000
 
     centerline: Callable[[float], np.ndarray] = lambda s: lissajous(s, 10, 2, 8)  # noqa: E731
-    raceline = loadRaceline(2)
+    raceline = loadRaceline(2, nTrackSamples)
     # centerline: Callable[[float], np.ndarray] = lambda s: flower(s, 10.0, 2.0)
 
     if nAgents > 1:
@@ -138,7 +159,7 @@ def mainZMQ():
         # centerline=roundTrack,
         centerline=centerline,
         nAgents=nAgents,
-        nTrackSamples=1000,
+        nTrackSamples=nTrackSamples,
         init_state=init_state,
         add_state=(np.array(startS), np.zeros(nAgents)),
         # posNoiseLevel=0.01,
@@ -367,7 +388,7 @@ def computeSensResult(collDistFactor: float = 1, fastMPPI: bool = True):
         "pidConfig": dataclasses.asdict(pidconfigReal),
     }
 
-    with open(f"data/sens-collDistFactor-{collDistFactor}-{desc}.json", "w") as f:
+    with open(f"../data/sens-collDistFactor-{collDistFactor}-{desc}.json", "w") as f:
         json.dump(info, f, cls=NpJsonEncoder, indent=4)
 
     z.close()
@@ -385,7 +406,7 @@ def plotSensResults(collDistFactor: float = 1, fastMPPI: bool = True):
             return arg
         return 5
 
-    with open(f"data/sens-collDistFactor-{collDistFactor}-{desc}.json") as f:
+    with open(f"../data/sens-collDistFactor-{collDistFactor}-{desc}.json") as f:
         info = json.load(f)
 
     # Example data
@@ -436,6 +457,7 @@ def plotSensResults(collDistFactor: float = 1, fastMPPI: bool = True):
 
 
 if __name__ == "__main__":
+    print (loadRaceline(0, 10))
     mainZMQ()
     # buildOptimalRaceline()
     # computeResults(1, False)

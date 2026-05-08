@@ -1,6 +1,6 @@
 .venv/*
 build/*
-
+python-src/__pycache__/*
 gifs/*
 oldgifs/*
 figures/*
