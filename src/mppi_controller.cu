@@ -4,7 +4,7 @@
 #include "device_config.cuh"
 #include "state.h"
 #include "rollout.cuh"
-#include "reduction.cuh"
+#include "kernels.cuh"
 
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
@@ -15,30 +15,7 @@
 #include <stdexcept>
 #include <variant>
 #include <type_traits>
-
-// ── kernel declarations (defined in kernels.cu) ──────────────────────
-__global__ void initRNGKernel(curandState*, unsigned long long, int);
-__global__ void generateNoiseKernel(float*, curandState*, float, int, int, int);
-__global__ void fullRolloutKernel(
-    int controlAgent,
-    const DeviceEnvironmentConfig cfg,
-    const DeviceMPPIConfig mc,
-    OpponentModelType oppModel,
-    const PIDConfig oppPid,
-    const float* __restrict__ initPhys,
-    const float* __restrict__ initS,
-    const float* __restrict__ initLaps,
-    const float* __restrict__ nominal,
-    const float* __restrict__ noise,
-    float* __restrict__ totalCosts,
-    float* __restrict__ finalPhys,
-    float* __restrict__ finalS,
-    float* __restrict__ finalLaps,
-    curandState* __restrict__ rngStates,
-    const float* __restrict__ trackPts,
-    int nTP, int N);
-__global__ void minReduceKernel(const float*, float*, int);
-__global__ void weightedAverageKernel(const float*, const float*, float*, float, float, int, int, int);
+#include <cub/cub.cuh>
 
 // Construction
 MPPIController::MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc)
@@ -118,6 +95,20 @@ void MPPIController::allocDevice()
         h_nominal.size() * sizeof(float),
         cudaMemcpyHostToDevice));
 
+    // allocate temp storage for min reduce
+
+    // First call: get temporary storage size
+    cub::DeviceReduce::Min(
+        nullptr,
+        temp_storage_bytes,
+        (const float*) nullptr,
+        (float*) nullptr,
+        N
+    );
+
+    // Allocate temporary storage
+    CUDA_CHECK(cudaMalloc(&d_temp_storage, temp_storage_bytes));
+
     deviceReady = true;
 }
 
@@ -137,11 +128,22 @@ void MPPIController::uploadTrack()
 void MPPIController::freeDevice()
 {
     auto fr = [](float*& p) { if (p) { cudaFree(p); p = nullptr; } };
-    fr(d_phys);      fr(d_S);        fr(d_laps);
-    fr(d_sampPhys);  fr(d_sampS);    fr(d_sampLaps);
-    fr(d_noise);     fr(d_costs);    fr(d_nominal);
-    fr(d_minCost);   fr(d_trackPts);
-    if (d_rng) { cudaFree(d_rng); d_rng = nullptr; }
+    fr(d_phys);
+    fr(d_S);
+    fr(d_laps);
+    fr(d_sampPhys);
+    fr(d_sampS);
+    fr(d_sampLaps);
+    fr(d_noise);
+    fr(d_costs);
+    fr(d_nominal);
+    fr(d_minCost);
+    fr(d_trackPts);
+    if (d_rng)
+    {
+        cudaFree(d_rng);
+        d_rng = nullptr;
+    }
     deviceReady = false;
 }
 
@@ -216,9 +218,10 @@ void MPPIController::getControl(int agent,
     CUDA_CHECK(cudaMemcpy(d_minCost, &initMin, sizeof(float),
         cudaMemcpyHostToDevice));
 
-    int rGrid = (N + blk * 2 - 1) / (blk * 2);
-    minReduceKernel << <rGrid, blk, blk * sizeof(float) >> > (
-        d_costs, d_minCost, N);
+    // int rGrid = (N + blk * 2 - 1) / (blk * 2);
+    // minReduceKernel << <rGrid, blk, blk * sizeof(float) >> > (
+    //     d_costs, d_minCost, N);
+    minReduceCUB(d_costs, d_minCost, N, d_temp_storage, temp_storage_bytes);
 
     float hostMin;
     CUDA_CHECK(cudaMemcpy(&hostMin, d_minCost, sizeof(float),

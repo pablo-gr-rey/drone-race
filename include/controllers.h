@@ -86,6 +86,8 @@ private:
     float* d_actions = nullptr;  // (N, actionDim)
     float* d_minCost = nullptr;  // scalar
     float* d_trackPts = nullptr;  // cached on device
+    void* d_temp_storage = nullptr; // for min-reduce
+    size_t temp_storage_bytes = 0;  // for min-reduce
     curandState* d_rng = nullptr;
 
     std::vector<float> h_nominal;   // host mirror (T * dim)

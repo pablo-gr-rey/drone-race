@@ -15,6 +15,8 @@ constexpr int MAX_DIM = 3;
 constexpr int MAX_PHYS_DIM = MAX_AGENTS * MAX_DIM * 2; // pos+vel
 constexpr int MAX_ACTION_DIM = MAX_AGENTS * MAX_DIM;
 
+// #define DEBUG
+
 // ── CUDA error helper ────────────────────────────────────────────────
 #ifdef DEBUG
 #define CUDA_CHECK(call)                                                   \

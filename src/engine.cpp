@@ -119,10 +119,6 @@ void SimulationEngine::dynStep(const std::vector<float>& actions)
 {
     std::normal_distribution<float> nd(0.0f, 1.0f);
 
-    // std::memcpy(newPhys, phys, cfg.physDim * sizeof(float));
-    // std::memcpy(newS, S, cfg.nAgents * sizeof(float));
-    // std::memcpy(newLaps, laps, cfg.nAgents * sizeof(float));
-
     // clamp + noise actions
 
     std::vector<float> act = actions;
@@ -140,9 +136,6 @@ void SimulationEngine::dynStep(const std::vector<float>& actions)
         // integrate position
         for (int d = 0; d < envConfig.dim; d++)
             phys_state[iAgent * envConfig.dim * 2 + d * 2] += envConfig.dt * phys_state[iAgent * envConfig.dim * 2 + d * 2 + 1];
-        // setPos(newPhys, a, d, envConfig.dim,
-        //     getPos(newPhys, a, d, envConfig.dim)
-        //     + envConfig.dt * getVel(newPhys, a, d, envConfig.dim));
 
         // integrate velocity
         float sqSpeedNorm = 0.f;
@@ -152,9 +145,6 @@ void SimulationEngine::dynStep(const std::vector<float>& actions)
             speed += envConfig.dt * act[iAgent * envConfig.dim + d];
             sqSpeedNorm += speed * speed;
         }
-        // setVel(newPhys, a, d, envConfig.dim,
-        //     getVel(newPhys, a, d, envConfig.dim)
-        //     + envConfig.dt * act[a * envConfig.dim + d]);
 
         // cap speed
         if (sqSpeedNorm > envConfig.maxSpeed[iAgent] * envConfig.maxSpeed[iAgent])
@@ -162,8 +152,6 @@ void SimulationEngine::dynStep(const std::vector<float>& actions)
             float sc = envConfig.maxSpeed[iAgent] / std::sqrt(sqSpeedNorm);
             for (int d = 0; d < envConfig.dim; d++)
                 phys_state[iAgent * envConfig.dim * 2 + d * 2 + 1] *= sc;
-            // setVel(newPhys, iAgent, d, envConfig.dim,
-            //     getVel(newPhys, iAgent, d, envConfig.dim) * sc);
         }
 
         // noise
@@ -171,21 +159,12 @@ void SimulationEngine::dynStep(const std::vector<float>& actions)
         {
             phys_state[iAgent * envConfig.dim * 2 + d * 2] += nd(rng) * envConfig.posNoiseLevel;
             phys_state[iAgent * envConfig.dim * 2 + d * 2 + 1] += nd(rng) * envConfig.speedNoiseLevel;
-            // setPos(newPhys, iAgent, d, envConfig.dim,
-            //     getPos(newPhys, iAgent, d, envConfig.dim) + nd(rng) * envConfig.posNoiseLevel);
-            // setVel(newPhys, iAgent, d, envConfig.dim,
-            //     getVel(newPhys, iAgent, d, envConfig.dim) + nd(rng) * envConfig.speedNoiseLevel);
         }
     }
 
     // update S and laps
     for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
     {
-        // float pos[MAX_DIM];
-        // for (int d = 0; d < envConfig.dim; d++)
-        //     // pos[d] = getPos(newPhys, a, d, envConfig.dim);
-        //     pos[d] = phys_state[iAgent * envConfig.dim * 2 + d * 2];
-
         float s = cpuProjectOnTrack(envConfig.trackPoints, envConfig.nTrackSamples, envConfig.dim, phys_state.begin() + 2 * iAgent * envConfig.dim, 2).first;
 
         if (s > currentS[iAgent] + 0.5f)

@@ -3,8 +3,9 @@
 #include "track.cuh"
 #include "costs.cuh"
 #include "opponent_models.cuh"
-#include "reduction.cuh"
+#include "kernels.cuh"
 
+#include <cub/cub.cuh>
 #include <curand_kernel.h>
 #include <cfloat>
 
@@ -90,9 +91,7 @@ __global__ void fullRolloutKernel(
             if (a == controlAgent)
             {
                 for (int d = 0; d < cfg.dim; d++)
-                    actions[a * cfg.dim + d] =
-                    nominal[t * cfg.dim + d]
-                    + noise[(t * N + s) * cfg.dim + d];
+                    actions[a * cfg.dim + d] = nominal[t * cfg.dim + d] + noise[(t * N + s) * cfg.dim + d];
             }
             else
             {
@@ -153,21 +152,13 @@ __global__ void fullRolloutKernel(
         // 7. Track S / laps update
         for (int a = 0; a < cfg.nAgents; a++)
         {
-            // TODO: cnul !! faut aller plus vite
+            // TODO: we could avoid copying into pos (using stride 2)
             float pos[MAX_DIM];
             for (int d = 0; d < cfg.dim; d++)
                 pos[d] = getPos(phys, a, d, cfg.dim);
             float dist;
             // float newSa = projectOnTrack(trackPts, nTP, cfg.dim, pos, nullptr, dist);
             float newSa = fastProjectOnTrack(trackPts, nTP, cfg.dim, pos, nullptr, dist, S[a]);
-
-            // float dist2;
-            // float newSa2 = fastProjectOnTrack(trackPts, nTP, cfg.dim, pos, nullptr, dist, S[a]);
-
-            // if (abs(dist - dist2) > 1e-6)
-            // {
-            //     printf("WRONG fastdist for pos %f %f prevS %f : got (S, d) = (%f, %f) instead of (%f, %f)\n", pos[0], pos[1], S[a], newSa2, dist2, newSa, dist);
-            // }
 
             if (newSa > S[a] + 0.5f) laps[a] -= 1.0f;
             if (newSa < S[a] - 0.5f) laps[a] += 1.0f;
@@ -202,48 +193,23 @@ __global__ void fullRolloutKernel(
     rngStates[s] = rng;
 }
 
-// ═════════════════════════════════════════════════════════════════════
-// Float atomicMin via CAS
-// ═════════════════════════════════════════════════════════════════════
-__device__ inline void atomicMinFloat(float* addr, float val)
+// cuda reduce min
+void minReduceCUB(const float* __restrict__ d_costs,
+    float* __restrict__ d_minCost,
+    int N,
+    void* __restrict__ d_temp_storage,
+    size_t temp_storage_bytes)
 {
-    int* ia = (int*) addr;
-    int old = *ia, assumed;
-    do
-    {
-        assumed = old;
-        old = atomicCAS(ia, assumed,
-            __float_as_int(fminf(val, __int_as_float(assumed))));
-    } while (assumed != old);
+    cub::DeviceReduce::Min(
+        d_temp_storage,
+        temp_storage_bytes,
+        d_costs,
+        d_minCost,
+        N
+    );
 }
 
-// ═════════════════════════════════════════════════════════════════════
-// Min-reduce
-// ═════════════════════════════════════════════════════════════════════
-__global__ void minReduceKernel(const float* __restrict__ costs,
-    float* __restrict__ outMin, int n)
-{
-    extern __shared__ float sd[];
-    int tid = threadIdx.x;
-    int i = blockIdx.x * blockDim.x * 2 + tid;
-
-    float val = FLT_MAX;
-    if (i < n)                val = costs[i];
-    if (i + blockDim.x < n)  val = fminf(val, costs[i + blockDim.x]);
-    sd[tid] = val;
-    __syncthreads();
-
-    for (int s = blockDim.x / 2; s > 0; s >>= 1)
-    {
-        if (tid < s) sd[tid] = fminf(sd[tid], sd[tid + s]);
-        __syncthreads();
-    }
-    if (tid == 0) atomicMinFloat(outMin, sd[0]);
-}
-
-// ═════════════════════════════════════════════════════════════════════
-// Weighted average
-// ═════════════════════════════════════════════════════════════════════
+// weighted average
 __global__ void weightedAverageKernel(
     const float* __restrict__ costs,
     const float* __restrict__ noise,
