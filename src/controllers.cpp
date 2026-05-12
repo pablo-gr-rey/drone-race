@@ -13,7 +13,7 @@ DummyController::DummyController(const EnvironmentConfig& c)
     name = "dummy"; envConfig = &c;
 }
 
-void DummyController::getControl(int /*agent*/, const float* /*phys*/,
+void DummyController::getControl(int /*agent*/, const float* /*pos*/, const float* /*speed*/,
     const float* /*S*/, const int* /*laps*/, const int* /* currentGates */,
     float* outAction)
 {
@@ -30,7 +30,7 @@ PIDController::PIDController(const EnvironmentConfig& c, const PIDConfig& p) : p
     envConfig = &c;
 }
 
-void PIDController::getControl(int agent, const float* phys, const float* S, const int* /* laps */, const int* /* currentGates */, float* outAction)
+void PIDController::getControl(int agent, const float* pos, const float* speed, const float* S, const int* /* laps */, const int* /* currentGates */, float* outAction)
 {
     if (!engine) throw std::runtime_error("PID: engine not set");
 
@@ -38,16 +38,12 @@ void PIDController::getControl(int agent, const float* phys, const float* S, con
 
     std::vector<float> target = engine->getTarget(agent, S, params.racelineIndex);
 
-    float pos[MAX_DIM], vel[MAX_DIM];
-    for (int d = 0; d < dim; d++)
-    {
-        pos[d] = getPos(phys, agent, d, dim);
-        vel[d] = getVel(phys, agent, d, dim);
-    }
+    const float* curPos = pos + agent * dim;
+    const float* velArr = speed + agent * dim;
 
     float sqError = 0.0f;
     for (int d = 0; d < dim; d++)
-        sqError += (target[d] - pos[d]) * (target[d] - pos[d]);
+        sqError += (target[d] - curPos[d]) * (target[d] - curPos[d]);
 
     // renormalize error so that it always has norm 1
     float invDist = 1 / sqrt(sqError + 1e-5);
@@ -56,15 +52,15 @@ void PIDController::getControl(int agent, const float* phys, const float* S, con
     float vParallelMag = 0.0f;
     for (int d = 0; d < dim; d++)
     {
-        float dirD = (target[d] - pos[d]) * invDist;
-        vParallelMag += vel[d] * dirD;
+        float dirD = (target[d] - curPos[d]) * invDist;
+        vParallelMag += velArr[d] * dirD;
     }
 
     // we only correct the lateral velocity (if we're going in a straight line, we shouldn't brake to be able to reach full speed)
     for (int d = 0; d < dim; d++)
     {
-        float error = (target[d] - pos[d]) * invDist;
-        float latVelError = vel[d] - vParallelMag * error;
+        float error = (target[d] - curPos[d]) * invDist;
+        float latVelError = velArr[d] - vParallelMag * error;
         outAction[d] = params.kp * error + params.kd * (-latVelError);
     }
 
@@ -84,7 +80,7 @@ void PIDController::getControl(int agent, const float* phys, const float* S, con
         float dist2 = 0.0f;
         for (int d = 0; d < dim; d++)
         {
-            diff[d] = getPos(phys, other, d, dim) - pos[d];
+            diff[d] = pos[other * dim + d] - curPos[d];
             dist2 += diff[d] * diff[d];
         }
 

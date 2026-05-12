@@ -37,14 +37,16 @@ __global__ void fullRolloutKernel(
     const DeviceMPPIConfig mc,
     OpponentModelType oppModel,
     const PIDConfig oppPid,
-    const float* __restrict__ initPhys,
+    const float* __restrict__ initPos,
+    const float* __restrict__ initVel,
     const float* __restrict__ initS,
     const int* __restrict__ initLaps,
     const int* __restrict__ initGates,
     const float* __restrict__ nominal,
     const float* __restrict__ noise,
     float* __restrict__ totalCosts,
-    float* __restrict__ finalPhys,
+    float* __restrict__ finalPos,
+    float* __restrict__ finalVel,
     float* __restrict__ finalS,
     int* __restrict__ finalLaps,
     int* __restrict__ finalGates,
@@ -52,20 +54,23 @@ __global__ void fullRolloutKernel(
     const float* __restrict__ trackPts,
     int nTP, int N)
 {
-    // TODO: this does not handle gates!!
     int s = blockIdx.x * blockDim.x + threadIdx.x;
     if (s >= N) return;
 
     // ── Load initial state into registers ────────────────────────────
-    float phys[MAX_PHYS_DIM];
+    float pos[MAX_AGENTS * MAX_DIM];
+    float vel[MAX_AGENTS * MAX_DIM];
     float S[MAX_AGENTS];
     int laps[MAX_AGENTS];
     int currentGates[MAX_AGENTS];
-
     float prevPos[MAX_AGENTS * MAX_DIM];
 
-    for (int i = 0; i < envConfig.physDim; i++)
-        phys[i] = initPhys[i];
+    for (int a = 0; a < envConfig.nAgents; ++a)
+        for (int d = 0; d < envConfig.dim; ++d)
+        {
+            pos[a * envConfig.dim + d] = initPos[a * envConfig.dim + d];
+            vel[a * envConfig.dim + d] = initVel[a * envConfig.dim + d];
+        }
     for (int a = 0; a < envConfig.nAgents; a++)
     {
         S[a] = initS[a];
@@ -82,7 +87,7 @@ __global__ void fullRolloutKernel(
     {
         // 0. Update prevPos
         for (int i = 0; i < envConfig.nAgents * envConfig.dim; i++)
-            prevPos[i] = phys[2 * i];
+            prevPos[i] = pos[i];
 
         // 1. Build actions
         float actions[MAX_ACTION_DIM];
@@ -94,10 +99,9 @@ __global__ void fullRolloutKernel(
                     actions[a * envConfig.dim + d] = nominal[t * envConfig.dim + d] + noise[(t * N + s) * envConfig.dim + d];
             }
             else
-                predictOpponent(oppModel, a, phys, S, laps, currentGates, envConfig, oppPid, trackPts, nTP, actions + a * envConfig.dim);
+                predictOpponent(oppModel, a, pos, vel, S, laps, currentGates, envConfig, oppPid, trackPts, nTP, actions + a * envConfig.dim);
         }
 
-        // TODO: cap actions properly (L_2 norm instead of L_inf)
         // 2. Clamp + action noise
         for (int a = 0; a < envConfig.nAgents; a++)
         {
@@ -120,22 +124,22 @@ __global__ void fullRolloutKernel(
         // 3. Integrate position
         for (int a = 0; a < envConfig.nAgents; a++)
             for (int d = 0; d < envConfig.dim; d++)
-                setPos(phys, a, d, envConfig.dim, getPos(phys, a, d, envConfig.dim) + envConfig.dt * getVel(phys, a, d, envConfig.dim));
+                pos[a * envConfig.dim + d] += envConfig.dt * vel[a * envConfig.dim + d];
 
         // 4. Integrate velocity
         for (int a = 0; a < envConfig.nAgents; a++)
             for (int d = 0; d < envConfig.dim; d++)
-                setVel(phys, a, d, envConfig.dim, getVel(phys, a, d, envConfig.dim) + envConfig.dt * actions[a * envConfig.dim + d]);
+                vel[a * envConfig.dim + d] += envConfig.dt * actions[a * envConfig.dim + d];
 
         // 5. Cap speed
         for (int a = 0; a < envConfig.nAgents; a++)
         {
-            float spd = agentSpeed(phys, a, envConfig.dim);
+            float spd = agentSpeed(vel, a, envConfig.dim);
             if (spd > envConfig.maxSpeed[a])
             {
                 float sc = envConfig.maxSpeed[a] / spd;
                 for (int d = 0; d < envConfig.dim; d++)
-                    setVel(phys, a, d, envConfig.dim, getVel(phys, a, d, envConfig.dim) * sc);
+                    vel[a * envConfig.dim + d] = vel[a * envConfig.dim + d] * sc;
             }
         }
 
@@ -143,24 +147,20 @@ __global__ void fullRolloutKernel(
         for (int a = 0; a < envConfig.nAgents; a++)
             for (int d = 0; d < envConfig.dim; d++)
             {
-                setPos(phys, a, d, envConfig.dim, getPos(phys, a, d, envConfig.dim) + curand_normal(&rng) * envConfig.posNoiseLevel);
-                setVel(phys, a, d, envConfig.dim, getVel(phys, a, d, envConfig.dim) + curand_normal(&rng) * envConfig.speedNoiseLevel);
+                pos[a * envConfig.dim + d] += curand_normal(&rng) * envConfig.posNoiseLevel;
+                vel[a * envConfig.dim + d] += curand_normal(&rng) * envConfig.speedNoiseLevel;
             }
 
         // 7. Track S / laps / gates update
         for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
         {
-            // TODO: we could avoid copying into pos (using stride 2)
-            float pos[MAX_DIM];
-            for (int d = 0; d < envConfig.dim; d++)
-                pos[d] = getPos(phys, iAgent, d, envConfig.dim);
+            const float* curPos = pos + iAgent * envConfig.dim;
 
             float dist;
-            // float newSa = projectOnTrack(trackPts, nTP, cfg.dim, pos, nullptr, dist);
-            float newSa = fastProjectOnTrack(trackPts, nTP, envConfig.dim, pos, nullptr, dist, S[iAgent]);
+            float newSa = fastProjectOnTrack(trackPts, nTP, envConfig.dim, curPos, nullptr, dist, S[iAgent]);
             S[iAgent] = newSa;
 
-            dist = trackBoundaryDist(envConfig.arenaMin, envConfig.arenaMax, pos, envConfig.dim);
+            dist = trackBoundaryDist(envConfig.arenaMin, envConfig.arenaMax, curPos, envConfig.dim);
 
             // one agent is outside: break (but still update other agents & costs)
             if (dist < 0.)
@@ -171,7 +171,7 @@ __global__ void fullRolloutKernel(
             for (int d = 0; d < envConfig.dim; d++)
             {
                 num += envConfig.gateVectors[nextGate * envConfig.dim + d] * (envConfig.gateCenters[nextGate * envConfig.dim + d] - prevPos[iAgent * envConfig.dim + d]);
-                denom += envConfig.gateVectors[nextGate * envConfig.dim + d] * (pos[d] - prevPos[iAgent * envConfig.dim + d]);
+                denom += envConfig.gateVectors[nextGate * envConfig.dim + d] * (pos[iAgent * envConfig.dim + d] - prevPos[iAgent * envConfig.dim + d]);
             }
 
             // direction is inside the gate plan: cannot cross
@@ -188,7 +188,7 @@ __global__ void fullRolloutKernel(
             float sqDist = 0.;
             for (int d = 0; d < envConfig.dim; d++)
             {
-                float dx = (1. - lambda) * prevPos[iAgent * envConfig.dim + d] + lambda * pos[d] - envConfig.gateCenters[nextGate * envConfig.dim + d];
+                float dx = (1. - lambda) * prevPos[iAgent * envConfig.dim + d] + lambda * pos[iAgent * envConfig.dim + d] - envConfig.gateCenters[nextGate * envConfig.dim + d];
                 sqDist += dx * dx;
             }
 
@@ -207,11 +207,11 @@ __global__ void fullRolloutKernel(
         }
 
         // 8. Running cost
-        cost += stateCost(controlAgent, phys, S, laps, currentGates, t, envConfig, mc, trackPts, nTP);
+        cost += stateCost(controlAgent, pos, vel, S, laps, currentGates, t, envConfig, mc, trackPts, nTP);
     }
 
     // ── Terminal cost ────────────────────────────────────────────────
-    cost += finalCost(controlAgent, phys, S, laps, currentGates, envConfig, mc, trackPts, nTP);
+    cost += finalCost(controlAgent, pos, vel, S, laps, currentGates, envConfig, mc, trackPts, nTP);
 
     // ── Write outputs ────────────────────────────────────────────────
     totalCosts[s] = cost;
@@ -219,13 +219,15 @@ __global__ void fullRolloutKernel(
     // We don't actually need the final state for the MPPI update,
     // but if you want to inspect it for debugging:
     // (can be removed to save bandwidth)
-    float* op = finalPhys + s * envConfig.physDim;
+    float* op = finalPos + s * envConfig.nAgents * envConfig.dim;
+    float* ov = finalVel + s * envConfig.nAgents * envConfig.dim;
     float* oS = finalS + s * envConfig.nAgents;
     int* oL = finalLaps + s * envConfig.nAgents;
     int* oG = finalGates + s * envConfig.nAgents;
-
-    for (int i = 0; i < envConfig.physDim; i++)
-        op[i] = phys[i];
+    for (int i = 0; i < envConfig.nAgents * envConfig.dim; i++)
+        op[i] = pos[i];
+    for (int i = 0; i < envConfig.nAgents * envConfig.dim; i++)
+        ov[i] = vel[i];
     for (int a = 0; a < envConfig.nAgents; a++)
     {
         oS[a] = S[a];

@@ -27,7 +27,8 @@ public:
 
 private:
     // state
-    std::vector<float> phys_state;   // (nAgents * dim * 2) physical state (x1 vx1 y1 vy1 .. x2 vx2 ...)
+    std::vector<float> pos;   // (nAgents * dim) positions (x1 y1 .. x2 y2 ..)
+    std::vector<float> speed; // (nAgents * dim) speeds  (vx1 vy1 .. vx2 vy2 ..)
     std::vector<float> currentS;    // (nAgents) current S 
     std::vector<int> nLaps;       // (nAgents) current number of laps
     std::vector<int> currentGates;  // (nAgents) current number of gates passed (1 = we already went through gates[0], now we aim at gates[1])
@@ -58,6 +59,6 @@ private:
     // return the centerline sampled at given s
     std::vector<float> cpuSampleCenterline(float s, int racelineIndex) const;
 
-    // return the closest S and the distance to it for the given pos. allows specifying a stride on reading (useful for phys state)
-    std::pair<float, float> cpuProjectOnTrack(const std::vector<float>& state, int iAgent) const;
+    // return the closest S and the distance to it for the given pos.
+    std::pair<float, float> cpuProjectOnTrack(const std::vector<float>& pos, int iAgent) const;
 };

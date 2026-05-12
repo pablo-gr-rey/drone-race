@@ -22,8 +22,8 @@ SimulationEngine::SimulationEngine(
     hasCollision = false;
     isWinner = -1;
     isOutside = -1;
-
-    phys_state = config.initState;
+    pos = config.initPos;
+    speed = config.initSpeed;
     currentS = config.initS;
     nLaps = config.initLaps;
     currentGates = config.initGates;
@@ -69,7 +69,8 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
         writer.pushInt32(MSG_STATE);
 
         writer.pushInt32(step);
-        writer.pushFloatArray(phys_state);
+        writer.pushFloatArray(pos);
+        writer.pushFloatArray(speed);
         writer.pushFloatArray(currentS);
         writer.pushIntArray(nLaps);
         writer.pushIntArray(currentGates);
@@ -105,7 +106,8 @@ void SimulationEngine::dynStep(const std::vector<float>& actions)
     // clamp + noise actions
 
     std::vector<float> act = actions;
-    std::vector<float> old_phys = phys_state;
+    std::vector<float> old_pos = pos;
+    std::vector<float> old_speed = speed;
 
     int dim = envConfig.dim;
 
@@ -131,15 +133,15 @@ void SimulationEngine::dynStep(const std::vector<float>& actions)
     {
         // integrate position
         for (int d = 0; d < dim; d++)
-            phys_state[iAgent * dim * 2 + d * 2] += envConfig.dt * phys_state[iAgent * dim * 2 + d * 2 + 1];
+            pos[iAgent * dim + d] += envConfig.dt * speed[iAgent * dim + d];
 
         // integrate velocity
         float sqSpeedNorm = 0.f;
         for (int d = 0; d < dim; d++)
         {
-            float& speed = phys_state[iAgent * dim * 2 + d * 2 + 1];
-            speed += envConfig.dt * act[iAgent * dim + d];
-            sqSpeedNorm += speed * speed;
+            float& sp = speed[iAgent * dim + d];
+            sp += envConfig.dt * act[iAgent * dim + d];
+            sqSpeedNorm += sp * sp;
         }
 
         // cap speed
@@ -147,14 +149,14 @@ void SimulationEngine::dynStep(const std::vector<float>& actions)
         {
             float sc = envConfig.maxSpeed[iAgent] / std::sqrt(sqSpeedNorm);
             for (int d = 0; d < dim; d++)
-                phys_state[iAgent * dim * 2 + d * 2 + 1] *= sc;
+                speed[iAgent * dim + d] *= sc;
         }
 
         // noise
         for (int d = 0; d < dim; d++)
         {
-            phys_state[iAgent * dim * 2 + d * 2] += nd(rng) * envConfig.posNoiseLevel;
-            phys_state[iAgent * dim * 2 + d * 2 + 1] += nd(rng) * envConfig.speedNoiseLevel;
+            pos[iAgent * dim + d] += nd(rng) * envConfig.posNoiseLevel;
+            speed[iAgent * dim + d] += nd(rng) * envConfig.speedNoiseLevel;
         }
     }
 
@@ -162,7 +164,7 @@ void SimulationEngine::dynStep(const std::vector<float>& actions)
     for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
     {
         // float s = cpuProjectOnTrack(envConfig.trackPoints, envConfig.nTrackSamples, dim, phys_state.begin() + 2 * iAgent * dim, 2).first;
-        float s = cpuProjectOnTrack(phys_state, iAgent).first;
+        float s = cpuProjectOnTrack(pos, iAgent).first;
         currentS[iAgent] = s;
 
         // if (s > currentS[iAgent] + 0.5f)
@@ -175,8 +177,8 @@ void SimulationEngine::dynStep(const std::vector<float>& actions)
         float num = 0., denom = 0.;
         for (int d = 0; d < dim; d++)
         {
-            num += envConfig.gateVectors[nextGate * dim + d] * (envConfig.gateCenters[nextGate * dim + d] - old_phys[iAgent * dim * 2 + d * 2]);
-            denom += envConfig.gateVectors[nextGate * dim + d] * (phys_state[iAgent * dim * 2 + d * 2] - old_phys[iAgent * dim * 2 + d * 2]);
+            num += envConfig.gateVectors[nextGate * dim + d] * (envConfig.gateCenters[nextGate * dim + d] - old_pos[iAgent * dim + d]);
+            denom += envConfig.gateVectors[nextGate * dim + d] * (pos[iAgent * dim + d] - old_pos[iAgent * dim + d]);
         }
 
         // direction is inside the gate plan: cannot cross
@@ -195,7 +197,7 @@ void SimulationEngine::dynStep(const std::vector<float>& actions)
         float sqDist = 0.;
         for (int d = 0; d < dim; d++)
         {
-            float dx = (1. - lambda) * old_phys[iAgent * dim * 2 + d * 2] + lambda * phys_state[iAgent * dim * 2 + d * 2] - envConfig.gateCenters[nextGate * dim + d];
+            float dx = (1. - lambda) * old_pos[iAgent * dim + d] + lambda * pos[iAgent * dim + d] - envConfig.gateCenters[nextGate * dim + d];
             sqDist += dx * dx;
         }
 
@@ -226,7 +228,7 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
         // compute actions
         std::vector<float> actions(envConfig.actionDim, 0.0f);
         for (int i = 0; i < envConfig.nAgents; i++)
-            controllers[i]->getControl(i, phys_state.data(), currentS.data(),
+            controllers[i]->getControl(i, pos.data(), speed.data(), currentS.data(),
                 nLaps.data(),
                 currentGates.data(),
                 actions.data() + i * envConfig.dim);
@@ -332,10 +334,9 @@ std::vector<float> SimulationEngine::getTarget(int agent, const float* S, int ra
 
 bool SimulationEngine::checkCollision() const
 {
-    // TODO: this sucks
     for (int a = 0; a < envConfig.nAgents; a++)
         for (int b = a + 1; b < envConfig.nAgents; b++)
-            if (agentDist(phys_state.data(), a, b, envConfig.dim) < envConfig.minDist)
+            if (agentDist(pos.data(), a, b, envConfig.dim) < envConfig.minDist)
                 return true;
     return false;
 }
@@ -346,10 +347,10 @@ int SimulationEngine::checkOutside() const
     {
         for (int d = 0; d < envConfig.dim; d++)
         {
-            float pos = getPos(phys_state.data(), iAgent, d, envConfig.dim);
-            if (pos < envConfig.arenaMin[d] || pos > envConfig.arenaMax[d])
+            float p = pos[iAgent * envConfig.dim + d];
+            if (p < envConfig.arenaMin[d] || p > envConfig.arenaMax[d])
             {
-                std::cout << "agent " << (iAgent + 1) << " outside (dimension " << d << ": position " << pos << " outside of arena\n";
+                std::cout << "agent " << (iAgent + 1) << " outside (dimension " << d << ": position " << p << " outside of arena\n";
                 return iAgent;
             }
         }
@@ -383,8 +384,8 @@ std::vector<float> SimulationEngine::cpuSampleCenterline(float s, int racelineIn
     return out;
 }
 
-// return the closest S and the distance to it for the given pos. allows specifying a stride on reading (useful for phys state)
-std::pair<float, float> SimulationEngine::cpuProjectOnTrack(const std::vector<float>& state, int iAgent) const
+// return the closest S and the distance to it for the given pos.
+std::pair<float, float> SimulationEngine::cpuProjectOnTrack(const std::vector<float>& posVec, int iAgent) const
 {
     float bestS = 0.0f, bestdSq = 1e30f;
     const float sStep = 1.0f / envConfig.nTrackSamples;
@@ -397,7 +398,7 @@ std::pair<float, float> SimulationEngine::cpuProjectOnTrack(const std::vector<fl
 
         for (int d = 0; d < envConfig.dim; ++d)
         {
-            float dx = envConfig.trackPoints[iTrack] - state[iAgent * envConfig.dim * 2 + d * 2];
+            float dx = envConfig.trackPoints[iTrack] - posVec[iAgent * envConfig.dim + d];
             dSq += dx * dx;
             iTrack++;
         }

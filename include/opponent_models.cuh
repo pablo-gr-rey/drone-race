@@ -8,7 +8,7 @@
 __device__ inline void predictOpponent(
     OpponentModelType model,
     int opp,
-    const float* phys, const float* S, const int* /*laps*/, const int* currentGates,
+    const float* pos, const float* vel, const float* S, const int* /*laps*/, const int* currentGates,
     const DeviceEnvironmentConfig& envConfig,
     const PIDConfig& pid,
     const float* trackPoints, int nTP,
@@ -35,17 +35,13 @@ __device__ inline void predictOpponent(
                 target[d] = envConfig.gateCenters[nextGate * envConfig.dim + d];
         }
 
-        float pos[MAX_DIM], vel[MAX_DIM];
-        for (int d = 0; d < envConfig.dim; d++)
-        {
-            pos[d] = getPos(phys, opp, d, envConfig.dim);
-            vel[d] = getVel(phys, opp, d, envConfig.dim);
-        }
+        const float* curPos = pos + opp * envConfig.dim;
+        const float* curVel = vel + opp * envConfig.dim;
 
         float sqError = 0.0f;
         for (int d = 0; d < envConfig.dim; d++)
         {
-            float e = target[d] - pos[d];
+            float e = target[d] - curPos[d];
             sqError += e * e;
         }
 
@@ -55,14 +51,14 @@ __device__ inline void predictOpponent(
         float vParallelMag = 0.0f;
         for (int d = 0; d < envConfig.dim; d++)
         {
-            float dirD = (target[d] - pos[d]) * invDist;
-            vParallelMag += vel[d] * dirD;
+            float dirD = (target[d] - curPos[d]) * invDist;
+            vParallelMag += curVel[d] * dirD;
         }
 
         for (int d = 0; d < envConfig.dim; d++)
         {
-            float error = (target[d] - pos[d]) * invDist;
-            float latVelError = vel[d] - vParallelMag * error;
+            float error = (target[d] - curPos[d]) * invDist;
+            float latVelError = curVel[d] - vParallelMag * error;
             outAction[d] = pid.kp * error + pid.kd * (-latVelError);
         }
 
@@ -78,7 +74,7 @@ __device__ inline void predictOpponent(
             float dist2 = 0.0f;
             for (int d = 0; d < envConfig.dim; d++)
             {
-                diff[d] = getPos(phys, other, d, envConfig.dim) - pos[d];
+                diff[d] = pos[other * envConfig.dim + d] - curPos[d];
                 dist2 += diff[d] * diff[d];
             }
             float dist = sqrtf(dist2) + 1e-8f;

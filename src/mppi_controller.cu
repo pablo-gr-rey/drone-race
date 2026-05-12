@@ -60,13 +60,15 @@ void MPPIController::allocDevice()
     int T = mppiCfg.nTimesteps;
 
     // Single authoritative state (uploaded each call)
-    CUDA_CHECK(cudaMalloc(&d_phys, c.physDim * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_pos, (size_t) c.nAgents * c.dim * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_speed, (size_t) c.nAgents * c.dim * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_S, c.nAgents * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_laps, c.nAgents * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&d_currentGates, c.nAgents * sizeof(int)));
 
     // Final state output buffers (one per sample, optional / for debug)
-    CUDA_CHECK(cudaMalloc(&d_sampPhys, (size_t) N * c.physDim * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_sampPos, (size_t) N * c.nAgents * c.dim * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_sampSpeed, (size_t) N * c.nAgents * c.dim * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_sampS, (size_t) N * c.nAgents * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_sampLaps, (size_t) N * c.nAgents * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&d_sampGates, (size_t) N * c.nAgents * sizeof(int)));
@@ -132,11 +134,13 @@ void MPPIController::freeDevice()
     auto free_float = [](float*& p) { if (p) { cudaFree(p); p = nullptr; } };
     auto free_int = [](int*& p) { if (p) { cudaFree(p); p = nullptr; } };
 
-    free_float(d_phys);
+    free_float(d_pos);
+    free_float(d_speed);
     free_float(d_S);
     free_int(d_laps);
     free_int(d_currentGates);
-    free_float(d_sampPhys);
+    free_float(d_sampPos);
+    free_float(d_sampSpeed);
     free_float(d_sampS);
     free_int(d_sampLaps);
     free_int(d_sampGates);
@@ -166,7 +170,8 @@ void MPPIController::reset()
 // getControl — the main MPPI routine
 // ═════════════════════════════════════════════════════════════════════
 void MPPIController::getControl(int agent,
-    const float* phys,
+    const float* pos,
+    const float* speed,
     const float* S,
     const int* laps,
     const int* currentGates,
@@ -189,7 +194,8 @@ void MPPIController::getControl(int agent,
     int grd = (N + blk - 1) / blk;
 
     // 1. upload current state
-    CUDA_CHECK(cudaMemcpy(d_phys, phys, c.physDim * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_pos, pos, (size_t) c.nAgents * c.dim * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_speed, speed, (size_t) c.nAgents * c.dim * sizeof(float), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_S, S, c.nAgents * sizeof(float), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_laps, laps, c.nAgents * sizeof(int), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_currentGates, currentGates, c.nAgents * sizeof(int), cudaMemcpyHostToDevice));
@@ -209,11 +215,11 @@ void MPPIController::getControl(int agent,
         deviceEnvConfig,
         deviceMPPIConfig,
         oppModel, oppPidParams,
-        d_phys, d_S, d_laps, d_currentGates,         // initial state (broadcast by reads)
+        d_pos, d_speed, d_S, d_laps, d_currentGates,         // initial state (broadcast by reads)
         d_nominal,                      // (T, dim)
         d_noise,                        // (T, N, dim)
         d_costs,                        // (N,) output: total cost per sample
-        d_sampPhys, d_sampS, d_sampLaps, d_sampGates, // (N, ...) output: final states
+        d_sampPos, d_sampSpeed, d_sampS, d_sampLaps, d_sampGates, // (N, ...) output: final states
         d_rng,
         d_trackPts, nTP,
         N);

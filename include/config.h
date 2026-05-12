@@ -44,7 +44,8 @@ struct EnvironmentConfig
     int nRacelines;
     int nGates;
 
-    std::vector<float> initState;
+    std::vector<float> initPos;
+    std::vector<float> initSpeed;
     std::vector<float> initS;
     std::vector<int> initLaps;
     std::vector<int> initGates;

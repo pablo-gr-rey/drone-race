@@ -2,6 +2,14 @@
 #include <iostream>
 #include <format>
 
+static void print_vector(std::string name, std::vector<float> vec)
+{
+    std::cout << name << " size " << vec.size() << "\t";
+    for (float v : vec)
+        std::cout << v << " ";
+    std::cout << "\n";
+}
+
 void EnvironmentConfig::unpackHeader(const void* buf, size_t len)
 {
     Reader reader(buf, len);
@@ -18,7 +26,9 @@ void EnvironmentConfig::unpackHeader(const void* buf, size_t len)
     nRacelines = (int) reader.readInt32();
     nGates = (int) reader.readInt32();
 
-    initState = reader.readFloatArray();
+    initPos = reader.readFloatArray();
+    initSpeed = reader.readFloatArray();
+
     initS = reader.readFloatArray();
     initLaps = reader.readIntArray();
     initGates = reader.readIntArray();
@@ -28,8 +38,8 @@ void EnvironmentConfig::unpackHeader(const void* buf, size_t len)
     speedNoiseLevel = reader.readFloat();
     actionNoiseLevel = reader.readFloat();
 
-    auto ms = reader.readFloatArray(); // expecting length nAgents
-    auto ma = reader.readFloatArray(); // expecting length nAgents
+    std::vector<float> ms = reader.readFloatArray(); // expecting length nAgents
+    std::vector<float> ma = reader.readFloatArray(); // expecting length nAgents
 
     if ((int) ms.size() != nAgents || (int) ma.size() != nAgents)
         throw std::runtime_error("Error unpacking EnvironmentConfig: maxSpeed/maxAccel length must equal nAgents");
