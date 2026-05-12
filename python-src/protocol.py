@@ -106,9 +106,16 @@ def encodeConfig(config: Any, msg_type: Optional[int] = None, warn=True, log=Fal
             val = int(val)
 
         if log:
-            print(
-                f"Packing field {field.name} of type {type(val)}, value {val if not isinstance(val, np.ndarray) else '[array]'}"
-            )
+            print(f"Packing field {field.name} of type {type(val)}, value {val if not isinstance(val, np.ndarray) else val}")
+
+        if field.name == "init_state":
+            assert isinstance(val, np.ndarray)
+            if log:
+                print(f"HANDLING SPECIALLY init_state: sending {val[::2]} and {val[1::2]}")
+
+            p.pushArray(val[::2])
+            p.pushArray(val[1::2])
+            continue
 
         if isinstance(val, ControllerConfig):
             encodeConfig(val, None, warn, log, p)
@@ -119,12 +126,23 @@ def encodeConfig(config: Any, msg_type: Optional[int] = None, warn=True, log=Fal
 
 
 def unpackState(unpack: ByteUnpacker) -> tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    "Return (step, physState, currentS, nLaps, nGates) from bytes"
+    "Return (step, physState, currentS, nLaps, currentGates) from bytes"
 
-    ans = unpack.readInt(), unpack.readArray(), unpack.readArray(), unpack.readArray(), unpack.readArray()
+    # ans = unpack.readInt(), unpack.readArray(), unpack.readArray(), unpack.readArray(), unpack.readArray()
+    step, pos, speed, currentS, nLaps, currentGates = (
+        unpack.readInt(),
+        unpack.readArray(),
+        unpack.readArray(),
+        unpack.readArray(),
+        unpack.readArray(),
+        unpack.readArray(),
+    )
+
     unpack.assert_finished()
 
-    return ans
+    phys = np.stack((pos, speed), axis=1).flatten()
+
+    return step, phys, currentS, nLaps, currentGates
 
 
 class ZMQRecv:

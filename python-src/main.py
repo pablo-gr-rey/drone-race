@@ -517,6 +517,7 @@ def mainGate():
         gateVectors=gateVectors,
         gateRadius=gateRadius,
         minDist=1.5,
+        actionNoiseLevel=1.33,
     )
 
     assert config.trackPoints is not None  # it is built automatically in GateEnvironmentConfig
@@ -537,7 +538,7 @@ def mainGate():
     print(config.add_state)
 
     mppiconfig = MPPIConfig(
-        nSamples=10000,
+        nSamples=100000,
         nTimesteps=60,
         inv_temperature=2,
         samplingNoise=3,
