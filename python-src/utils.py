@@ -23,6 +23,33 @@ def flower(s: float, radius: float, s_radius: float) -> np.ndarray:
     x, y = np.cos(theta) * radius, np.sin(theta) * radius
     return np.array([x + s_radius * np.sin(theta * theta), y + s_radius * np.cos(theta * theta)])
 
+def circularGateTrack(
+    nGates: int, trackRadius: float, gateRadius: float, height: Optional[float] = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Returns gateCenters, gateVectors, gateRadius for nGates around a circle of given radius.
+    If height is None, returns 2D gates; otherwise, returns 3D gates with given height.
+    """
+
+    angles = np.linspace(0, 2 * np.pi, nGates, endpoint=False)
+
+    dir_x = -np.sin(angles)
+    dir_y = np.cos(angles)
+
+    cent_x = trackRadius * np.cos(angles)
+    cent_y = trackRadius * np.sin(angles)
+
+    if height is not None:  # 3D
+        centers = np.stack([cent_x, cent_y, np.full(nGates, height)], axis=1)
+        vectors = np.stack([dir_x, dir_y, np.zeros(nGates)], axis=1)
+    else:  # 2D
+        centers = np.stack([cent_x, cent_y], axis=1)
+        vectors = np.stack([dir_x, dir_y], axis=1)
+
+    radius = np.full(nGates, gateRadius)
+
+    return centers, vectors, radius
+
 
 class MSG_TYPE(IntEnum):
     MSG_HEADER = 0
@@ -69,6 +96,7 @@ class BaseEnvironmentConfig(Generic[AddStateType]):
     sendStates: bool = True
     nRaceLines: int = 1  # number of race lines (at least 1, centerline; can specify more for PID following a given line)
     # they all should be concatenated & specified in trackPoints (which contains nLines arrays of size nSamples * dim), and then the line config in PID specifies the offset (offset=0: following centerline from 0 to nSamples-1; offset=1: following arbitrary raceline from nSamples to 2*nSamples-1, etc)
+    nGates: int = 0
 
     init_state: list | np.ndarray = field(default_factory=lambda: [])
     add_state: Optional[AddStateType] = None
@@ -129,13 +157,48 @@ class TrackEnvironmentConfig(BaseEnvironmentConfig):
             # sample centerline
             sGrid = np.linspace(0, 1, self.nTrackSamples, endpoint=False)
             self.trackPoints = np.array([self.centerline(s) for s in sGrid])
-            mm, m = 0.0, np.inf
-            for i in range(self.nTrackSamples):
-                d = np.linalg.norm(self.trackPoints[(i + 1) % self.nTrackSamples] - self.trackPoints[i])
-                mm = max(mm, d)
-                m = min(m, d)
-            print(f"minimum distance between 2 consecutive points: {m} max: {mm}")
+            # mm, m = 0.0, np.inf
+            # for i in range(self.nTrackSamples):
+            #     d = np.linalg.norm(self.trackPoints[(i + 1) % self.nTrackSamples] - self.trackPoints[i])
+            #     mm = max(mm, d)
+            #     m = min(m, d)
+            # print(f"minimum distance between 2 consecutive points: {m} max: {mm}")
 
+
+@dataclass
+class GateEnvironmentConfig(BaseEnvironmentConfig):
+    nTrackSamples: int = 500  # track is discretized with this number of samples
+    nWinLaps: int = 1
+
+    targetDistance: float = 0.1  # simple controllers will try to go to the track point at s + targetDistance
+
+    gateCenters: np.ndarray = field(default_factory=lambda: np.array([]))  # (nGates, dim)
+    gateVectors: np.ndarray = field(default_factory=lambda: np.array([]))  # (nGates, dim)
+    gateRadius: np.ndarray = field(default_factory=lambda: np.array([]))  # (nGates)
+
+    arenaMin: np.ndarray = field(default_factory=lambda: np.array([]))
+    arenaMax: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    trackPoints: Optional[np.ndarray] = None
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.trackPoints is None and self.nGates > 0:
+            # sample simple centerline as linear points going through the gates
+            self.trackPoints = np.concatenate(
+                [
+                    np.linspace(
+                        self.gateCenters[i],
+                        self.gateCenters[(i + 1) % self.nGates],
+                        self.nTrackSamples // self.nGates + (i >= self.nGates - self.nTrackSamples % self.nGates),
+                    )
+                    for i in range(self.nGates)
+                ]
+            )
+
+        if self.arenaMin.shape == (0,):
+            self.arenaMin = np.min(self.gateCenters, axis=0) - np.max(self.gateRadius) * 5
+            self.arenaMax = np.max(self.gateCenters, axis=0) + np.max(self.gateRadius) * 5
 
 @dataclass
 class ControllerConfig:

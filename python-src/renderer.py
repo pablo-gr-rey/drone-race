@@ -1,3 +1,4 @@
+import io
 import os
 import time
 from typing import TYPE_CHECKING, Any, Optional
@@ -5,13 +6,16 @@ from typing import TYPE_CHECKING, Any, Optional
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.collections import LineCollection
+from matplotlib.gridspec import GridSpec
 from matplotlib.patches import Circle
+from matplotlib.text import Text
+from matplotlib.transforms import Bbox
 from matplotlib.widgets import Button, Slider, TextBox
 from PIL import Image
 from tqdm import tqdm
 
 if TYPE_CHECKING:
-    from environment import BaseEnvironment
+    from environment import GateEnvironment
 
 
 class EnvironmentRenderer:
@@ -21,36 +25,60 @@ class EnvironmentRenderer:
 
     def __init__(
         self,
-        env: "BaseEnvironment",
+        env: "GateEnvironment",
         axis=(0, 1),
         interval: int = 30,
         autoplay: bool = True,
         frameSkipPlayback: int = 2,
         frameSkipWaiting: int = 1,
         defaultZoomAgent: int = 0,
+        display_raceline: bool | list[bool] = True,
     ):
-        "interval: refresh rate. frameSkipWaiting: how many frames to skip if emitting states faster than we can display (use -1 to always display last frame)"
+        "interval: refresh rate. frameSkipWaiting: how many frames to skip if emitting states faster than we can display (use -1 to always display last frame). use defaultZoomAgent=-1 to start viewing full track, otherwise start zooming on agent"
         self.env = env
         self.axis = axis
         self.interval = interval
         self.frameSkipPlayback = frameSkipPlayback
         self.frameSkipWaiting = frameSkipWaiting
-        self.zoomAgent = defaultZoomAgent
         self.aspect_ratio = 1.5
 
         self.collision = False
         self.winner: Optional[int] = None
         self.outside: Optional[int] = None
 
+        if isinstance(display_raceline, bool):
+            display_raceline = [display_raceline] * env.config.nRaceLines
+        self.display_raceline = display_raceline
+
         plt.ion()
         plt.show()
 
-        self.fig, self.ax = plt.subplots(figsize=(5 * self.aspect_ratio, 6))
-        self.fig.tight_layout(pad=0.5)
-        plt.subplots_adjust(bottom=0.25)
+        self.fig = plt.figure(figsize=(12, 10))
+
+        gs = GridSpec(
+            2,
+            2,
+            figure=self.fig,
+            width_ratios=[3, 1],
+            height_ratios=[15, 1],
+            wspace=0,
+            hspace=0.1,
+            left=0.04,
+            right=0.96,
+            bottom=0.06,
+            top=0.96,
+        )
+
+        self.ax = self.fig.add_subplot(gs[0, 0])  # track ax
+
+        self.ax_status = self.fig.add_subplot(gs[0, 1])  # for text status
+        self.ax_status.axis("off")
+
+        # slider, empty space, play/pause, save gif, gif name, zoom, +/-, focus
+        gs_ui = gs[1, :].subgridspec(1, 8, width_ratios=[7, 1, 1, 1, 1, 1, 0.4, 1], wspace=0.1)
 
         # draw static background using environment hook
-        self.env.renderBackground(self.ax)
+        self.env.renderBackground(self.ax, display_raceline)
 
         # color maps and patch/marker colors
         self.cmaps = ["Blues", "Reds", "Greens", "Purples", "Oranges", "Greys", "YlOrBr", "BuPu"]
@@ -85,56 +113,86 @@ class EnvironmentRenderer:
         bmin, bmax = self.env.getBounds()
         self.ax.set_xlim(xmin=bmin[self.axis[0]], xmax=bmax[self.axis[0]])  # type: ignore
         self.ax.set_ylim(bmin[self.axis[1]], bmax[self.axis[1]])  # type: ignore
-        self.ax.set_aspect('equal', adjustable='box')
-        # self.ax.axis("equal")
+        self.ax.set_aspect("equal", adjustable="box")
         self.ax.legend()
 
         self.zoom_radius = 6
 
         # status text
-        if self.env.checkCollision():
-            text, color = "Collision", "red"
-        elif (winner := self.env.checkWinner()) is not None:
-            text, color = f"Winner: {winner + 1}", "green"
-        elif (outside := self.env.checkOutside()) is not None:
-            text, color = f"{outside + 1} outside", "red"
-        else:
-            text, color = "Running", "blue"
 
-        self.status_text = self.fig.text(0.5, 0.92, text, fontsize=12, ha="center", color=color)
+        self.status_text = self.ax_status.text(
+            0.5, 1.0, "Running...", fontsize=14, ha="center", va="top", transform=self.ax_status.transAxes
+        )
+
+        self.agent_value_texts: list[Text] = []
+        y_positions = 0.8 - np.arange(self.nAgents) * 0.15
+
+        for i in range(self.nAgents):
+            self.ax_status.text(
+                0.0,
+                y_positions[i],
+                f"Agent {i + 1}: ",
+                fontsize=12,
+                ha="left",
+                va="top",
+                color=self.colors[i % len(self.colors)],
+                fontweight="bold",
+                transform=self.ax_status.transAxes,
+            )
+
+            t_val = self.ax_status.text(
+                1.0,
+                y_positions[i],
+                "",
+                fontsize=12,
+                ha="right",
+                va="top",
+                color="black",
+                transform=self.ax_status.transAxes,
+            )
+            self.agent_value_texts.append(t_val)
 
         # UI: slider, play, save GIF, textbox and zoom
-        ax_slider = plt.axes((0.2, 0.1, 0.6, 0.03))
         max_idx = max(1, len(self.env.stateLog) - 1)
-        self.slider = Slider(ax_slider, "Time", 0, max_idx, valinit=0, valstep=1)
+        self.slider = Slider(self.fig.add_subplot(gs_ui[0]), "Time", 0, max_idx, valinit=0, valstep=1)
 
-        ax_button = plt.axes((0.8, 0.025, 0.1, 0.04))
-        self.button = Button(ax_button, "Pause")
+        self.pause_button = Button(self.fig.add_subplot(gs_ui[2]), "Pause")
+        self.pause_button.label.set_fontsize(10)
 
-        ax_save = plt.axes((0.35, 0.025, 0.12, 0.04))
-        self.save_button = Button(ax_save, "Save GIF")
+        self.save_button = Button(self.fig.add_subplot(gs_ui[3]), "Save GIF")
+        self.save_button.label.set_fontsize(10)
         self.save_button.set_active(False)
 
-        ax_text = plt.axes((0.15, 0.025, 0.2, 0.04))
-        self.text_box = TextBox(ax_text, "GIF name", initial="")
+        self.text_box = TextBox(self.fig.add_subplot(gs_ui[4]), "", initial="")
         self.text_box.ax.set_visible(False)  # type: ignore
 
-        ax_zoom_button = plt.axes((0.675, 0.025, 0.12, 0.04))
-        self.button_zoom = Button(ax_zoom_button, "Full track")
+        gs_zoom_buttons = gs_ui[6].subgridspec(2, 1, height_ratios=[1, 1])
 
-        ax_zoom_minus = plt.axes((0.5, 0.018, 0.025, 0.025))
-        self.zoom_minus_button = Button(ax_zoom_minus, "-")
+        self.zoom_minus_button = Button(self.fig.add_subplot(gs_zoom_buttons[1]), "-")
         self.zoom_minus_button.on_clicked(self.onZoomMinus)
 
-        ax_zoom_plus = plt.axes((0.5, 0.047, 0.025, 0.025))
-        self.zoom_plus_button = Button(ax_zoom_plus, "+")
+        self.zoom_plus_button = Button(self.fig.add_subplot(gs_zoom_buttons[0]), "+")
         self.zoom_plus_button.on_clicked(self.onZoomPlus)
 
-        self.zoom_agent_label = self.fig.text(0.6, 0.025, f"Focus: {self.zoomAgent + 1}", ha="center", va="bottom", fontsize=12)
+        if defaultZoomAgent == -1:
+            self.zoomAgent = 0
+            self.zoomed = False
+            zoomButtonText = "Zoom"
+        else:
+            self.zoomAgent = defaultZoomAgent
+            self.zoomed = True
+            zoomButtonText = "Full track"
+
+        self.button_zoom = Button(self.fig.add_subplot(gs_ui[5]), zoomButtonText)
+
+        ax_zoom_label = self.fig.add_subplot(gs_ui[7])
+        ax_zoom_label.axis("off")
+        self.zoom_agent_label = ax_zoom_label.text(
+            0.5, 0.5, f"Focus: {self.zoomAgent + 1}", ha="center", va="center", fontsize=10
+        )
 
         # internal state
         self.playing = False
-        self.zoomed = True
         self.slider_is_updating = False
         self.current_index = 0
 
@@ -146,7 +204,7 @@ class EnvironmentRenderer:
 
         # connect callbacks
         self.slider.on_changed(self.sliderChanged)
-        self.button.on_clicked(self.tooglePlay)
+        self.pause_button.on_clicked(self.tooglePlay)
         self.save_button.on_clicked(self.askSavePath)
         self.button_zoom.on_clicked(self.toogleZoom)
         self.fig.canvas.mpl_connect("key_press_event", self.onKeyPress)
@@ -201,14 +259,21 @@ class EnvironmentRenderer:
             bmin, bmax = self.env.getBounds()
             self.ax.set_xlim(bmin[self.axis[0]], bmax[self.axis[0]])  # type: ignore
             self.ax.set_ylim(bmin[self.axis[1]], bmax[self.axis[1]])  # type: ignore
-        self.ax.set_aspect('equal', adjustable='box')
+        self.ax.set_aspect("equal", adjustable="box")
+
+        self.updateStatus(i)
 
         # update slider value without triggering callback
         self.slider_is_updating = True
         self.slider.set_val(i)
         self.slider_is_updating = False
 
-        # update status text
+        self.lastRenderTime = time.perf_counter()
+
+    def updateStatus(self, i: Optional[int] = None) -> None:
+        if i is None:
+            i = self.current_index
+
         if self.collision:
             self.status_text.set_text("Collision")
             self.status_text.set_color("red")
@@ -222,7 +287,13 @@ class EnvironmentRenderer:
             self.status_text.set_text("Truncated")
             self.status_text.set_color("orange")
 
-        self.lastRenderTime = time.perf_counter()
+        for iAgent in range(self.nAgents):
+            state, (_, laps, gates) = self.env.stateLog[i], self.env.addStateLog[i]  # type: ignore
+            speed = np.linalg.norm(state[iAgent * self.env.config.dim * 2 + 1 : (iAgent + 1) * self.env.config.dim * 2 : 2])
+
+            self.agent_value_texts[iAgent].set_text(
+                f"Lap {int(laps[iAgent])}/{self.env.config.nWinLaps} Gate {int(gates[iAgent])}/{self.env.config.nGates}\nSpeed {speed:.2f}"
+            )
 
     def onNewState(self) -> None:
         # Called by the environment when a new frame is available
@@ -305,7 +376,7 @@ class EnvironmentRenderer:
 
     def tooglePlay(self, event: Any, isFirst: bool = False) -> None:
         self.playing = not self.playing
-        self.button.label.set_text("Play" if not self.playing else "Pause")  # type: ignore
+        self.pause_button.label.set_text("Play" if not self.playing else "Pause")  # type: ignore
 
         if self.playing:
             # if at end, restart
@@ -355,10 +426,23 @@ class EnvironmentRenderer:
         for i in tqdm(range(n), desc=f"Capturing frames for {name}", unit="frame"):
             self.updateDisplay(i)
             self.fig.canvas.draw()
-            w, h = self.fig.canvas.get_width_height()
-            buf = np.frombuffer(self.fig.canvas.tostring_rgb(), dtype=np.uint8)  # type: ignore
-            buf = buf.reshape((h, w, 3))
-            imgs.append(Image.fromarray(buf))
+
+            axes_to_capture = [self.ax, self.ax_status]
+            bboxes = [a.get_window_extent().transformed(self.fig.dpi_scale_trans.inverted()) for a in axes_to_capture]
+            full_bbox = Bbox.union(bboxes).padded(0.5)
+
+            buf = io.BytesIO()
+            self.fig.savefig(buf, format="png", bbox_inches=full_bbox, pad_inches=0)
+            buf.seek(0)
+
+            img = Image.open(buf)
+            imgs.append(img.convert("RGB"))
+            buf.close()
+
+            # w, h = self.fig.canvas.get_width_height()
+            # buf = np.frombuffer(self.fig.canvas.tostring_rgb(), dtype=np.uint8)  # type: ignore
+            # buf = buf.reshape((h, w, 3))
+            # imgs.append(Image.fromarray(buf))
 
         try:
             print(f"Saving animation to {save_path}...")

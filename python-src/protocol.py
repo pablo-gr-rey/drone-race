@@ -6,9 +6,9 @@ from typing import Any, Optional
 import numpy as np
 import zmq
 from controllers import DummyController
-from environment import TrackEnvironment
+from environment import GateEnvironment
 from renderer import EnvironmentRenderer
-from utils import EVENT_TYPE, MSG_TYPE, ControllerConfig, TrackEnvironmentConfig
+from utils import EVENT_TYPE, MSG_TYPE, ControllerConfig, GateEnvironmentConfig, PIDConfig
 
 
 class BytePacker:
@@ -97,7 +97,6 @@ def encodeConfig(config: Any, msg_type: Optional[int] = None, warn=True, log=Fal
     if log:
         print(f"Encoding {type(config)}...")
 
-    # for val, field in zip(dataclasses.astuple(config), dataclasses.fields(config)):
     for field in dataclasses.fields(config):
         val = getattr(config, field.name)
         # avoid numeric issues: it's important to send the correct type! (ie. trackWidth=2 instead of 2.0 is wrongly sent as int and reinterpreted as messy float)
@@ -114,15 +113,15 @@ def encodeConfig(config: Any, msg_type: Optional[int] = None, warn=True, log=Fal
         if isinstance(val, ControllerConfig):
             encodeConfig(val, None, warn, log, p)
         elif not p.pushObj(val) and warn:
-            print(f"Cannot pack field {field.name} name {val} of type {type(val)}")
+            print(f"Cannot pack field {field.name} of type {type(val)} value {val} ")
 
     return p
 
 
-def unpackState(unpack: ByteUnpacker) -> tuple[int, np.ndarray, np.ndarray, np.ndarray]:
-    "Return (step, physState, currentS, nLaps) from bytes"
+def unpackState(unpack: ByteUnpacker) -> tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    "Return (step, physState, currentS, nLaps, nGates) from bytes"
 
-    ans = unpack.readInt(), unpack.readArray(), unpack.readArray(), unpack.readArray()
+    ans = unpack.readInt(), unpack.readArray(), unpack.readArray(), unpack.readArray(), unpack.readArray()
     unpack.assert_finished()
 
     return ans
@@ -137,14 +136,22 @@ class ZMQRecv:
         self.stateLog: list[np.ndarray] = []
 
     def runSim(
-        self, config: TrackEnvironmentConfig, cont_configs: list[ControllerConfig], render: bool = True
+        self, config: GateEnvironmentConfig, cont_configs: list[ControllerConfig], render: bool = True
     ) -> tuple[EVENT_TYPE, int]:
         names = [cfg.getDefaultName() for cfg in cont_configs]
 
-        env = TrackEnvironment(config, [DummyController(config, names[i]) for i in range(config.nAgents)])
+        env = GateEnvironment(config, [DummyController(config, names[i]) for i in range(config.nAgents)])
 
         if render:
-            renderer = EnvironmentRenderer(env, interval=0, frameSkipWaiting=5, frameSkipPlayback=2, defaultZoomAgent=0)
+            # only display the racelines which are actually used
+            used = [False] * config.nRaceLines
+            for cfg in cont_configs:
+                if isinstance(cfg, PIDConfig) and cfg.racelineIndex >= 0:
+                    used[cfg.racelineIndex] = True
+
+            renderer = EnvironmentRenderer(
+                env, interval=0, frameSkipWaiting=5, frameSkipPlayback=2, defaultZoomAgent=-1, display_raceline=used
+            )
         else:
             renderer = None
 
@@ -170,7 +177,10 @@ class ZMQRecv:
                 or not np.all(np.isclose(first_state[1], config.init_state))
                 or not np.all(np.isclose(first_state[2], config.add_state[0]))  # type: ignore
                 or not np.all(np.isclose(first_state[3], config.add_state[1]))  # type: ignore
+                or not np.all(np.isclose(first_state[4], config.add_state[2]))  # type: ignore
             ):
+                print(first_state)
+                print(config.init_state, config.add_state)
                 raise ValueError("First state sent back by C++ side did not match expected first state")
 
         result = None
@@ -183,7 +193,7 @@ class ZMQRecv:
                 print("Received unexpected header message from C++")
 
             elif msg_type == MSG_TYPE.MSG_STATE:
-                step, phys, newS, newLaps = unpackState(unpack)
+                step, phys, newS, newLaps, newGates = unpackState(unpack)
 
                 # print(f"received step {step}")
 
@@ -191,7 +201,7 @@ class ZMQRecv:
                     print(f"expected step number {len(env.stateLog)} but received step {step}")
 
                 env.stateLog.append(phys)
-                env.addStateLog.append((newS, newLaps))
+                env.addStateLog.append((newS, newLaps, newGates))
                 if renderer is not None:
                     renderer.onNewState()
 

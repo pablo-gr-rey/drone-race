@@ -3,10 +3,11 @@ from abc import ABC, abstractmethod
 from types import NoneType
 from typing import Generic, Optional
 
-import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.collections import LineCollection
+from matplotlib.pyplot import Axes  # type: ignore
 from renderer import EnvironmentRenderer
-from utils import AddStateType, ConfigType, Controller, SimpleEnvironmentConfig, TrackEnvironmentConfig
+from utils import AddStateType, ConfigType, Controller, GateEnvironmentConfig, SimpleEnvironmentConfig, TrackEnvironmentConfig
 
 
 class BaseEnvironment(ABC, Generic[ConfigType, AddStateType]):
@@ -42,7 +43,7 @@ class BaseEnvironment(ABC, Generic[ConfigType, AddStateType]):
         self._renderer = None
         if self.live_render:
             # EnvironmentRenderer is defined later in this file; instantiate lazily
-            self._renderer = EnvironmentRenderer(self)
+            self._renderer = EnvironmentRenderer(self)  # type: ignore
             # show non-blocking window for live updates
             self._renderer.show()
 
@@ -181,7 +182,7 @@ class BaseEnvironment(ABC, Generic[ConfigType, AddStateType]):
         ...
 
     @abstractmethod
-    def renderBackground(self, ax: plt.Axes) -> None: ...
+    def renderBackground(self, ax: Axes) -> None: ...
 
     def render(self, axis=(0, 1)) -> None:
         "Render the position of the drones (supports arbitrary number of agents). This function is blocking; for live rendering, provide live_render=True at initialization"
@@ -189,7 +190,7 @@ class BaseEnvironment(ABC, Generic[ConfigType, AddStateType]):
             warnings.warn("Should not call Environment.render() when live rendering is active")
             return
 
-        renderer = EnvironmentRenderer(self, axis, autoplay=False)
+        renderer = EnvironmentRenderer(self, axis, autoplay=False)  # type: ignore  # renderer is now only compatible with gate environment... TODO: just delete everything else
         renderer.finish()
         return
 
@@ -234,7 +235,7 @@ class SimpleEnvironment(BaseEnvironment[SimpleEnvironmentConfig, NoneType]):
         distToMax = self.config.arenaMax - block[::2]
         return min(np.min(distToMin), np.min(distToMax))  # type: ignore
 
-    def renderBackground(self, ax: plt.Axes) -> None:
+    def renderBackground(self, ax: Axes) -> None:
         # draw the gate
         ax.plot([-self.config.gateRadius, self.config.gateRadius], [0, 0], color="green", linewidth=5)
 
@@ -344,7 +345,7 @@ class TrackEnvironment(BaseEnvironment[TrackEnvironmentConfig, tuple[np.ndarray,
 
         return state, (newS, newLaps)
 
-    def renderBackground(self, ax: plt.Axes) -> None:
+    def renderBackground(self, ax: Axes) -> None:
         trackPoints = self.trackPoints[: self.config.nTrackSamples, :]
 
         dpts = np.gradient(trackPoints, axis=0)
@@ -367,3 +368,69 @@ class TrackEnvironment(BaseEnvironment[TrackEnvironmentConfig, tuple[np.ndarray,
         ax.plot(right[:, 0], right[:, 1], "black", linewidth=2)
 
         ax.plot([left[0, 0], right[0, 0]], [left[0, 1], right[0, 1]], "purple", linewidth=1)
+
+
+class GateEnvironment(BaseEnvironment[GateEnvironmentConfig, tuple[np.ndarray, np.ndarray, np.ndarray]]):
+    # additional state is (currentS, nLaps, nGates)
+    # this environment cannot be used on the Python side (methods are not implemented), it is meant to be used through cuda and rendered only
+    def __init__(
+        self,
+        config: GateEnvironmentConfig,
+        controllers: list[Controller],
+        *,
+        live_render: bool = False,
+    ):
+        super().__init__(config, controllers, live_render=live_render)
+
+    def initAddState(
+        self,
+        add_state: tuple[np.ndarray, np.ndarray, np.ndarray] | None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if add_state is None:
+            # we should properly project here to have a meaningful s, hopefully it will correct itself (this is only a fallback anyway)
+            return np.zeros(self.config.nAgents), np.zeros(self.config.nAgents), np.zeros(self.config.nAgents)
+        return add_state
+
+    def checkOutside(
+        self, state: np.ndarray | None = None, addState: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+    ) -> int | None: ...
+
+    def checkWinner(
+        self, state: np.ndarray | None = None, addState: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+    ) -> int | None: ...
+
+    def checkCollision(
+        self, state: np.ndarray | None = None, addState: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+    ) -> bool: ...
+
+    def getTarget(
+        self, agent: int, state: np.ndarray | None = None, addState: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+    ) -> np.ndarray: ...
+
+    def getAdvance(
+        self, agent: int, state: np.ndarray | None = None, addState: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+    ) -> float: ...
+
+    def closestBoundaryDist(
+        self, agent: int, state: np.ndarray | None = None, addState: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+    ) -> float: ...
+
+    def getBounds(self) -> tuple[np.ndarray, np.ndarray]:
+        return self.config.arenaMin, self.config.arenaMax
+
+    def renderBackground(self, ax: Axes, display_raceline: Optional[list[bool]] = None) -> None:
+        # draw gates
+        gatePts: list[list] = []
+        for i in range(self.config.nGates):
+            if self.config.dim == 2:
+                vec = self.config.gateRadius[i] * np.array([-self.config.gateVectors[i, 1], self.config.gateVectors[i, 0]])
+                gatePts.append([self.config.gateCenters[i] - vec, self.config.gateCenters[i] + vec])
+            lc = LineCollection(gatePts, colors=[1.0, 0.0, 0.0, 1.0], linewidth=3)
+            ax.add_collection(lc)
+
+        # draw race lines
+        if self.config.trackPoints is not None:
+            for i in range(self.config.nRaceLines):
+                if display_raceline is None or display_raceline[i]:
+                    pts = self.config.trackPoints[i * self.config.nTrackSamples : (i + 1) * self.config.nTrackSamples, :]
+                    ax.plot(pts[:, 0], pts[:, 1], "g--", alpha=0.5)

@@ -21,7 +21,7 @@ from matplotlib.colors import BoundaryNorm, ListedColormap
 from matplotlib.patches import Patch
 from protocol import EVENT_TYPE, MSG_TYPE, ByteUnpacker, ZMQRecv, encodeConfig, unpackState
 from tqdm import tqdm
-from utils import ControllerConfig, DummyConfig, lissajous
+from utils import ControllerConfig, DummyConfig, GateEnvironmentConfig, circularGateTrack, lissajous
 
 
 class NpJsonEncoder(json.JSONEncoder):
@@ -483,8 +483,116 @@ def plotSensResults(collDistFactor: float = 1, fastMPPI: bool = True):
     plt.show()
 
 
+def mainGate():
+    nAgents = 2
+    # nAgents = 1
+    dim = 2
+    nTrackSamples = 1000
+    racelineWidth = 3
+    trackRadius = 8
+
+    centerline: Callable[[float], np.ndarray] = lambda s: lissajous(s, 10, 2, 8)  # noqa: E731
+    # centerline: Callable[[float], np.ndarray] = lambda s: flower(s, 10.0, 2.0)
+
+    startS = np.linspace(0.2, 0, nAgents)
+
+    nGates = 5
+    # gateCenters = np.array([[0, 0], [3, 3], [0, 6], [-3, 3]])
+    # gateVectors = np.array([[1, 0], [0, 1], [-1, 0], [0, -1]])
+    # gateRadius = np.ones(nGates)
+
+    gateCenters, gateVectors, gateRadius = circularGateTrack(nGates, trackRadius, 1, None if dim == 2 else 0.0)
+
+    config = GateEnvironmentConfig(
+        nAgents=nAgents,
+        dim=dim,
+        nRaceLines=1,
+        nWinLaps=2,
+        nGates=nGates,
+        maxSpeed=np.linspace(2, 3, nAgents),
+        maxAccel=np.linspace(3, 5, nAgents),
+        nTrackSamples=nTrackSamples,
+        targetDistance=0.05,
+        gateCenters=gateCenters,
+        gateVectors=gateVectors,
+        gateRadius=gateRadius,
+        minDist=1.5,
+    )
+
+    assert config.trackPoints is not None  # it is built automatically in GateEnvironmentConfig
+
+    # add init state and add_state
+    config.init_state = np.array(
+        [np.stack([config.trackPoints[int(s * config.nTrackSamples)], np.zeros(dim)], axis=1).flatten() for s in startS]
+    ).flatten()
+    config.add_state = startS, np.zeros(nAgents), np.array([int(s * nGates) for s in startS], dtype=np.float32)
+
+    angles = np.linspace(0, 2 * np.pi, config.nTrackSamples, endpoint=False)
+
+    config.nRaceLines = 2
+    config.trackPoints = np.concat(
+        [config.trackPoints, np.stack([trackRadius * np.cos(angles), trackRadius * np.sin(angles)], axis=1)]
+    )
+
+    print(config.add_state)
+
+    mppiconfig = MPPIConfig(
+        nSamples=10000,
+        nTimesteps=60,
+        inv_temperature=2,
+        samplingNoise=3,
+        # collDistFactor=1.5,
+        collDistFactor=1,
+        finalAdvWeight=200,
+        # finalAdvWeight=0,
+        # finalSpeedWeight=50,
+        finalSpeedWeight=0,
+        # oppDistWeight=0.01,
+        oppDistWeight=0.0,
+        oppDistThresholdFactor=2,
+        finalOppAdvWeight=0,
+        # boundaryCost=0.01,
+        boundaryCost=0.0,
+        boundaryThresholdFactor=2,
+        oppOutsideCost=0,
+        # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
+        outsideCost=10000,
+        collisionCost=10000,
+        winCost=10000,
+    )
+
+    pidconfig = PIDConfig(kp=5, kd=20, repulsionFactor=20, racelineIndex=1)
+
+    dummyconfig = DummyConfig()
+
+    # mppiconfig.opponentConfig = blindpidconfig
+    mppiconfig.opponentConfig = pidconfig
+    # mppiconfig.opponentConfig = dummyconfig
+    # mppiconfig2.opponentConfig = pidconfig
+    # mppiconfig.opponentConfig = blindpidconfig
+
+    # cont_configs: list[ControllerConfig] = [mppiconfig, pidconfig]
+    cont_configs: list[ControllerConfig] = [pidconfig, mppiconfig]
+    # cont_configs: list[ControllerConfig] = [blindpidconfig, mppiconfig]
+    # cont_configs: list[ControllerConfig] = [mppiconfig, mppiconfig2]
+    # cont_configs: list[ControllerConfig] = [mppiconfig, blindpidconfig]
+    # cont_configs: list[ControllerConfig] = [mppiconfig, blindpidconfig]
+    # cont_configs: list[ControllerConfig] = [mppiconfig] + [pidconfig] * (nAgents - 1)  # type: ignore
+
+    config.sendStates = True
+
+    z = ZMQRecv()
+
+    evt, res = z.runSim(config, cont_configs, render=config.sendStates)
+
+    print(f"result: {evt.name} {res}")
+
+    z.close()
+
+
 if __name__ == "__main__":
-    mainZMQ()
+    # mainZMQ()
+    mainGate()
     # buildOptimalRaceline()
     # computeResults(1, False)
     # plotResults(1, False)
