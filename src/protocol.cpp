@@ -40,7 +40,7 @@ std::vector<int> Reader::readIntArray()
     std::vector<float> arr = readFloatArray();
     std::vector<int> ans(arr.size());
 
-    for (int i = 0; i < arr.size(); i++)
+    for (size_t i = 0; i < arr.size(); i++)
         ans[i] = std::round(arr[i]);
 
     return ans;
@@ -83,7 +83,7 @@ void Writer::pushIntArray(const std::vector<int>& arr)
 {
     std::vector<float> n(arr.size());
 
-    for (int i = 0; i < arr.size(); i++)
+    for (size_t i = 0; i < arr.size(); i++)
         n[i] = arr[i];
 
     pushFloatArray(n);

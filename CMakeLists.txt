@@ -1,10 +1,12 @@
 cmake_minimum_required(VERSION 3.18)
 project(drone_race LANGUAGES CXX CUDA)
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CUDA_STANDARD 20)
 
-set(ENV{PKG_CONFIG_PATH} "~/.local/lib/pkgconfig")
+list(APPEND CMAKE_PREFIX_PATH $ENV{CONDA_PREFIX})
+
+# set(ENV{PKG_CONFIG_PATH} "~/.local/lib/pkgconfig")
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -32,7 +34,7 @@ add_executable(drone_race
 
 target_compile_features(drone_race PRIVATE cxx_std_20)
 
-target_include_directories(drone_race PRIVATE include proto ${ZMQ_INCLUDE_DIRS})
+target_include_directories(drone_race PRIVATE include proto ${ZMQ_INCLUDE_DIRS} ${CUDAToolkit_INCLUDE_DIRS})
 target_link_directories(drone_race PRIVATE ${ZMQ_LIBRARY_DIRS})
 target_link_libraries(drone_race PRIVATE
     CUDA::curand CUDA::cudart

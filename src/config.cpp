@@ -2,13 +2,13 @@
 #include <iostream>
 #include <format>
 
-static void print_vector(std::string name, std::vector<float> vec)
-{
-    std::cout << name << " size " << vec.size() << "\t";
-    for (float v : vec)
-        std::cout << v << " ";
-    std::cout << "\n";
-}
+// static void print_vector(std::string name, std::vector<float> vec)
+// {
+//     std::cout << name << " size " << vec.size() << "\t";
+//     for (float v : vec)
+//         std::cout << v << " ";
+//     std::cout << "\n";
+// }
 
 void EnvironmentConfig::unpackHeader(const void* buf, size_t len)
 {

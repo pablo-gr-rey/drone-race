@@ -1,4 +1,4 @@
-.venv/*
+.vscode/*
 build/*
 python-src/__pycache__/*
 gifs/*
@@ -7,3 +7,4 @@ figures/*
 data/*
 
 *.md
+!README.md
