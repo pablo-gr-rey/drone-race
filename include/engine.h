@@ -21,8 +21,6 @@ public:
     void run(int maxSteps, zmq::socket_t& sock);
 
     std::vector<float> getTarget(int agent, const float* S, int racelineIndex) const;
-    float getAdvance(int agent, const float* S, const float* laps) const;
-    float closestBoundaryDist(int agent, const float* phys) const;
 
     // public config & track data
     EnvironmentConfig envConfig;
@@ -31,12 +29,13 @@ private:
     // state
     std::vector<float> phys_state;   // (nAgents * dim * 2) physical state (x1 vx1 y1 vy1 .. x2 vx2 ...)
     std::vector<float> currentS;    // (nAgents) current S 
-    std::vector<float> nLaps;       // (nAgents) current number of laps
+    std::vector<int> nLaps;       // (nAgents) current number of laps
+    std::vector<int> currentGates;  // (nAgents) current number of gates passed (1 = we already went through gates[0], now we aim at gates[1])
 
-    // new state (for the computation)
-    std::vector<float> new_phys_state;   // (nAgents * dim * 2) new physical state (x1 vx1 y1 vy1 .. x2 vx2 ...)
-    std::vector<float> new_currentS;    // (nAgents) new current S 
-    std::vector<float> new_nLaps;       // (nAgents) new current number of laps
+    // stop reason
+    bool hasCollision;
+    int isOutside;      // -1 = none
+    int isWinner;       // -1 = none
 
     // controllers
     std::vector<std::unique_ptr<Controller>> controllers;
@@ -54,8 +53,11 @@ private:
     int  checkOutside()   const;  // -1 = none
     int  checkWinner()    const;  // -1 = none
 
-    // stop reason
-    bool hasCollision;
-    int isOutside;      // -1 = none
-    int isWinner;       // -1 = none
+    // track utils
+
+    // return the centerline sampled at given s
+    std::vector<float> cpuSampleCenterline(float s, int racelineIndex) const;
+
+    // return the closest S and the distance to it for the given pos. allows specifying a stride on reading (useful for phys state)
+    std::pair<float, float> cpuProjectOnTrack(const std::vector<float>& state, int iAgent) const;
 };

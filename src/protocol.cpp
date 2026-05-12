@@ -1,6 +1,7 @@
 #include "protocol.h"
 #include <stdexcept>
 #include <cstring>
+#include <cmath>
 
 Reader::Reader(const void* buffer, size_t s) : data((const uint8_t*) buffer), size(s) {}
 
@@ -34,6 +35,17 @@ std::vector<float> Reader::readFloatArray()
     return out;
 }
 
+std::vector<int> Reader::readIntArray()
+{
+    std::vector<float> arr = readFloatArray();
+    std::vector<int> ans(arr.size());
+
+    for (int i = 0; i < arr.size(); i++)
+        ans[i] = std::round(arr[i]);
+
+    return ans;
+}
+
 void Reader::assertFinished()
 {
     if (offset != size)
@@ -65,4 +77,14 @@ void Writer::pushFloatArray(const std::vector<float>& arr)
         const auto* p = reinterpret_cast<const uint8_t*>(arr.data());
         data.insert(data.end(), p, p + arr.size() * sizeof(float));
     }
+}
+
+void Writer::pushIntArray(const std::vector<int>& arr)
+{
+    std::vector<float> n(arr.size());
+
+    for (int i = 0; i < arr.size(); i++)
+        n[i] = arr[i];
+
+    pushFloatArray(n);
 }

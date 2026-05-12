@@ -3,7 +3,6 @@
 #include "config.h"
 #include "device_config.cuh"
 #include "state.h"
-#include "rollout.cuh"
 #include "kernels.cuh"
 
 #include <cuda_runtime.h>
@@ -20,6 +19,7 @@
 // Construction
 MPPIController::MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc)
 {
+    std::cout << "MPPI INIT" << std::endl;
     name = "MPPI";
     envConfig = &c;
     mppiCfg = mc;
@@ -62,12 +62,14 @@ void MPPIController::allocDevice()
     // Single authoritative state (uploaded each call)
     CUDA_CHECK(cudaMalloc(&d_phys, c.physDim * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_S, c.nAgents * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_laps, c.nAgents * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_laps, c.nAgents * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_currentGates, c.nAgents * sizeof(int)));
 
     // Final state output buffers (one per sample, optional / for debug)
     CUDA_CHECK(cudaMalloc(&d_sampPhys, (size_t) N * c.physDim * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_sampS, (size_t) N * c.nAgents * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_sampLaps, (size_t) N * c.nAgents * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_sampLaps, (size_t) N * c.nAgents * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_sampGates, (size_t) N * c.nAgents * sizeof(int)));
 
     // Noise: (T, N, dim)
     CUDA_CHECK(cudaMalloc(&d_noise, (size_t) T * N * c.dim * sizeof(float)));
@@ -97,7 +99,7 @@ void MPPIController::allocDevice()
 
     // allocate temp storage for min reduce
 
-    // First call: get temporary storage size
+    // get temporary storage size for min reduce
     cub::DeviceReduce::Min(
         nullptr,
         temp_storage_bytes,
@@ -127,18 +129,22 @@ void MPPIController::uploadTrack()
 
 void MPPIController::freeDevice()
 {
-    auto fr = [](float*& p) { if (p) { cudaFree(p); p = nullptr; } };
-    fr(d_phys);
-    fr(d_S);
-    fr(d_laps);
-    fr(d_sampPhys);
-    fr(d_sampS);
-    fr(d_sampLaps);
-    fr(d_noise);
-    fr(d_costs);
-    fr(d_nominal);
-    fr(d_minCost);
-    fr(d_trackPts);
+    auto free_float = [](float*& p) { if (p) { cudaFree(p); p = nullptr; } };
+    auto free_int = [](int*& p) { if (p) { cudaFree(p); p = nullptr; } };
+
+    free_float(d_phys);
+    free_float(d_S);
+    free_int(d_laps);
+    free_int(d_currentGates);
+    free_float(d_sampPhys);
+    free_float(d_sampS);
+    free_int(d_sampLaps);
+    free_int(d_sampGates);
+    free_float(d_noise);
+    free_float(d_costs);
+    free_float(d_nominal);
+    free_float(d_minCost);
+    free_float(d_trackPts);
     if (d_rng)
     {
         cudaFree(d_rng);
@@ -162,7 +168,8 @@ void MPPIController::reset()
 void MPPIController::getControl(int agent,
     const float* phys,
     const float* S,
-    const float* laps,
+    const int* laps,
+    const int* currentGates,
     float* outAction)
 {
     if (!engine)
@@ -181,42 +188,39 @@ void MPPIController::getControl(int agent,
     int blk = 256;
     int grd = (N + blk - 1) / blk;
 
-    // ── 1. Upload current authoritative state (tiny transfer) ────────
-    CUDA_CHECK(cudaMemcpy(d_phys, phys,
-        c.physDim * sizeof(float), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_S, S,
-        c.nAgents * sizeof(float), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_laps, laps,
-        c.nAgents * sizeof(float), cudaMemcpyHostToDevice));
+    // 1. upload current state
+    CUDA_CHECK(cudaMemcpy(d_phys, phys, c.physDim * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_S, S, c.nAgents * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_laps, laps, c.nAgents * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_currentGates, currentGates, c.nAgents * sizeof(int), cudaMemcpyHostToDevice));
 
-    // ── 2. Generate all noise at once: (T, N, dim) ───────────────────
+    // 2. generate all noise at once: (T, N, dim)
     generateNoiseKernel << <grd, blk >> > (
         d_noise, d_rng,
         mppiCfg.samplingNoise,
         T, N, dim);
 
-    // ── 3. Full rollout — single kernel, each thread = one sample ────
+    // 3. Full rollout - single kernel, each thread = one sample
     //    Each thread loads the shared initial state into registers,
     //    loops over T timesteps (dynamics + opponent prediction + cost),
-    //    then writes out total cost (and optionally final state).
+    //    then writes out total cost and final state
     fullRolloutKernel << <grd, blk >> > (
         agent,
         deviceEnvConfig,
         deviceMPPIConfig,
         oppModel, oppPidParams,
-        d_phys, d_S, d_laps,         // initial state (broadcast by reads)
+        d_phys, d_S, d_laps, d_currentGates,         // initial state (broadcast by reads)
         d_nominal,                      // (T, dim)
         d_noise,                        // (T, N, dim)
         d_costs,                        // (N,) output: total cost per sample
-        d_sampPhys, d_sampS, d_sampLaps, // (N, ...) output: final states
+        d_sampPhys, d_sampS, d_sampLaps, d_sampGates, // (N, ...) output: final states
         d_rng,
         d_trackPts, nTP,
         N);
 
-    // ── 4. Find minimum cost (parallel reduction) ────────────────────
+    // 4. find minimum cost (parallel reduction)
     float initMin = FLT_MAX;
-    CUDA_CHECK(cudaMemcpy(d_minCost, &initMin, sizeof(float),
-        cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_minCost, &initMin, sizeof(float), cudaMemcpyHostToDevice));
 
     // int rGrid = (N + blk * 2 - 1) / (blk * 2);
     // minReduceKernel << <rGrid, blk, blk * sizeof(float) >> > (
@@ -224,12 +228,11 @@ void MPPIController::getControl(int agent,
     minReduceCUB(d_costs, d_minCost, N, d_temp_storage, temp_storage_bytes);
 
     float hostMin;
-    CUDA_CHECK(cudaMemcpy(&hostMin, d_minCost, sizeof(float),
-        cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(&hostMin, d_minCost, sizeof(float), cudaMemcpyDeviceToHost));
 
     // printf("minimum cost: %f\n", hostMin);
 
-    // ── 5. Weighted average of noise → update nominal action ─────────
+    // 5. Weighted average of noise -> update nominal action
     //    One block per (timestep × dim) entry.
     int wGrid = T * dim;
     weightedAverageKernel << <wGrid, blk, 2 * blk * sizeof(float) >> > (
@@ -237,18 +240,20 @@ void MPPIController::getControl(int agent,
         hostMin, mppiCfg.invTemperature,
         N, T, dim);
 
-    // ── 6. Download updated nominal action sequence ──────────────────
+    // 6. Download updated nominal action sequence
     std::vector<float> buf(T * dim);
-    CUDA_CHECK(cudaMemcpy(buf.data(), d_nominal,
-        T * dim * sizeof(float),
-        cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(buf.data(), d_nominal, T * dim * sizeof(float), cudaMemcpyDeviceToHost));
 
     // First timestep's action is the output
     for (int d = 0; d < dim; d++)
         outAction[d] = buf[d];
 
-    // ── 7. Shift nominal action sequence left by one timestep ────────
-    //    (warm-start for next call)
+    // printf("Minimum cost: %f, out action: ", hostMin);
+    // for (int d = 0; d < dim; d++)
+    //     printf("%.5f", outAction[d]);
+    // printf("\n");
+
+    // 7. Shift nominal action sequence left by one timestep (warm-start for next call)
     h_nominal.assign(buf.begin(), buf.end());
 
     for (int t = 0; t < T - 1; t++)

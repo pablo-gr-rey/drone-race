@@ -20,11 +20,7 @@ public:
     virtual ~Controller() = default;
 
     // Writes `dim` floats into outAction.
-    virtual void getControl(int agent,
-        const float* phys,
-        const float* S,
-        const float* laps,
-        float* outAction) = 0;
+    virtual void getControl(int agent, const float* phys, const float* S, const int* laps, const int* currentGates, float* outAction) = 0;
 
     virtual void reset() {}
 };
@@ -34,9 +30,7 @@ class DummyController : public Controller
 {
 public:
     explicit DummyController(const EnvironmentConfig& c);
-    void getControl(int agent, const float* phys,
-        const float* S, const float* laps,
-        float* outAction) override;
+    void getControl(int agent, const float* phys, const float* S, const int* laps, const int* currentGates, float* outAction) override;
 };
 
 // ── PID ──────────────────────────────────────────────────────────────
@@ -44,9 +38,7 @@ class PIDController : public Controller
 {
 public:
     PIDController(const EnvironmentConfig& c, const PIDConfig& p);
-    void getControl(int agent, const float* phys,
-        const float* S, const float* laps,
-        float* outAction) override;
+    void getControl(int agent, const float* phys, const float* S, const int* laps, const int* currentGates, float* outAction) override;
 
     PIDConfig params;
 };
@@ -57,9 +49,7 @@ class MPPIController : public Controller
 public:
     MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc);
     ~MPPIController();
-    void getControl(int agent, const float* phys,
-        const float* S, const float* laps,
-        float* outAction) override;
+    void getControl(int agent, const float* phys, const float* S, const int* laps, const int* currentGates, float* outAction) override;
     void reset() override;
 
     MPPIConfig mppiCfg;
@@ -73,10 +63,12 @@ private:
     // device memory
     float* d_phys = nullptr;   // (physDim) - initial single current state
     float* d_S = nullptr;      // (nAgents) - initial advance along the track
-    float* d_laps = nullptr;   // (nAgents) - initial number of laps
+    int* d_laps = nullptr;   // (nAgents) - initial number of laps
+    int* d_currentGates = nullptr;    // (nAgents) - initial gate progression
     float* d_sampPhys = nullptr;  // (N, physDim) - final state (optional?)
     float* d_sampS = nullptr;  // (N, nAgents) - final advance along the track 
-    float* d_sampLaps = nullptr;  // (N, nAgents) - final number of laps
+    int* d_sampLaps = nullptr;  // (N, nAgents) - final number of laps
+    int* d_sampGates = nullptr; // (N, nAgents) - final gate progression
     float* d_newPhys = nullptr;
     float* d_newS = nullptr;
     float* d_newLaps = nullptr;

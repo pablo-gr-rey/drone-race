@@ -8,6 +8,8 @@ struct DeviceEnvironmentConfig
     int dim;
     float dt;
 
+    int nGates;
+
     float minDist;
     float posNoiseLevel;
     float speedNoiseLevel;
@@ -16,13 +18,21 @@ struct DeviceEnvironmentConfig
     float maxSpeed[MAX_AGENTS];
     float maxAccel[MAX_AGENTS];
 
-    float trackWidth;
     int nTrackSamples;
     int nWinLaps;
     float targetDistance;
 
+    // track points are directly allocated on the device
+
     int physDim;
     int actionDim;
+
+    float gateCenters[MAX_GATES * MAX_DIM];
+    float gateVectors[MAX_GATES * MAX_DIM];
+    float gateRadius[MAX_GATES];
+
+    float arenaMin[MAX_DIM];
+    float arenaMax[MAX_DIM];
 
     DeviceEnvironmentConfig() = default;
     explicit DeviceEnvironmentConfig(const EnvironmentConfig& h)
@@ -30,25 +40,41 @@ struct DeviceEnvironmentConfig
         nAgents = h.nAgents;
         dim = h.dim;
         dt = h.dt;
+        nGates = h.nGates;
 
         minDist = h.minDist;
         posNoiseLevel = h.posNoiseLevel;
         speedNoiseLevel = h.speedNoiseLevel;
         actionNoiseLevel = h.actionNoiseLevel;
 
-        for (int i = 0;i < MAX_AGENTS;i++)
+        for (int i = 0; i < MAX_AGENTS;i++)
         {
             maxSpeed[i] = h.maxSpeed[i];
             maxAccel[i] = h.maxAccel[i];
         }
 
-        trackWidth = h.trackWidth;
         nTrackSamples = h.nTrackSamples;
         nWinLaps = h.nWinLaps;
         targetDistance = h.targetDistance;
 
         physDim = h.physDim;
         actionDim = h.actionDim;
+
+        for (int i = 0; i < h.nGates; i++)
+        {
+            gateRadius[i] = h.gateRadius[i];
+            for (int d = 0; d < h.dim; d++)
+            {
+                gateCenters[i * h.dim + d] = h.gateCenters[i * h.dim + d];
+                gateVectors[i * h.dim + d] = h.gateVectors[i * h.dim + d];
+            }
+        }
+
+        for (int d = 0; d < h.dim; d++)
+        {
+            arenaMin[d] = h.arenaMin[d];
+            arenaMax[d] = h.arenaMax[d];
+        }
     }
 };
 

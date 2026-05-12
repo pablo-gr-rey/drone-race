@@ -11,11 +11,12 @@
 
 // ── compile-time limits ──────────────────────────────────────────────
 constexpr int MAX_AGENTS = 4;
-constexpr int MAX_DIM = 3;
+constexpr int MAX_DIM = 2;
+constexpr int MAX_GATES = 5;
 constexpr int MAX_PHYS_DIM = MAX_AGENTS * MAX_DIM * 2; // pos+vel
 constexpr int MAX_ACTION_DIM = MAX_AGENTS * MAX_DIM;
 
-// #define DEBUG
+#define DEBUG
 
 // ── CUDA error helper ────────────────────────────────────────────────
 #ifdef DEBUG
@@ -32,7 +33,7 @@ constexpr int MAX_ACTION_DIM = MAX_AGENTS * MAX_DIM;
 #endif
 
 // ── Environment configuration ────────────────────────────────────────
-// this should have the same layout as TrackENvironmentConfig in the Python side (including superclasses, ie. BaseEnvironmentConfig then TrackEnvironmentConfig)
+// this should have the same layout as GateEnvironmentConfig in the Python side (including superclasses, ie. BaseEnvironmentConfig then GateEnvironmentConfig)
 struct EnvironmentConfig
 {
     int nAgents;
@@ -40,11 +41,13 @@ struct EnvironmentConfig
     float dt;
 
     bool sendStates;
-    int nRaceLines;
+    int nRacelines;
+    int nGates;
 
     std::vector<float> initState;
     std::vector<float> initS;
-    std::vector<float> initLaps;
+    std::vector<int> initLaps;
+    std::vector<int> initGates;
 
     float minDist;
     float posNoiseLevel;
@@ -55,12 +58,18 @@ struct EnvironmentConfig
     float maxAccel[MAX_AGENTS];
 
     // track
-    float trackWidth;
     int nTrackSamples;
     int nWinLaps;
     float targetDistance;
 
-    std::vector<float> trackPoints; // (nTrackSamples, dim)
+    std::vector<float> gateCenters; // (nGates * dim)
+    std::vector<float> gateVectors; // (nGates * dim)
+    std::vector<float> gateRadius;  // (nGates)
+
+    std::vector<float> arenaMin;    // (dim)
+    std::vector<float> arenaMax;    // (dim)
+
+    std::vector<float> trackPoints; // (nTrackSamples * nRacelines, dim)
 
     // derived
     int physDim = 0;   // nAgents * dim * 2

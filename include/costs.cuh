@@ -9,7 +9,7 @@
 // ── Running cost ─────────────────────────────────────────────────────
 __device__ inline float stateCost(
     int agent,
-    const float* phys, const float* S, const float* laps,
+    const float* phys, const float* S, const int* laps, const int* currentGates,
     int timestep,
     const DeviceEnvironmentConfig& envConfig,
     const DeviceMPPIConfig& mppiConfig,
@@ -20,15 +20,14 @@ __device__ inline float stateCost(
     for (int d = 0; d < envConfig.dim; d++)
         pos[d] = getPos(phys, agent, d, envConfig.dim);
 
-    float decay = powf(0.8f, (float) timestep);
+    float decay = powf(0.9f, (float) timestep);
 
     for (int other = 0; other < envConfig.nAgents; other++)
     {
         if (other == agent)
         {
             // own boundary
-            // float bd = trackBoundaryDist(trackPoints, nTP, envConfig.dim, envConfig.trackWidth, pos);
-            float bd = fastTrackBoundaryDist(trackPoints, nTP, envConfig.dim, envConfig.trackWidth, pos, S[agent]);
+            float bd = trackBoundaryDist(envConfig.arenaMin, envConfig.arenaMax, pos, envConfig.dim);
 
             float danger = mppiConfig.boundaryThresholdFactor * envConfig.minDist;
             if (bd < danger)
@@ -49,7 +48,8 @@ __device__ inline float stateCost(
             for (int d = 0; d < envConfig.dim; d++)
                 oPos[d] = getPos(phys, other, d, envConfig.dim);
             // float oBd = trackBoundaryDist(trackPoints, nTP, envConfig.dim, envConfig.trackWidth, oPos);
-            float oBd = fastTrackBoundaryDist(trackPoints, nTP, envConfig.dim, envConfig.trackWidth, oPos, S[other]);
+            // float oBd = trackBoundaryDist(trackPoints, nTP, envConfig.dim, envConfig.trackWidth, oPos, S[other]);
+            float oBd = trackBoundaryDist(envConfig.arenaMin, envConfig.arenaMax, oPos, envConfig.dim);
             if (oBd < 0.0f)
                 cost -= mppiConfig.oppOutsideCost * decay;
         }
@@ -65,7 +65,7 @@ __device__ inline float stateCost(
 // ── Terminal cost ────────────────────────────────────────────────────
 __device__ inline float finalCost(
     int agent,
-    const float* phys, const float* S, const float* laps,
+    const float* phys, const float* S, const int* laps, const int* currentGates,
     const DeviceEnvironmentConfig& envConfig,
     const DeviceMPPIConfig& mppiConfig,
     const float* trackPoints, int nTP)
@@ -75,10 +75,15 @@ __device__ inline float finalCost(
 
     for (int a = 0; a < envConfig.nAgents; a++)
     {
-        float advance = getAdvance(S, laps, a);
+        // float advance = getAdvance(S, laps, currentGates, agent, envConfig.nGates);
+        float advance = getAdvance(laps, currentGates, a, envConfig.nGates, phys + a * envConfig.dim * 2, envConfig.gateCenters, envConfig.dim);
+        // printf("Advance: %f\n", advance);
 
         if (a == agent)
         {
+            // update advance
+            // advance = laps[agent] * envConfig.nGates + currentGates[agent];
+
             // target: track point at s + targetDistance
             float target[MAX_DIM];
             sampleCenterline(trackPoints, nTP, envConfig.dim, S[a] + envConfig.targetDistance, target);
@@ -101,7 +106,6 @@ __device__ inline float finalCost(
         }
         else if (advance > maxOppAdv)
             maxOppAdv = advance;
-
     }
 
     if (envConfig.nAgents > 1)

@@ -55,9 +55,5 @@ int main(int argc, char** argv)
     sock.bind(zmqAddr);
 
     while (1)
-    {
         runEngine(sock);
-    }
-
-    return 0;
 }

@@ -1,5 +1,4 @@
 #include "engine.h"
-#include "dynamics.h"
 #include "state.h"
 #include "protocol.h"
 
@@ -11,6 +10,7 @@
 #include <iostream>
 #include <variant>
 #include <type_traits>
+#include <iomanip>
 
 SimulationEngine::SimulationEngine(
     const EnvironmentConfig& config,
@@ -26,6 +26,7 @@ SimulationEngine::SimulationEngine(
     phys_state = config.initState;
     currentS = config.initS;
     nLaps = config.initLaps;
+    currentGates = config.initGates;
 
     for (int i = 0; i < envConfig.nAgents; i++)
     {
@@ -48,26 +49,7 @@ std::unique_ptr<Controller> SimulationEngine::makeController(const ControllerSpe
             else if constexpr (std::is_same_v<T, PIDConfig>)
                 ctrl = std::make_unique<PIDController>(envConfig, contConfig);
             else if constexpr (std::is_same_v<T, MPPIConfig>)
-            {
                 ctrl = std::make_unique<MPPIController>(envConfig, contConfig);
-                // OpponentModelType oppModel = OpponentModelType::Dummy; // default
-                // PIDConfig oppPid{}; // meaningful only for PID opponent
-
-                // std::visit([&](auto&& opp)
-                //     {
-                //         using O = std::decay_t<decltype(opp)>;
-
-                //         if constexpr (std::is_same_v<O, DummyConfig>)
-                //             oppModel = OpponentModelType::Dummy;
-                //         else if constexpr (std::is_same_v<O, PIDConfig>)
-                //         {
-                //             oppModel = OpponentModelType::PID;
-                //             oppPid = opp;
-                //         }
-                //     }, contConfig.opponent);
-
-                // ctrl = std::make_unique<MPPIController>(envConfig, contConfig, oppModel, oppPid);
-            }
         }, sp.config);
 
     if (!ctrl)
@@ -89,7 +71,8 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
         writer.pushInt32(step);
         writer.pushFloatArray(phys_state);
         writer.pushFloatArray(currentS);
-        writer.pushFloatArray(nLaps);
+        writer.pushIntArray(nLaps);
+        writer.pushIntArray(currentGates);
 
         sock.send(zmq::buffer(writer.data));
     }
@@ -122,27 +105,40 @@ void SimulationEngine::dynStep(const std::vector<float>& actions)
     // clamp + noise actions
 
     std::vector<float> act = actions;
+    std::vector<float> old_phys = phys_state;
+
+    int dim = envConfig.dim;
 
     for (int a = 0; a < envConfig.nAgents; a++)
-        for (int d = 0; d < envConfig.dim; d++)
+    {
+        float sqNorm = 0.0f;
+        for (int d = 0; d < dim; d++)
+            sqNorm += act[a * dim + d] * act[a * dim + d];
+
+        float factor = 1.0f;
+        if (sqNorm > envConfig.maxAccel[a] * envConfig.maxAccel[a])
+            factor = envConfig.maxAccel[a] / fsqrt(sqNorm);
+
+        for (int d = 0; d < dim; d++)
         {
-            float& v = act[a * envConfig.dim + d];
-            v = std::clamp(v, -envConfig.maxAccel[a], envConfig.maxAccel[a]);
+            float& v = act[a * dim + d];
+            v *= factor;
             v += nd(rng) * envConfig.actionNoiseLevel;
         }
+    }
 
     for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
     {
         // integrate position
-        for (int d = 0; d < envConfig.dim; d++)
-            phys_state[iAgent * envConfig.dim * 2 + d * 2] += envConfig.dt * phys_state[iAgent * envConfig.dim * 2 + d * 2 + 1];
+        for (int d = 0; d < dim; d++)
+            phys_state[iAgent * dim * 2 + d * 2] += envConfig.dt * phys_state[iAgent * dim * 2 + d * 2 + 1];
 
         // integrate velocity
         float sqSpeedNorm = 0.f;
-        for (int d = 0; d < envConfig.dim; d++)
+        for (int d = 0; d < dim; d++)
         {
-            float& speed = phys_state[iAgent * envConfig.dim * 2 + d * 2 + 1];
-            speed += envConfig.dt * act[iAgent * envConfig.dim + d];
+            float& speed = phys_state[iAgent * dim * 2 + d * 2 + 1];
+            speed += envConfig.dt * act[iAgent * dim + d];
             sqSpeedNorm += speed * speed;
         }
 
@@ -150,29 +146,71 @@ void SimulationEngine::dynStep(const std::vector<float>& actions)
         if (sqSpeedNorm > envConfig.maxSpeed[iAgent] * envConfig.maxSpeed[iAgent])
         {
             float sc = envConfig.maxSpeed[iAgent] / std::sqrt(sqSpeedNorm);
-            for (int d = 0; d < envConfig.dim; d++)
-                phys_state[iAgent * envConfig.dim * 2 + d * 2 + 1] *= sc;
+            for (int d = 0; d < dim; d++)
+                phys_state[iAgent * dim * 2 + d * 2 + 1] *= sc;
         }
 
         // noise
-        for (int d = 0; d < envConfig.dim; d++)
+        for (int d = 0; d < dim; d++)
         {
-            phys_state[iAgent * envConfig.dim * 2 + d * 2] += nd(rng) * envConfig.posNoiseLevel;
-            phys_state[iAgent * envConfig.dim * 2 + d * 2 + 1] += nd(rng) * envConfig.speedNoiseLevel;
+            phys_state[iAgent * dim * 2 + d * 2] += nd(rng) * envConfig.posNoiseLevel;
+            phys_state[iAgent * dim * 2 + d * 2 + 1] += nd(rng) * envConfig.speedNoiseLevel;
         }
     }
 
-    // update S and laps
+    // update S, gates and laps
     for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
     {
-        float s = cpuProjectOnTrack(envConfig.trackPoints, envConfig.nTrackSamples, envConfig.dim, phys_state.begin() + 2 * iAgent * envConfig.dim, 2).first;
-
-        if (s > currentS[iAgent] + 0.5f)
-            nLaps[iAgent] -= 1.0f;
-        if (s < currentS[iAgent] - 0.5f)
-            nLaps[iAgent] += 1.0f;
-
+        // float s = cpuProjectOnTrack(envConfig.trackPoints, envConfig.nTrackSamples, dim, phys_state.begin() + 2 * iAgent * dim, 2).first;
+        float s = cpuProjectOnTrack(phys_state, iAgent).first;
         currentS[iAgent] = s;
+
+        // if (s > currentS[iAgent] + 0.5f)
+        //     nLaps[iAgent] -= 1.0f;
+        // if (s < currentS[iAgent] - 0.5f)
+        //     nLaps[iAgent] += 1.0f;
+
+        // check if we passed through next gate: compute lambda = dot(vec, center - x_t) / dot(vec, x_{t+1} - x_t)
+        int nextGate = (currentGates[iAgent] + 1) % envConfig.nGates;
+        float num = 0., denom = 0.;
+        for (int d = 0; d < dim; d++)
+        {
+            num += envConfig.gateVectors[nextGate * dim + d] * (envConfig.gateCenters[nextGate * dim + d] - old_phys[iAgent * dim * 2 + d * 2]);
+            denom += envConfig.gateVectors[nextGate * dim + d] * (phys_state[iAgent * dim * 2 + d * 2] - old_phys[iAgent * dim * 2 + d * 2]);
+        }
+
+        // direction is inside the gate plan: cannot cross
+        if (std::fabs(denom) < 1e-10)
+            continue;
+
+        float lambda = num / denom;
+        // we cross if 0 <= lambda <= 1 and if the projection of the segment (x_t, x_t+1) on the gate plan (ie. (1 - lambda) * x_t + lambda * x_t+1) is at distance <= radius from the center
+        // if we want to make sure we cross the gate in the right direction, we have to check num >= 0 (<=> denom > 0)
+
+        // std::cout << "\nnum = " << num << " denom = " << denom << " went from " << old_phys[0] << "; " << old_phys[2] << " to " << phys_state[0] << "; " << phys_state[2] << "\n";
+
+        if (lambda < 0. || lambda > 1.)
+            continue;
+
+        float sqDist = 0.;
+        for (int d = 0; d < dim; d++)
+        {
+            float dx = (1. - lambda) * old_phys[iAgent * dim * 2 + d * 2] + lambda * phys_state[iAgent * dim * 2 + d * 2] - envConfig.gateCenters[nextGate * dim + d];
+            sqDist += dx * dx;
+        }
+
+        // std::cout.precision(5);
+        // std::cout << std::fixed << "\tsqDist = " << sqDist << " sq radius " << envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate] << "\n";
+
+        if (sqDist <= envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate])
+        {
+            currentGates[iAgent]++;
+            if (currentGates[iAgent] == envConfig.nGates)
+            {
+                currentGates[iAgent] = 0;
+                nLaps[iAgent]++;
+            }
+        }
     }
 }
 
@@ -190,30 +228,48 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
         for (int i = 0; i < envConfig.nAgents; i++)
             controllers[i]->getControl(i, phys_state.data(), currentS.data(),
                 nLaps.data(),
+                currentGates.data(),
                 actions.data() + i * envConfig.dim);
 
         // step dynamics
-        std::vector<float> np(envConfig.physDim), ns(envConfig.nAgents), nl(envConfig.nAgents);
+        // std::vector<float> np(envConfig.physDim), ns(envConfig.nAgents), nl(envConfig.nAgents);
 
         dynStep(actions);
 
         sendState(sock, step);
 
-        int best = 0;
-        for (int k = 1; k < envConfig.nAgents; k++)
-            if (currentS[k] + nLaps[k] > currentS[best] + currentS[k])
-                best = k;
-
-        // printf("Current state at step %d: agent %d in front\n", step, best + 1);
+        // int best = -1;
+        // float bestAdvance = 0.;
         // for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
         // {
-        //     printf("\tAgent %d: position ", iAgent + 1);
+        //     float advance = getAdvance(nLaps.data(), currentGates.data(), iAgent, envConfig.nGates, phys_state.data() + 2 * envConfig.dim * iAgent, envConfig.gateCenters.data(), envConfig.dim);
+        //     if (iAgent == 0 || advance > bestAdvance)
+        //     {
+        //         best = iAgent;
+        //         bestAdvance = advance;
+        //     }
+        // }
+
+        // std::cout << std::fixed << std::setprecision(2);
+
+        // std::cout << "Current state at step " << step << ": agent " << (best + 1) << " in front (advance " << bestAdvance << ")" << std::endl;
+
+        // for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
+        // {
+        //     std::cout << "\tAgent " << (iAgent + 1)
+        //         << ": currentS: " << currentS[iAgent]
+        //         << "\tcurrentGates: " << currentGates[iAgent]
+        //         << "\tnLaps: " << nLaps[iAgent]
+        //         << "\tposition ";
+
         //     for (int d = 0; d < envConfig.dim; d++)
-        //         printf("%.2f ", phys_state[iAgent * envConfig.dim * 2 + d * 2]);
-        //     printf("\tspeed: ");
+        //         std::cout << phys_state[iAgent * envConfig.dim * 2 + d * 2] << " ";
+
+        //     std::cout << "\tspeed: ";
         //     for (int d = 0; d < envConfig.dim; d++)
-        //         printf("%.2f ", phys_state[iAgent * envConfig.dim * 2 + d * 2 + 1]);
-        //     printf("\tcurrentS: %.2f\tnLaps: %d\n", currentS[iAgent], (int) nLaps[iAgent]);
+        //         std::cout << phys_state[iAgent * envConfig.dim * 2 + d * 2 + 1] << " ";
+
+        //     std::cout << std::endl;
         // }
 
         // termination checks
@@ -253,8 +309,11 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
 
 std::vector<float> SimulationEngine::getTarget(int agent, const float* S, int racelineIndex) const
 {
-    // TODO: handle racelineIndex!
-    std::vector<float> ans = cpuSampleCenterline(envConfig.trackPoints, envConfig.nTrackSamples, envConfig.dim, std::fmod(S[agent] + envConfig.targetDistance, 1.0f), racelineIndex);
+    if (racelineIndex == -1)    // just return the center of the next gate
+        return std::vector<float>(envConfig.gateCenters.begin() + (currentGates[agent] + 1) % envConfig.nGates * envConfig.dim, envConfig.gateCenters.begin() + ((currentGates[agent] + 1) % envConfig.nGates + 1) * envConfig.dim);
+
+    // std::vector<float> ans = cpuSampleCenterline(envConfig.trackPoints, envConfig.nTrackSamples, envConfig.dim, std::fmod(S[agent] + envConfig.targetDistance, 1.0f), racelineIndex);
+    std::vector<float> ans = cpuSampleCenterline(std::fmod(S[agent] + envConfig.targetDistance, 1.0f), racelineIndex);
 
     // if (racelineIndex == 1)
     // {
@@ -271,17 +330,6 @@ std::vector<float> SimulationEngine::getTarget(int agent, const float* S, int ra
     return ans;
 }
 
-float SimulationEngine::getAdvance(int agent, const float* S, const float* laps) const
-{
-    return S[agent] + laps[agent];
-}
-
-float SimulationEngine::closestBoundaryDist(int agent, const float* phys) const
-{
-    float dist = cpuProjectOnTrack(envConfig.trackPoints, envConfig.nTrackSamples, envConfig.dim, phys + agent * envConfig.dim * 2, 2).second;
-    return envConfig.trackWidth * 0.5f - dist;
-}
-
 bool SimulationEngine::checkCollision() const
 {
     // TODO: this sucks
@@ -296,16 +344,17 @@ int SimulationEngine::checkOutside() const
 {
     for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
     {
-        float pos[MAX_DIM];
         for (int d = 0; d < envConfig.dim; d++)
-            pos[d] = getPos(phys_state.data(), iAgent, d, envConfig.dim);
-        float dist = cpuProjectOnTrack(envConfig.trackPoints, envConfig.nTrackSamples, envConfig.dim, phys_state.begin() + iAgent * envConfig.dim * 2, 2).second;
-        if (dist > envConfig.trackWidth * 0.5f)
         {
-            std::cout << "for agent " << (iAgent + 1) << " dist " << dist << " half-width " << envConfig.trackWidth << " pos " << pos[0] << ' ' << pos[1] << '\n';
-            return iAgent;
+            float pos = getPos(phys_state.data(), iAgent, d, envConfig.dim);
+            if (pos < envConfig.arenaMin[d] || pos > envConfig.arenaMax[d])
+            {
+                std::cout << "agent " << (iAgent + 1) << " outside (dimension " << d << ": position " << pos << " outside of arena\n";
+                return iAgent;
+            }
         }
     }
+
     return -1;
 }
 
@@ -314,4 +363,47 @@ int SimulationEngine::checkWinner() const
     for (int a = 0; a < envConfig.nAgents; a++)
         if (nLaps[a] >= (float) envConfig.nWinLaps) return a;
     return -1;
+}
+
+
+// return the centerline sampled at given s
+std::vector<float> SimulationEngine::cpuSampleCenterline(float s, int racelineIndex) const
+{
+    std::vector<float> out(envConfig.dim);
+
+    s = s - std::floor(s);
+    float idx_f = s * envConfig.nTrackSamples;
+    int idx0 = (int) idx_f;
+    int idx1 = (idx0 + 1) % envConfig.nTrackSamples;
+    float t = idx_f - idx0;
+
+    for (int d = 0; d < envConfig.dim; d++)
+        out[d] = (1.0f - t) * envConfig.trackPoints[(envConfig.nTrackSamples * racelineIndex + idx0) * envConfig.dim + d] + t * envConfig.trackPoints[(envConfig.nTrackSamples * racelineIndex + idx1) * envConfig.dim + d];
+
+    return out;
+}
+
+// return the closest S and the distance to it for the given pos. allows specifying a stride on reading (useful for phys state)
+std::pair<float, float> SimulationEngine::cpuProjectOnTrack(const std::vector<float>& state, int iAgent) const
+{
+    float bestS = 0.0f, bestdSq = 1e30f;
+    const float sStep = 1.0f / envConfig.nTrackSamples;
+
+    int iTrack = 0;
+
+    for (int i = 0; i < envConfig.nTrackSamples; ++i)
+    {
+        float dSq = 0.0f;
+
+        for (int d = 0; d < envConfig.dim; ++d)
+        {
+            float dx = envConfig.trackPoints[iTrack] - state[iAgent * envConfig.dim * 2 + d * 2];
+            dSq += dx * dx;
+            iTrack++;
+        }
+
+        if (dSq < bestdSq) { bestdSq = dSq; bestS = i * sStep; }
+    }
+
+    return std::make_pair(bestS, std::sqrt(bestdSq));
 }

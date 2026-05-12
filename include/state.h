@@ -55,8 +55,22 @@ HD inline float agentSpeed(const float* phys, int agent, int dim)
     return sqrtf(s);
 }
 
-// ── Advance = S + laps ───────────────────────────────────────────────
-HD inline float getAdvance(const float* S, const float* laps, int agent)
+// Advance = currentGate + nGates * laps + 0.5 * (1 - normalizedDistToGate) (it is much better to pass through a gate than to just be close to it) (this is a rough measure, it doesn't include speed for example)
+HD inline float getAdvance(const int* laps, const int* currentGates, int agent, int nGates, const float* pos, const float* gateCenters, int dim, int posStride = 2)
 {
-    return S[agent] + laps[agent];
+    float sqGateDist = 0.0f;    // sq dist between pos and next gate
+    float sqConsGateDist = 0.0f;    // sq dist between current gate and next gate
+    int nextGate = (currentGates[agent] + 1) % nGates;
+
+    for (int d = 0; d < dim; d++)
+    {
+        sqGateDist += (gateCenters[nextGate * dim + d] - pos[d * posStride]) * (gateCenters[nextGate * dim + d] - pos[d * posStride]);
+        sqConsGateDist += (gateCenters[nextGate * dim + d] - gateCenters[currentGates[agent] * dim + d]) * (gateCenters[nextGate * dim + d] - gateCenters[currentGates[agent] * dim + d]);
+        // printf("\tfor dim d=%d: currentGate=%d, nextGate=%d, dx cons = %f (from %f to %f), current sqConsGateDist=%f\n",
+            // d, currentGates[agent], nextGate, gateCenters[nextGate * dim + d] - gateCenters[currentGates[agent] * dim + d], gateCenters[currentGates[agent] * dim + d], gateCenters[nextGate * dim + d], sqConsGateDist);
+    }
+
+    // printf("sqConsGateDist %f sqGateDist %f sqrt(...) %f final res %f\n", sqGateDist, sqConsGateDist, sqrtf(sqGateDist / sqConsGateDist), currentGates[agent] + nGates * laps[agent] + 0.5f - 0.5f * sqrtf(sqGateDist / sqConsGateDist));
+
+    return currentGates[agent] + nGates * laps[agent] + 0.5f - 0.5f * sqrtf(sqGateDist / sqConsGateDist);
 }

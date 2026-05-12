@@ -4,7 +4,7 @@
 #include "state.h"
 #include <cfloat>
 
-// ── Linear interpolation of pre-sampled centerline ───────────────────
+// Linear interpolation of pre-sampled centerline
 // trackPoints: (nSamples, dim)  row-major
 __device__ inline void sampleCenterline(const float* trackPoints, int nSamples, int dim, float s, float* out)
 {
@@ -17,7 +17,7 @@ __device__ inline void sampleCenterline(const float* trackPoints, int nSamples, 
         out[d] = (1.0f - t) * trackPoints[idx0 * dim + d] + t * trackPoints[idx1 * dim + d];
 }
 
-// ── Project position onto sampled track ──────────────────────────────
+// Project position onto sampled track
 // Returns best s in [0,1]; writes distance into bestDist.
 // closestOut may be nullptr.
 __device__ inline float projectOnTrack(const float* trackPoints,
@@ -132,21 +132,19 @@ __device__ inline float fastProjectOnTrack(const float* trackPoints,
     return ((float) bestBI) / nSamples;
 }
 
-// ── Boundary distance = trackWidth/2 – dist to centreline ────────────
-__device__ inline float trackBoundaryDist(const float* trackPoints,
-    int nSamples, int dim,
-    float trackWidth,
-    const float* pos)
+// Boundary distance = distance to closest boundary
+__device__ inline float trackBoundaryDist(const float* arenaMin, const float* arenaMax, const float* pos, int dim)
 {
-    float dist;
-    projectOnTrack(trackPoints, nSamples, dim, pos, nullptr, dist);
-    return trackWidth * 0.5f - dist;
+    float minDist = INFINITY;
+    for (int d = 0; d < dim; d++)
+        minDist = min(minDist, min(pos[d] - arenaMin[d], arenaMax[d] - pos[d]));
+    return minDist;
 }
 
-// ── Boundary distance = trackWidth/2 – dist to centerline ────────────
-__device__ inline float fastTrackBoundaryDist(const float* trackPoints, int nSamples, int dim, float trackWidth, const float* pos, float prevS)
-{
-    float dist;
-    fastProjectOnTrack(trackPoints, nSamples, dim, pos, nullptr, dist, prevS);
-    return trackWidth * 0.5f - dist;
-}
+// Boundary distance = trackWidth/2 – dist to centerline
+// __device__ inline float fastTrackBoundaryDist(const float* trackPoints, int nSamples, int dim, float trackWidth, const float* pos, float prevS)
+// {
+//     float dist;
+//     fastProjectOnTrack(trackPoints, nSamples, dim, pos, nullptr, dist, prevS);
+//     return trackWidth * 0.5f - dist;
+// }

@@ -15,11 +15,13 @@ void EnvironmentConfig::unpackHeader(const void* buf, size_t len)
     dt = reader.readFloat();
 
     sendStates = (bool) reader.readInt32();
-    nRaceLines = (int) reader.readInt32();
+    nRacelines = (int) reader.readInt32();
+    nGates = (int) reader.readInt32();
 
     initState = reader.readFloatArray();
     initS = reader.readFloatArray();
-    initLaps = reader.readFloatArray();
+    initLaps = reader.readIntArray();
+    initGates = reader.readIntArray();
 
     minDist = reader.readFloat();
     posNoiseLevel = reader.readFloat();
@@ -37,16 +39,25 @@ void EnvironmentConfig::unpackHeader(const void* buf, size_t len)
     std::memcpy(maxSpeed, ms.data(), ms.size() * sizeof(float));
     std::memcpy(maxAccel, ma.data(), ma.size() * sizeof(float));
 
-    trackWidth = reader.readFloat();
     nTrackSamples = (int) reader.readInt32();
     nWinLaps = (int) reader.readInt32();
     targetDistance = reader.readFloat();
+
+    gateCenters = reader.readFloatArray();
+    gateVectors = reader.readFloatArray();
+    gateRadius = reader.readFloatArray();
+
+    arenaMin = reader.readFloatArray();
+    arenaMax = reader.readFloatArray();
 
     trackPoints = reader.readFloatArray();
 
     reader.assertFinished();
 
-    std::cout << "read nAgents " << nAgents << " actionNoiseLevel " << actionNoiseLevel << " max speed " << maxSpeed[0] << ' ' << maxSpeed[1] << "\n";
+    std::cout << "read nAgents " << nAgents << " actionNoiseLevel " << actionNoiseLevel << " max speed " << maxSpeed[0] << ' ' << maxSpeed[1] << " length of track points " << trackPoints.size() << "\ngate vectors:";
+    for (float val : gateVectors)
+        std::cout << val << " ";
+    std::cout << "\n";
 
     recompute();
 }
