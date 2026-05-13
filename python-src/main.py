@@ -93,7 +93,7 @@ def buildOptimalRaceline():
     z = ZMQRecv()
     z.runSim(config, [mppisolo])
 
-    posLog = [phys[::2] for phys in z.stateLog]
+    posLog = z.posLog
     print(posLog[:10])
 
     info = {
@@ -523,9 +523,10 @@ def mainGate():
     assert config.trackPoints is not None  # it is built automatically in GateEnvironmentConfig
 
     # add init state and add_state
-    config.init_state = np.array(
-        [np.stack([config.trackPoints[int(s * config.nTrackSamples)], np.zeros(dim)], axis=1).flatten() for s in startS]
-    ).flatten()
+    # config.init_state = np.array(
+    #     [np.stack([config.trackPoints[int(s * config.nTrackSamples)], np.zeros(dim)], axis=1).flatten() for s in startS]
+    # ).flatten()
+    config.init_pos = np.array([config.trackPoints[int(s * config.nTrackSamples)] for s in startS]).flatten()
     config.add_state = startS, np.zeros(nAgents), np.array([int(s * nGates) for s in startS], dtype=np.float32)
 
     angles = np.linspace(0, 2 * np.pi, config.nTrackSamples, endpoint=False)
@@ -534,8 +535,6 @@ def mainGate():
     config.trackPoints = np.concat(
         [config.trackPoints, np.stack([trackRadius * np.cos(angles), trackRadius * np.sin(angles)], axis=1)]
     )
-
-    print(config.add_state)
 
     mppiconfig = MPPIConfig(
         nSamples=100000,

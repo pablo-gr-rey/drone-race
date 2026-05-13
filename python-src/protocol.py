@@ -109,12 +109,17 @@ def encodeConfig(config: Any, msg_type: Optional[int] = None, warn=True, log=Fal
             print(f"Packing field {field.name} of type {type(val)}, value {val if not isinstance(val, np.ndarray) else val}")
 
         if field.name == "init_state":
-            assert isinstance(val, np.ndarray)
-            if log:
-                print(f"HANDLING SPECIALLY init_state: sending {val[::2]} and {val[1::2]}")
+            # legacy field: skip, explicit init_pos/init_vel are used
+            continue
 
-            p.pushArray(val[::2])
-            p.pushArray(val[1::2])
+        if field.name == "init_pos":
+            assert isinstance(val, np.ndarray)
+            p.pushArray(val)
+            continue
+
+        if field.name == "init_vel":
+            assert isinstance(val, np.ndarray)
+            p.pushArray(val)
             continue
 
         if isinstance(val, ControllerConfig):
@@ -125,24 +130,19 @@ def encodeConfig(config: Any, msg_type: Optional[int] = None, warn=True, log=Fal
     return p
 
 
-def unpackState(unpack: ByteUnpacker) -> tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    "Return (step, physState, currentS, nLaps, currentGates) from bytes"
+def unpackState(unpack: ByteUnpacker) -> tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    "Return (step, pos, vel, currentS, nLaps, currentGates) from bytes"
 
-    # ans = unpack.readInt(), unpack.readArray(), unpack.readArray(), unpack.readArray(), unpack.readArray()
-    step, pos, speed, currentS, nLaps, currentGates = (
-        unpack.readInt(),
-        unpack.readArray(),
-        unpack.readArray(),
-        unpack.readArray(),
-        unpack.readArray(),
-        unpack.readArray(),
-    )
+    step = unpack.readInt()
+    pos = unpack.readArray()
+    vel = unpack.readArray()
+    currentS = unpack.readArray()
+    nLaps = unpack.readArray()
+    currentGates = unpack.readArray()
 
     unpack.assert_finished()
 
-    phys = np.stack((pos, speed), axis=1).flatten()
-
-    return step, phys, currentS, nLaps, currentGates
+    return step, pos, vel, currentS, nLaps, currentGates
 
 
 class ZMQRecv:
@@ -151,7 +151,8 @@ class ZMQRecv:
         self.sock = self.ctx.socket(zmq.PAIR)
         self.sock.connect(addr)
 
-        self.stateLog: list[np.ndarray] = []
+        self.posLog: list[np.ndarray] = []
+        self.velLog: list[np.ndarray] = []
 
     def runSim(
         self, config: GateEnvironmentConfig, cont_configs: list[ControllerConfig], render: bool = True
@@ -190,15 +191,17 @@ class ZMQRecv:
             if unpack.readInt() != MSG_TYPE.MSG_STATE:
                 raise ValueError("Expected a state message")
             first_state = unpackState(unpack)
+            # first_state -> (step, pos, vel, currentS, nLaps, currentGates)
             if (
                 first_state[0] != 0
-                or not np.all(np.isclose(first_state[1], config.init_state))
-                or not np.all(np.isclose(first_state[2], config.add_state[0]))  # type: ignore
-                or not np.all(np.isclose(first_state[3], config.add_state[1]))  # type: ignore
-                or not np.all(np.isclose(first_state[4], config.add_state[2]))  # type: ignore
+                or not np.all(np.isclose(first_state[1], config.init_pos))
+                or not np.all(np.isclose(first_state[2], config.init_vel))
+                or not np.all(np.isclose(first_state[3], config.add_state[0]))  # type: ignore
+                or not np.all(np.isclose(first_state[4], config.add_state[1]))  # type: ignore
+                or not np.all(np.isclose(first_state[5], config.add_state[2]))  # type: ignore
             ):
                 print(first_state)
-                print(config.init_state, config.add_state)
+                print(config.init_pos, config.init_vel, config.add_state)
                 raise ValueError("First state sent back by C++ side did not match expected first state")
 
         result = None
@@ -211,14 +214,15 @@ class ZMQRecv:
                 print("Received unexpected header message from C++")
 
             elif msg_type == MSG_TYPE.MSG_STATE:
-                step, phys, newS, newLaps, newGates = unpackState(unpack)
+                step, pos, vel, newS, newLaps, newGates = unpackState(unpack)
 
                 # print(f"received step {step}")
 
-                if step != len(env.stateLog):
-                    print(f"expected step number {len(env.stateLog)} but received step {step}")
+                if step != len(env.posLog):
+                    print(f"expected step number {len(env.posLog)} but received step {step}")
 
-                env.stateLog.append(phys)
+                env.posLog.append(pos)
+                env.velLog.append(vel)
                 env.addStateLog.append((newS, newLaps, newGates))
                 if renderer is not None:
                     renderer.onNewState()
@@ -243,7 +247,7 @@ class ZMQRecv:
 
             elif msg_type == MSG_TYPE.MSG_DONE:
                 unpack.assert_finished()
-                print(f"Simulation done. Total steps: {len(env.stateLog)}")
+                print(f"Simulation done. Total steps: {len(env.posLog)}")
                 if renderer is not None:
                     renderer.finish(tooglePlay=False, jumpToLast=False)
 
@@ -255,7 +259,8 @@ class ZMQRecv:
         if result is None:
             raise ValueError("C++ finished without sending event")
 
-        self.stateLog = env.stateLog
+        self.posLog = env.posLog
+        self.velLog = env.velLog
 
         return result
 

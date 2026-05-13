@@ -98,7 +98,8 @@ class BaseEnvironmentConfig(Generic[AddStateType]):
     # they all should be concatenated & specified in trackPoints (which contains nLines arrays of size nSamples * dim), and then the line config in PID specifies the offset (offset=0: following centerline from 0 to nSamples-1; offset=1: following arbitrary raceline from nSamples to 2*nSamples-1, etc)
     nGates: int = 0
 
-    init_state: list | np.ndarray = field(default_factory=lambda: [])
+    init_pos: list | np.ndarray = field(default_factory=lambda: [])
+    init_vel: list | np.ndarray = field(default_factory=lambda: [])
     add_state: Optional[AddStateType] = None
 
     minDist: float = 0.2
@@ -113,7 +114,9 @@ class BaseEnvironmentConfig(Generic[AddStateType]):
         defaultMaxSpeed: float = 0.5
         defaultAccel: float = 1
 
-        self.stateDim = self.nAgents * self.dim * 2
+        self.posDim = self.nAgents * self.dim
+        self.velDim = self.nAgents * self.dim
+        self.stateDim = self.posDim + self.velDim
         self.actionDim = self.nAgents * self.dim
 
         if self.maxSpeed.shape == (0,):
@@ -121,7 +124,19 @@ class BaseEnvironmentConfig(Generic[AddStateType]):
         if self.maxAccel.shape == (0,):
             self.maxAccel = np.full(self.nAgents, defaultAccel)
 
-        self.init_state = np.array(self.init_state).flatten().astype(np.float32)
+        self.init_pos = np.array(self.init_pos).flatten().astype(np.float32)
+        self.init_vel = np.array(self.init_vel).flatten().astype(np.float32)
+
+        # If still empty, default to zeros
+        if self.init_pos.size == 0:
+            self.init_pos = np.zeros(self.posDim, dtype=np.float32)
+        if self.init_vel.size == 0:
+            self.init_vel = np.zeros(self.velDim, dtype=np.float32)
+
+        if self.init_pos.size != self.posDim:
+            raise ValueError(f"Invalid init_pos size: got {self.init_pos.size}, expected {self.posDim}")
+        if self.init_vel.size != self.velDim:
+            raise ValueError(f"Invalid init_vel size: got {self.init_vel.size}, expected {self.velDim}")
 
 
 ConfigType = TypeVar("ConfigType", bound=BaseEnvironmentConfig)
@@ -262,9 +277,11 @@ class MPPIConfig(ControllerConfig, Generic[AddStateType]):
     finalSpeedWeight: float = 5
 
     # only used by local Python simulation
-    opponentPredictors: Optional[list[Callable[[int, np.ndarray, AddStateType], np.ndarray]]] = (
-        None  # should be the list of modeled getControl() method of opponents
-    )
+    # opponentPredictors: Optional[list[Callable[[int, np.ndarray, AddStateType], np.ndarray]]] = (
+    #     None  # should be the list of modeled getControl() method of opponents
+    # )
+    # opponentPredictors: list of callables with signature (agent, pos, vel, addState) -> action
+    opponentPredictors: Optional[list[Callable[[int, np.ndarray, np.ndarray, AddStateType], np.ndarray]]] = None
 
     # only used by zmq
     opponentConfig: ControllerConfig = field(default_factory=lambda: DummyConfig())
@@ -280,7 +297,7 @@ class Controller(ABC, Generic[ConfigType, AddStateType]):
         self.environment = env
 
     @abstractmethod
-    def getControl(self, agent: int, state: np.ndarray, addState: AddStateType) -> np.ndarray: ...
+    def getControl(self, agent: int, pos: np.ndarray, vel: np.ndarray, addState: AddStateType) -> np.ndarray: ...
 
     @classmethod
     def fromConfig(cls, envConfig: ConfigType, config: ControllerConfig, name: Optional[str] = None) -> "Controller":

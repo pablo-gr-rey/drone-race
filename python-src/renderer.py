@@ -153,7 +153,7 @@ class EnvironmentRenderer:
             self.agent_value_texts.append(t_val)
 
         # UI: slider, play, save GIF, textbox and zoom
-        max_idx = max(1, len(self.env.stateLog) - 1)
+        max_idx = max(1, len(self.env.posLog) - 1)
         self.slider = Slider(self.fig.add_subplot(gs_ui[0]), "Time", 0, max_idx, valinit=0, valstep=1)
 
         self.pause_button = Button(self.fig.add_subplot(gs_ui[2]), "Pause")
@@ -218,20 +218,20 @@ class EnvironmentRenderer:
             self.tooglePlay(None, True)
 
     def coordIndex(self, agent: int, coord: int) -> int:
-        return (agent * self.env.config.dim + coord) * 2
+        return agent * self.env.config.dim + coord
 
     def getPos(self, frame_index: int, agent: int) -> tuple[float, float]:
-        if len(self.env.stateLog) == 0:
+        if len(self.env.posLog) == 0:
             return 0.0, 0.0
-        idx = min(frame_index, len(self.env.stateLog) - 1)
-        s = self.env.stateLog[idx]
+        idx = min(frame_index, len(self.env.posLog) - 1)
+        s = self.env.posLog[idx]
         return (
             float(s[self.coordIndex(agent, self.axis[0])]),
             float(s[self.coordIndex(agent, self.axis[1])]),
         )
 
     def updateDisplay(self, i: int) -> None:
-        n = len(self.env.stateLog)
+        n = len(self.env.posLog)
         if n == 0:
             return
         i = max(0, min(i, n - 1))
@@ -288,8 +288,9 @@ class EnvironmentRenderer:
             self.status_text.set_color("orange")
 
         for iAgent in range(self.nAgents):
-            state, (_, laps, gates) = self.env.stateLog[i], self.env.addStateLog[i]  # type: ignore
-            speed = np.linalg.norm(state[iAgent * self.env.config.dim * 2 + 1 : (iAgent + 1) * self.env.config.dim * 2 : 2])
+            _, laps, gates = self.env.addStateLog[i]
+            vel = self.env.velLog[i]
+            speed = np.linalg.norm(vel[iAgent * self.env.config.dim : (iAgent + 1) * self.env.config.dim])
 
             self.agent_value_texts[iAgent].set_text(
                 f"Lap {int(laps[iAgent])}/{self.env.config.nWinLaps} Gate {int(gates[iAgent])}/{self.env.config.nGates}\nSpeed {speed:.2f}"
@@ -297,7 +298,7 @@ class EnvironmentRenderer:
 
     def onNewState(self) -> None:
         # Called by the environment when a new frame is available
-        n = len(self.env.stateLog)
+        n = len(self.env.posLog)
         if n == 0:
             return
         max_idx = max(0, n - 1)
@@ -310,7 +311,7 @@ class EnvironmentRenderer:
             self.playing
             and not self.isFinished
             and time.perf_counter() - self.lastRenderTime > self.interval / 1000
-            and (self.frameSkipWaiting == -1 or len(self.env.stateLog) % self.frameSkipWaiting == 0)
+            and (self.frameSkipWaiting == -1 or len(self.env.posLog) % self.frameSkipWaiting == 0)
         ):
             if self.frameSkipWaiting == -1:
                 self.current_index = n - 1
@@ -323,7 +324,7 @@ class EnvironmentRenderer:
             # print(f"render time: {(self.lastRenderTime - prev) * 1000} ms")
 
         # if not playing, add small delay to keep UI responsive
-        if not self.playing and len(self.env.stateLog) % 10 == 0:
+        if not self.playing and len(self.env.posLog) % 10 == 0:
             self.show()
             # plt.pause(self.interval / 1000)
 
@@ -337,7 +338,7 @@ class EnvironmentRenderer:
 
     def finish(self, tooglePlay: bool = True, jumpToLast: bool = False):
         if jumpToLast:
-            self.current_index = len(self.env.stateLog) - 1
+            self.current_index = len(self.env.posLog) - 1
 
         self.updateDisplay(self.current_index)
 
@@ -354,12 +355,12 @@ class EnvironmentRenderer:
         if self.slider_is_updating:
             return
         i = int(val)
-        self.current_index = min(len(self.env.stateLog), i)
+        self.current_index = min(len(self.env.posLog), i)
         self.updateDisplay(i)
         self.show()
 
     def timerTick(self) -> None:
-        n = len(self.env.stateLog)
+        n = len(self.env.posLog)
         if self.current_index >= n - 1 and self.isFinished:
             # stop at the end of available frames
             self.tooglePlay(None)
@@ -380,7 +381,7 @@ class EnvironmentRenderer:
 
         if self.playing:
             # if at end, restart
-            if self.current_index >= max(0, len(self.env.stateLog) - 1):
+            if self.current_index >= max(0, len(self.env.posLog) - 1):
                 self.current_index = 0
                 self.updateDisplay(0)
             if not isFirst and self.isFinished:
@@ -393,7 +394,7 @@ class EnvironmentRenderer:
             self.current_index = max(0, self.current_index - 1)
             self.updateDisplay(self.current_index)
         elif event.key == "right" and not self.playing:
-            self.current_index = min(len(self.env.stateLog) - 1, self.current_index + 1)
+            self.current_index = min(len(self.env.posLog) - 1, self.current_index + 1)
             self.updateDisplay(self.current_index)
 
     def askSavePath(self, event: Any) -> None:
@@ -422,7 +423,7 @@ class EnvironmentRenderer:
         os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
 
         imgs: list[Image.Image] = []
-        n = len(self.env.stateLog)
+        n = len(self.env.posLog)
         for i in tqdm(range(n), desc=f"Capturing frames for {name}", unit="frame"):
             self.updateDisplay(i)
             self.fig.canvas.draw()

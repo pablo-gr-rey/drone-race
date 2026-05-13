@@ -175,7 +175,7 @@ def mainTrack():
             pbar.set_description(f"Agent {win + 1} is the winner")
         pbar.update(100 - lastVal)
 
-    print("final state", e.state, "final additional state", e.addState)
+    print("final pos", e.pos, "final vel", e.vel, "final additional state", e.addState)
     if e.live_render:
         e._renderer.finish()  # type: ignore
     else:
