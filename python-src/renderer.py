@@ -1,7 +1,7 @@
 import io
 import os
 import time
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -13,19 +13,18 @@ from matplotlib.transforms import Bbox
 from matplotlib.widgets import Button, Slider, TextBox
 from PIL import Image
 from tqdm import tqdm
-
-if TYPE_CHECKING:
-    from environment import GateEnvironment
+from utils import GateEnvironmentConfig
 
 
 class EnvironmentRenderer:
     """Helper that manages a non-blocking matplotlib window for live rendering.
-    If you wish the window to stay open at the end of the loop, make sure to call renderer.finish() which will block the program.
+    If you wish the window to stay open at the end of the dynamics loop, make sure to call renderer.finish() which will block the program.
     """
 
     def __init__(
         self,
-        env: "GateEnvironment",
+        envConfig: GateEnvironmentConfig,
+        contNames: list[str],
         axis=(0, 1),
         interval: int = 30,
         autoplay: bool = True,
@@ -35,20 +34,25 @@ class EnvironmentRenderer:
         display_raceline: bool | list[bool] = True,
     ):
         "interval: refresh rate. frameSkipWaiting: how many frames to skip if emitting states faster than we can display (use -1 to always display last frame). use defaultZoomAgent=-1 to start viewing full track, otherwise start zooming on agent"
-        self.env = env
+        self.envConfig = envConfig
         self.axis = axis
         self.interval = interval
         self.frameSkipPlayback = frameSkipPlayback
         self.frameSkipWaiting = frameSkipWaiting
-        self.aspect_ratio = 1.5
+
+        self.posLog: list[np.ndarray] = []
+        self.velLog: list[np.ndarray] = []
+
+        self.sLog: list[np.ndarray] = []
+        self.nLapsLog: list[np.ndarray] = []
+        self.currentGatesLog: list[np.ndarray] = []
 
         self.collision = False
         self.winner: Optional[int] = None
         self.outside: Optional[int] = None
 
         if isinstance(display_raceline, bool):
-            display_raceline = [display_raceline] * env.config.nRaceLines
-        self.display_raceline = display_raceline
+            display_raceline = [display_raceline] * envConfig.nRaceLines
 
         plt.ion()
         plt.show()
@@ -78,13 +82,14 @@ class EnvironmentRenderer:
         gs_ui = gs[1, :].subgridspec(1, 8, width_ratios=[7, 1, 1, 1, 1, 1, 0.4, 1], wspace=0.1)
 
         # draw static background using environment hook
-        self.env.renderBackground(self.ax, display_raceline)
+        # self.env.renderBackground(self.ax, display_raceline)
+        self.renderBackground(display_raceline)
 
         # color maps and patch/marker colors
         self.cmaps = ["Blues", "Reds", "Greens", "Purples", "Oranges", "Greys", "YlOrBr", "BuPu"]
         self.colors = ["blue", "red", "green", "purple", "orange", "gray", "brown", "pink"]
 
-        self.nAgents = self.env.config.nAgents
+        self.nAgents = self.envConfig.nAgents
 
         # line collections for trajectories
         self.lcs: list[LineCollection] = []
@@ -102,15 +107,13 @@ class EnvironmentRenderer:
         for i_agent in range(self.nAgents):
             px, py = self.getPos(0, i_agent)
             color = self.colors[i_agent % len(self.colors)]
-            (pt,) = self.ax.plot(
-                [px], [py], marker="o", color=color, markersize=8, label=f"{self.env.controllers[i_agent].name} ({i_agent + 1})"
-            )
+            (pt,) = self.ax.plot([px], [py], marker="o", color=color, markersize=8, label=f"{contNames[i_agent]} ({i_agent + 1})")
             self.points.append(pt)
-            circ = Circle((px, py), radius=self.env.config.minDist / 2, fill=True, color=color, linestyle="--", alpha=0.3)
+            circ = Circle((px, py), radius=self.envConfig.minDist / 2, fill=True, color=color, linestyle="--", alpha=0.3)
             self.circles.append(circ)
             self.ax.add_patch(circ)
 
-        bmin, bmax = self.env.getBounds()
+        bmin, bmax = self.envConfig.arenaMin, self.envConfig.arenaMax
         self.ax.set_xlim(xmin=bmin[self.axis[0]], xmax=bmax[self.axis[0]])  # type: ignore
         self.ax.set_ylim(bmin[self.axis[1]], bmax[self.axis[1]])  # type: ignore
         self.ax.set_aspect("equal", adjustable="box")
@@ -153,7 +156,7 @@ class EnvironmentRenderer:
             self.agent_value_texts.append(t_val)
 
         # UI: slider, play, save GIF, textbox and zoom
-        max_idx = max(1, len(self.env.posLog) - 1)
+        max_idx = max(1, len(self.posLog) - 1)
         self.slider = Slider(self.fig.add_subplot(gs_ui[0]), "Time", 0, max_idx, valinit=0, valstep=1)
 
         self.pause_button = Button(self.fig.add_subplot(gs_ui[2]), "Pause")
@@ -217,21 +220,41 @@ class EnvironmentRenderer:
         if autoplay:
             self.tooglePlay(None, True)
 
+    def renderBackground(self, display_raceline: list[bool]):
+        # draw gates
+        gatePts: list[list] = []
+        for i in range(self.envConfig.nGates):
+            if self.envConfig.dim == 2:
+                vec = self.envConfig.gateRadius[i] * np.array(
+                    [-self.envConfig.gateVectors[i, 1], self.envConfig.gateVectors[i, 0]]
+                )
+                gatePts.append([self.envConfig.gateCenters[i] - vec, self.envConfig.gateCenters[i] + vec])
+
+            lc = LineCollection(gatePts, colors=[1.0, 0.0, 0.0, 1.0], linewidth=3)
+            self.ax.add_collection(lc)
+
+        # draw race lines
+        if self.envConfig.trackPoints is not None:
+            for i in range(self.envConfig.nRaceLines):
+                if display_raceline is None or display_raceline[i]:
+                    pts = self.envConfig.trackPoints[i * self.envConfig.nTrackSamples : (i + 1) * self.envConfig.nTrackSamples, :]
+                    self.ax.plot(pts[:, 0], pts[:, 1], "g--", alpha=0.5)
+
     def coordIndex(self, agent: int, coord: int) -> int:
-        return agent * self.env.config.dim + coord
+        return agent * self.envConfig.dim + coord
 
     def getPos(self, frame_index: int, agent: int) -> tuple[float, float]:
-        if len(self.env.posLog) == 0:
+        if len(self.posLog) == 0:
             return 0.0, 0.0
-        idx = min(frame_index, len(self.env.posLog) - 1)
-        s = self.env.posLog[idx]
+        idx = min(frame_index, len(self.posLog) - 1)
+        s = self.posLog[idx]
         return (
             float(s[self.coordIndex(agent, self.axis[0])]),
             float(s[self.coordIndex(agent, self.axis[1])]),
         )
 
-    def updateDisplay(self, i: int) -> None:
-        n = len(self.env.posLog)
+    def updateDisplay(self, i: int, forceZoom: bool = False) -> None:
+        n = len(self.posLog)
         if n == 0:
             return
         i = max(0, min(i, n - 1))
@@ -250,13 +273,14 @@ class EnvironmentRenderer:
             self.circles[idx].center = (px, py)
 
         # update zoom or full view
+        # TODO: do not update ax lims if they did not change (probably way faster)
         if self.zoomed:
             cx, cy = self.getPos(i, self.zoomAgent)
-            self.ax.set_xlim(cx - self.zoom_radius * self.aspect_ratio, cx + self.zoom_radius * self.aspect_ratio)
+            self.ax.set_xlim(cx - self.zoom_radius, cx + self.zoom_radius)
             self.ax.set_ylim(cy - self.zoom_radius, cy + self.zoom_radius)
             self.ax.apply_aspect()
-        else:
-            bmin, bmax = self.env.getBounds()
+        elif forceZoom:  # if the last frame was also full track, no need to change the lims (that avoids re-drawing everything)
+            bmin, bmax = self.envConfig.arenaMin, self.envConfig.arenaMax
             self.ax.set_xlim(bmin[self.axis[0]], bmax[self.axis[0]])  # type: ignore
             self.ax.set_ylim(bmin[self.axis[1]], bmax[self.axis[1]])  # type: ignore
         self.ax.set_aspect("equal", adjustable="box")
@@ -288,20 +312,26 @@ class EnvironmentRenderer:
             self.status_text.set_color("orange")
 
         for iAgent in range(self.nAgents):
-            _, laps, gates = self.env.addStateLog[i]
-            vel = self.env.velLog[i]
-            speed = np.linalg.norm(vel[iAgent * self.env.config.dim : (iAgent + 1) * self.env.config.dim])
+            vel, laps, gates = self.velLog[i], self.nLapsLog[i], self.currentGatesLog[i]
+
+            speed = np.linalg.norm(vel[iAgent * self.envConfig.dim : (iAgent + 1) * self.envConfig.dim])
 
             self.agent_value_texts[iAgent].set_text(
-                f"Lap {int(laps[iAgent])}/{self.env.config.nWinLaps} Gate {int(gates[iAgent])}/{self.env.config.nGates}\nSpeed {speed:.2f}"
+                f"Lap {int(laps[iAgent])}/{self.envConfig.nWinLaps} Gate {int(gates[iAgent])}/{self.envConfig.nGates}\nSpeed {speed:.2f}"
             )
 
-    def onNewState(self) -> None:
+    def onNewState(
+        self, pos: np.ndarray, vel: np.ndarray, currentS: np.ndarray, nLaps: np.ndarray, currentGates: np.ndarray
+    ) -> None:
+        self.posLog.append(pos)
+        self.velLog.append(vel)
+        self.sLog.append(currentS)
+        self.nLapsLog.append(nLaps)
+        self.currentGatesLog.append(currentGates)
+
         # Called by the environment when a new frame is available
-        n = len(self.env.posLog)
-        if n == 0:
-            return
-        max_idx = max(0, n - 1)
+        n = len(self.posLog)
+        max_idx = max(n - 1, 1)
         # update slider range
         self.slider.valmax = max_idx  # type: ignore
         self.slider.ax.set_xlim(0, max_idx)  # type: ignore
@@ -311,7 +341,7 @@ class EnvironmentRenderer:
             self.playing
             and not self.isFinished
             and time.perf_counter() - self.lastRenderTime > self.interval / 1000
-            and (self.frameSkipWaiting == -1 or len(self.env.posLog) % self.frameSkipWaiting == 0)
+            and (self.frameSkipWaiting == -1 or len(self.posLog) % self.frameSkipWaiting == 0)
         ):
             if self.frameSkipWaiting == -1:
                 self.current_index = n - 1
@@ -324,7 +354,7 @@ class EnvironmentRenderer:
             # print(f"render time: {(self.lastRenderTime - prev) * 1000} ms")
 
         # if not playing, add small delay to keep UI responsive
-        if not self.playing and len(self.env.posLog) % 10 == 0:
+        if not self.playing and len(self.posLog) % 10 == 0:
             self.show()
             # plt.pause(self.interval / 1000)
 
@@ -338,7 +368,7 @@ class EnvironmentRenderer:
 
     def finish(self, tooglePlay: bool = True, jumpToLast: bool = False):
         if jumpToLast:
-            self.current_index = len(self.env.posLog) - 1
+            self.current_index = len(self.posLog) - 1
 
         self.updateDisplay(self.current_index)
 
@@ -355,12 +385,12 @@ class EnvironmentRenderer:
         if self.slider_is_updating:
             return
         i = int(val)
-        self.current_index = min(len(self.env.posLog), i)
+        self.current_index = min(len(self.posLog), i)
         self.updateDisplay(i)
         self.show()
 
     def timerTick(self) -> None:
-        n = len(self.env.posLog)
+        n = len(self.posLog)
         if self.current_index >= n - 1 and self.isFinished:
             # stop at the end of available frames
             self.tooglePlay(None)
@@ -381,7 +411,7 @@ class EnvironmentRenderer:
 
         if self.playing:
             # if at end, restart
-            if self.current_index >= max(0, len(self.env.posLog) - 1):
+            if self.current_index >= max(0, len(self.posLog) - 1):
                 self.current_index = 0
                 self.updateDisplay(0)
             if not isFirst and self.isFinished:
@@ -394,7 +424,7 @@ class EnvironmentRenderer:
             self.current_index = max(0, self.current_index - 1)
             self.updateDisplay(self.current_index)
         elif event.key == "right" and not self.playing:
-            self.current_index = min(len(self.env.posLog) - 1, self.current_index + 1)
+            self.current_index = min(len(self.posLog) - 1, self.current_index + 1)
             self.updateDisplay(self.current_index)
 
     def askSavePath(self, event: Any) -> None:
@@ -423,7 +453,7 @@ class EnvironmentRenderer:
         os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
 
         imgs: list[Image.Image] = []
-        n = len(self.env.posLog)
+        n = len(self.posLog)
         for i in tqdm(range(n), desc=f"Capturing frames for {name}", unit="frame"):
             self.updateDisplay(i)
             self.fig.canvas.draw()
@@ -459,18 +489,18 @@ class EnvironmentRenderer:
         except Exception:
             pass
         # re-run render at current slider position to apply new limits
-        self.updateDisplay(int(self.slider.val))
+        self.updateDisplay(int(self.slider.val), forceZoom=True)
         self.fig.canvas.draw_idle()
 
     def onZoomMinus(self, event: Any) -> None:
-        self.zoomAgent = (self.zoomAgent - 1) % self.env.config.nAgents
+        self.zoomAgent = (self.zoomAgent - 1) % self.envConfig.nAgents
         self.zoom_agent_label.set_text(f"Focus: {self.zoomAgent + 1}")
         if not self.playing:
             self.updateDisplay(self.current_index)
             self.show()
 
     def onZoomPlus(self, event: Any) -> None:
-        self.zoomAgent = (self.zoomAgent + 1) % self.env.config.nAgents
+        self.zoomAgent = (self.zoomAgent + 1) % self.envConfig.nAgents
         self.zoom_agent_label.set_text(f"Focus: {self.zoomAgent + 1}")
         if not self.playing:
             self.updateDisplay(self.current_index)

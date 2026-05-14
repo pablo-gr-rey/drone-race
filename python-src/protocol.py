@@ -5,8 +5,6 @@ from typing import Any, Optional
 
 import numpy as np
 import zmq
-from controllers import DummyController
-from environment import GateEnvironment
 from renderer import EnvironmentRenderer
 from utils import EVENT_TYPE, MSG_TYPE, ControllerConfig, GateEnvironmentConfig, PIDConfig
 
@@ -154,22 +152,35 @@ class ZMQRecv:
         self.posLog: list[np.ndarray] = []
         self.velLog: list[np.ndarray] = []
 
+        self.sLog: list[np.ndarray] = []
+        self.nLapsLog: list[np.ndarray] = []
+        self.currentGatesLog: list[np.ndarray] = []
+
     def runSim(
-        self, config: GateEnvironmentConfig, cont_configs: list[ControllerConfig], render: bool = True
+        self,
+        config: GateEnvironmentConfig,
+        contConfigs: list[ControllerConfig],
+        render: bool = True,
+        contNames: Optional[list[str]] = None,
     ) -> tuple[EVENT_TYPE, int]:
-        names = [cfg.getDefaultName() for cfg in cont_configs]
-
-        env = GateEnvironment(config, [DummyController(config, names[i]) for i in range(config.nAgents)])
-
         if render:
             # only display the racelines which are actually used
             used = [False] * config.nRaceLines
-            for cfg in cont_configs:
+            for cfg in contConfigs:
                 if isinstance(cfg, PIDConfig) and cfg.racelineIndex >= 0:
                     used[cfg.racelineIndex] = True
 
+            if contNames is None:
+                contNames = [cfg.getDefaultName() for cfg in contConfigs]
+
             renderer = EnvironmentRenderer(
-                env, interval=0, frameSkipWaiting=5, frameSkipPlayback=2, defaultZoomAgent=-1, display_raceline=used
+                config,
+                contNames,
+                interval=0,
+                frameSkipWaiting=5,
+                frameSkipPlayback=2,
+                defaultZoomAgent=-1,
+                display_raceline=used,
             )
         else:
             renderer = None
@@ -180,29 +191,10 @@ class ZMQRecv:
         header = encodeConfig(config, MSG_TYPE.MSG_HEADER).toBytes()
         self.sock.send(header)
 
-        for cont in cont_configs:
+        for cont in contConfigs:
             self.sock.send(encodeConfig(cont, MSG_TYPE.MSG_HEADER).toBytes())
 
         print("header sent OK, waiting for first state...")
-
-        # receive first state
-        if config.sendStates:
-            unpack = ByteUnpacker(self.sock.recv())
-            if unpack.readInt() != MSG_TYPE.MSG_STATE:
-                raise ValueError("Expected a state message")
-            first_state = unpackState(unpack)
-            # first_state -> (step, pos, vel, currentS, nLaps, currentGates)
-            if (
-                first_state[0] != 0
-                or not np.all(np.isclose(first_state[1], config.init_pos))
-                or not np.all(np.isclose(first_state[2], config.init_vel))
-                or not np.all(np.isclose(first_state[3], config.add_state[0]))  # type: ignore
-                or not np.all(np.isclose(first_state[4], config.add_state[1]))  # type: ignore
-                or not np.all(np.isclose(first_state[5], config.add_state[2]))  # type: ignore
-            ):
-                print(first_state)
-                print(config.init_pos, config.init_vel, config.add_state)
-                raise ValueError("First state sent back by C++ side did not match expected first state")
 
         result = None
 
@@ -218,14 +210,30 @@ class ZMQRecv:
 
                 # print(f"received step {step}")
 
-                if step != len(env.posLog):
-                    print(f"expected step number {len(env.posLog)} but received step {step}")
+                if step != len(self.posLog):
+                    print(f"expected step number {len(self.posLog)} but received step {step}")
 
-                env.posLog.append(pos)
-                env.velLog.append(vel)
-                env.addStateLog.append((newS, newLaps, newGates))
+                if step == 0:
+                    # we confirm that the first state is equal to the initial state we sent (to detect early potential transmission bugs)
+                    if (
+                        not np.all(np.isclose(pos, config.init_pos))
+                        or not np.all(np.isclose(vel, config.init_vel))
+                        or not np.all(np.isclose(newS, config.initS))
+                        or not np.all(np.isclose(newLaps, config.initnLaps))
+                        or not np.all(np.isclose(newGates, config.initGates))
+                    ):
+                        print(pos, vel, newS, newLaps, newGates)
+                        print(config.init_pos, config.init_vel, config.initS, config.initnLaps, config.initGates)
+                        raise ValueError("First state sent back by C++ backend did not match expected first state")
+
+                self.posLog.append(pos)
+                self.velLog.append(vel)
+                self.sLog.append(newS)
+                self.nLapsLog.append(newLaps)
+                self.currentGatesLog.append(newGates)
+
                 if renderer is not None:
-                    renderer.onNewState()
+                    renderer.onNewState(pos, vel, newS, newLaps, newGates)
 
             elif msg_type == MSG_TYPE.MSG_EVENT:
                 evt_type, agent_id = unpack.readInt(), unpack.readInt()
@@ -247,7 +255,7 @@ class ZMQRecv:
 
             elif msg_type == MSG_TYPE.MSG_DONE:
                 unpack.assert_finished()
-                print(f"Simulation done. Total steps: {len(env.posLog)}")
+                print(f"Simulation done. Total steps: {len(self.posLog)}")
                 if renderer is not None:
                     renderer.finish(tooglePlay=False, jumpToLast=False)
 
@@ -258,9 +266,6 @@ class ZMQRecv:
 
         if result is None:
             raise ValueError("C++ finished without sending event")
-
-        self.posLog = env.posLog
-        self.velLog = env.velLog
 
         return result
 

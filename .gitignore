@@ -3,6 +3,7 @@ build/*
 python-src/__pycache__/*
 gifs/*
 oldgifs/*
+trackgifs/*
 figures/*
 data/*
 
