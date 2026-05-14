@@ -4,7 +4,7 @@
 
 This project requires a Nvidia GPU running Cuda >= 12.4, and allows for Python rendering with matplotlib. Possible usages are:
 - running the Python rendering part on your local machine, and running the C++/Cuda backend over SSH on a machine with a strong GPU (see Setting up a remote connection below)
-- running everything over SSH, with only CLI output
+- running everything over SSH, with only CLI output (or matplotlib through X11 forwarding, but interaction will be very slow)
 - running everything locally if your machine is CUDA-capable
 
 In the first case, you will need to run the installation commands twice (on your machine and over SSH). This will install cuda toolkit on your machine (and Python libraries on the SSH machine) which will not be used; you can remove them in environment.yml if this is an issue.
@@ -13,7 +13,7 @@ To install everything:
 
 1. Install Conda (miniconda works fine)
 2. git clone the repo
-3. `conda env create -f environment.yml`
+3. `conda env create -f environment.yml`. This will create a conda environment named `drone-race` (you can change its name in `environment.yml`).
 
 ## Running the project
 
@@ -30,7 +30,7 @@ make -j4
 
 Then, run `./build/drone_race`. It will keep listening for configurations sent by the Python side until you ctrl-C (this avoids re-running the engine for each new simulation).
 
-If you get an error `zmq::error_t: address already in use`, that means the previous run did not close correctly. Run `pkill -f drone_race` to properly close the sockets.
+If you get an error `zmq::error_t: address already in use`, that means the previous run did not close correctly. Run `killall drone_race` to properly close the sockets.
 
 ### Python side
 

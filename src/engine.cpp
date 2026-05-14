@@ -225,6 +225,7 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
     // ── simulation loop ──────────────────────────────────────────────
     for (step = 1; step <= maxSteps; step++)
     {
+        // std::cout << "at step " << step << "\n";
         // compute actions
         std::vector<float> actions(envConfig.actionDim, 0.0f);
         for (int i = 0; i < envConfig.nAgents; i++)
@@ -237,6 +238,12 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
         // std::vector<float> np(envConfig.physDim), ns(envConfig.nAgents), nl(envConfig.nAgents);
 
         dynStep(actions);
+
+        // float sq = 0.f;
+        // int iPid = 0;
+        // for (int d = 0; d < envConfig.dim; d++)
+        //     sq += pos[iPid * envConfig.dim + d] * pos[iPid * envConfig.dim + d];
+        // std::cout << "position of PID: radius " << sqrtf(sq) << " pos " << pos[iPid * envConfig.dim] << " " << pos[iPid * envConfig.dim + 1] << "\n";
 
         sendState(sock, step);
 

@@ -33,7 +33,7 @@ __global__ void fullRolloutKernel(
 
 void minReduceCUB(const float* __restrict__ d_costs, float* __restrict__ d_minCost, int N, void* __restrict__ d_temp_storage, size_t temp_storage_bytes);
 
-// ── Weighted average of noise ────────────────────────────────────────
+// Weighted average of noise
 // One block per (timestep * dim) entry.
 // Updates nominalAction in-place: nominalAction[t*dim+d] += weightedAvg
 __global__ void weightedAverageKernel(

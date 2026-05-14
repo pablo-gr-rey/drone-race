@@ -11,7 +11,7 @@ __device__ inline void sampleCenterline(const float* trackPoints, int nSamples, 
     s = s - floorf(s);                      // wrap to [0,1)
     float idx_f = s * nSamples;
     int   idx0 = (int) idx_f;
-    int   idx1 = min(idx0 + 1, nSamples - 1);
+    int   idx1 = (idx0 + 1) % nSamples;
     float t = idx_f - idx0;
     for (int d = 0; d < dim; d++)
         out[d] = (1.0f - t) * trackPoints[idx0 * dim + d] + t * trackPoints[idx1 * dim + d];
@@ -62,7 +62,8 @@ __device__ inline float sqDistToSample(const float* trackPoints, int iTrack, int
 // util function to keep going in one direction until local maximum
 __device__ inline int findMinAlongDirection(const float* trackPoints, int nSamples, int iTrack, int dim, const float* pos, int delta, float baseSqDist, float& bestDist)
 {
-    // greedy search + margin (works if the track is locally convex)
+    // TODO: #define to check if this works
+    // greedy search + margin (should work if the track is locally convex)
     const int margin = 10;
 
     int bestI = iTrack;
@@ -95,6 +96,7 @@ __device__ inline int findMinAlongDirection(const float* trackPoints, int nSampl
     return bestI;
 }
 
+// return the closest S, and writes the closest track point in closestOut and its distance in bestDist
 __device__ inline float fastProjectOnTrack(const float* trackPoints,
     int nSamples, int dim,
     const float* pos,
@@ -103,10 +105,16 @@ __device__ inline float fastProjectOnTrack(const float* trackPoints,
     float prevS = -1.0f   // negative means unknown -> full scan
 )
 {
+#ifdef CHECK_PROJECTION
+    float testS, testDist;
+    float testClosestOut[MAX_DIM];
+    testS = projectOnTrack(trackPoints, nSamples, dim, pos, testClosestOut, testDist);
+#endif
+
     if (prevS < 0)
         return projectOnTrack(trackPoints, nSamples, dim, pos, closestOut, bestDist);
 
-    int baseI = (int) (prevS * nSamples + 0.5);
+    int baseI = (int) (prevS * nSamples + 0.5) % nSamples;
     float baseDist = sqDistToSample(trackPoints, baseI, dim, pos);
 
     // find best forwards and backwards distances
@@ -114,22 +122,50 @@ __device__ inline float fastProjectOnTrack(const float* trackPoints,
     int bestFI = findMinAlongDirection(trackPoints, nSamples, baseI, dim, pos, +1, baseDist, bestFDist);
     int bestBI = findMinAlongDirection(trackPoints, nSamples, baseI, dim, pos, -1, baseDist, bestBDist);
 
+    float bestS;
+
     if (bestFDist < bestBDist)
     {
-        bestDist = sqrt(bestFDist);
+        bestDist = sqrtf(bestFDist);
         if (closestOut)
             for (int d = 0; d < dim; d++)
                 closestOut[d] = trackPoints[bestFI * dim + d];
 
-        return ((float) bestFI) / nSamples;
+        bestS = ((float) bestFI) / nSamples;
+    }
+    else
+    {
+        bestDist = sqrtf(bestBDist);
+        if (closestOut)
+            for (int d = 0; d < dim; d++)
+                closestOut[d] = trackPoints[bestBI * dim + d];
+
+        bestS = ((float) bestBI) / nSamples;
     }
 
-    bestDist = sqrt(bestBDist);
-    if (closestOut)
-        for (int d = 0; d < dim; d++)
-            closestOut[d] = trackPoints[bestBI * dim + d];
+#ifdef CHECK_PROJECTION
+    // bool wrong = fabs(bestS - testS) > 1e-5 || fabsf(bestDist - testDist) > 1e-5;
+    // for (int d = 0; d < dim && closestOut; d++)
+    //     wrong = wrong || abs(closestOut[d] - testClosestOut[d] > 1e-5);
 
-    return ((float) bestBI) / nSamples;
+    bool wrong = fabs(bestDist - testDist) > 1e-5f;
+
+    if (wrong)
+    {
+        printf("WRONG PROJECTION for pos ");
+        for (int d = 0; d < dim; d++)
+            printf("%f ", pos[d]);
+        printf(" prevS %f\n: computed bestS %f\tbestDist %f\tclosestOut ", prevS, bestS, bestDist);
+        for (int d = 0; d < dim && closestOut; d++)
+            printf("%f ", closestOut[d]);
+        printf("\n: expected bestS %f\tbestDist %f\tclosestOut ", testS, testDist);
+        for (int d = 0; d < dim; d++)
+            printf("%f ", testClosestOut[d]);
+        printf("\n");
+    }
+#endif
+
+    return bestS;
 }
 
 // Boundary distance = distance to closest boundary

@@ -156,15 +156,14 @@ __global__ void fullRolloutKernel(
         {
             const float* curPos = pos + iAgent * envConfig.dim;
 
+            // if agent is outside, stop rollout (subsequent samples do not matter)
+            for (int d = 0; d < envConfig.dim; d++)
+                if (curPos[d] < envConfig.arenaMin[d] || curPos[d] > envConfig.arenaMax[d])
+                    stop = true;
+
             float dist;
             float newSa = fastProjectOnTrack(trackPts, nTP, envConfig.dim, curPos, nullptr, dist, S[iAgent]);
             S[iAgent] = newSa;
-
-            dist = trackBoundaryDist(envConfig.arenaMin, envConfig.arenaMax, curPos, envConfig.dim);
-
-            // one agent is outside: break (but still update other agents & costs)
-            if (dist < 0.)
-                stop = true;
 
             int nextGate = (currentGates[iAgent] + 1) % envConfig.nGates;
             float num = 0., denom = 0.;
@@ -195,7 +194,7 @@ __global__ void fullRolloutKernel(
             // std::cout.precision(5);
             // std::cout << std::fixed << "\tsqDist = " << sqDist << " sq radius " << envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate] << "\n";
 
-            if (sqDist <= envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate])
+            if (sqDist <= envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate] * mc.gateTraversalMargin * mc.gateTraversalMargin)
             {
                 currentGates[iAgent]++;
                 if (currentGates[iAgent] == envConfig.nGates)
@@ -204,7 +203,28 @@ __global__ void fullRolloutKernel(
                     laps[iAgent]++;
                 }
             }
+
+            // if agent won, stop rollout
+            if (laps[iAgent] >= envConfig.nWinLaps)
+                stop = true;
         }
+
+        // is there a collision?
+        for (int iAgent1 = 0; iAgent1 < envConfig.nAgents; iAgent1++)
+            for (int iAgent2 = iAgent1 + 1; iAgent2 < envConfig.nAgents; iAgent2++)
+            {
+                float dist2 = 0.f;
+                for (int d = 0; d < envConfig.dim; ++d)
+                {
+                    float dx = pos[iAgent1 * envConfig.dim + d] - pos[iAgent2 * envConfig.dim + d];
+                    dist2 += dx * dx;
+                }
+                if (dist2 < envConfig.minDist * envConfig.minDist)
+                {
+                    stop = true;
+                    break;
+                }
+            }
 
         // 8. Running cost
         cost += stateCost(controlAgent, pos, vel, S, laps, currentGates, t, envConfig, mc, trackPts, nTP);
@@ -215,6 +235,11 @@ __global__ void fullRolloutKernel(
 
     // ── Write outputs ────────────────────────────────────────────────
     totalCosts[s] = cost;
+
+    // float sqRad = 0.0f;
+    // for (int d = 0; d < envConfig.dim; d++)
+    //     sqRad += pos[(1 - controlAgent) * envConfig.dim + d] * pos[(1 - controlAgent) * envConfig.dim + d];
+    // printf("Final computed position of PID: rad %f (x %f y %f) (stopped early=%d)\n", sqrtf(sqRad), pos[(1 - controlAgent) * envConfig.dim], pos[(1 - controlAgent) * envConfig.dim + 1], stop);
 
     // We don't actually need the final state for the MPPI update,
     // but if you want to inspect it for debugging:

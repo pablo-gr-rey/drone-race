@@ -100,6 +100,7 @@ static MPPIConfig unpackMPPIConfig(Reader& reader)
     mppiconfig.invTemperature = reader.readFloat();
 
     mppiconfig.samplingNoise = reader.readFloat();
+    mppiconfig.gateTraversalMargin = reader.readFloat();
 
     mppiconfig.collDistFactor = reader.readFloat();
 

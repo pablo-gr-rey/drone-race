@@ -80,8 +80,7 @@ __device__ inline void predictOpponent(
             float dist = sqrtf(dist2) + 1e-8f;
             if (dist < pid.repulsionDistFact * envConfig.minDist)
             {
-                float scale = pid.repulsionFactor
-                    / powf(dist, pid.repulsionPower + 1.0f);
+                float scale = pid.repulsionFactor / powf(dist, pid.repulsionPower);
                 for (int d = 0; d < envConfig.dim; d++)
                     outAction[d] -= scale * diff[d];
             }

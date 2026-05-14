@@ -87,7 +87,7 @@ void PIDController::getControl(int agent, const float* pos, const float* speed, 
         float dist = std::sqrt(dist2) + 1e-8f;
         if (dist < params.repulsionDistFact * envConfig->minDist)
         {
-            float scale = params.repulsionFactor / std::pow(dist, params.repulsionPower + 1.0f);
+            float scale = params.repulsionFactor / std::pow(dist, params.repulsionPower);
             for (int d = 0; d < dim; d++)
                 outAction[d] -= scale * diff[d];
         }

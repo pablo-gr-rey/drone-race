@@ -131,29 +131,34 @@ void MPPIController::uploadTrack()
 
 void MPPIController::freeDevice()
 {
-    auto free_float = [](float*& p) { if (p) { cudaFree(p); p = nullptr; } };
-    auto free_int = [](int*& p) { if (p) { cudaFree(p); p = nullptr; } };
+    auto safe_free = [](auto*& p) {
+        if (p)
+        {
+            cudaFree(p);
+            p = nullptr;
+        }
+        };
 
-    free_float(d_pos);
-    free_float(d_speed);
-    free_float(d_S);
-    free_int(d_laps);
-    free_int(d_currentGates);
-    free_float(d_sampPos);
-    free_float(d_sampSpeed);
-    free_float(d_sampS);
-    free_int(d_sampLaps);
-    free_int(d_sampGates);
-    free_float(d_noise);
-    free_float(d_costs);
-    free_float(d_nominal);
-    free_float(d_minCost);
-    free_float(d_trackPts);
-    if (d_rng)
-    {
-        cudaFree(d_rng);
-        d_rng = nullptr;
-    }
+    safe_free(d_pos);
+    safe_free(d_speed);
+    safe_free(d_S);
+    safe_free(d_laps);
+    safe_free(d_currentGates);
+    safe_free(d_sampPos);
+    safe_free(d_sampSpeed);
+    safe_free(d_sampS);
+    safe_free(d_sampLaps);
+    safe_free(d_sampGates);
+    safe_free(d_noise);
+    safe_free(d_costs);
+    safe_free(d_nominal);
+    safe_free(d_minCost);
+    safe_free(d_trackPts);
+    safe_free(d_rng);
+    safe_free(d_temp_storage);
+
+    temp_storage_bytes = 0;
+
     deviceReady = false;
 }
 
@@ -236,8 +241,6 @@ void MPPIController::getControl(int agent,
     float hostMin;
     CUDA_CHECK(cudaMemcpy(&hostMin, d_minCost, sizeof(float), cudaMemcpyDeviceToHost));
 
-    // printf("minimum cost: %f\n", hostMin);
-
     // 5. Weighted average of noise -> update nominal action
     //    One block per (timestep × dim) entry.
     int wGrid = T * dim;
@@ -254,7 +257,7 @@ void MPPIController::getControl(int agent,
     for (int d = 0; d < dim; d++)
         outAction[d] = buf[d];
 
-    // printf("Minimum cost: %f, out action: ", hostMin);
+    // printf("Minimum cost: %f\n", hostMin);
     // for (int d = 0; d < dim; d++)
     //     printf("%.5f", outAction[d]);
     // printf("\n");

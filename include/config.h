@@ -18,6 +18,9 @@ constexpr int MAX_ACTION_DIM = MAX_AGENTS * MAX_DIM;
 
 #define DEBUG
 
+// if defined, fastProjectOnTrack will be compared to projectOnTrack. use this to test that the margin is correct (it will be much slower, though)
+// #define CHECK_PROJECTION
+
 // ── CUDA error helper ────────────────────────────────────────────────
 #ifdef DEBUG
 #define CUDA_CHECK(call)                                                   \
@@ -114,6 +117,7 @@ struct MPPIConfig
     float invTemperature = 10.0f;
 
     float samplingNoise = 0.1f;
+    float gateTraversalMargin = 0.95f;
 
     float collDistFactor = 1.0f;
 

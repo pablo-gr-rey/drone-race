@@ -85,6 +85,7 @@ struct DeviceMPPIConfig
     float invTemperature;
 
     float samplingNoise;
+    float gateTraversalMargin;
 
     float collDistFactor;
 
@@ -110,7 +111,9 @@ struct DeviceMPPIConfig
         nSamples = h.nSamples;
         nTimesteps = h.nTimesteps;
         invTemperature = h.invTemperature;
+
         samplingNoise = h.samplingNoise;
+        gateTraversalMargin = h.gateTraversalMargin;
         collDistFactor = h.collDistFactor;
 
         oppDistWeight = h.oppDistWeight;
