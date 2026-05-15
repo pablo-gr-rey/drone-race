@@ -319,8 +319,12 @@ class MPPIConfig(ControllerConfig):
     #     None  # should be the list of modeled getControl() method of opponents
     # )
 
+    nPIDStrats: int = 1
+    oppKind: CONTROLLER_TYPE = CONTROLLER_TYPE.CONT_DUMMY
+    oppPidStrat: int = 0  # temporary, while there is still no belief
     # obviously, should not be MPPIConfig
-    opponentConfig: DummyConfig | PIDConfig = field(default_factory=lambda: DummyConfig())
+    # opponentConfig: DummyConfig | PIDConfig = field(default_factory=lambda: DummyConfig())
+    opponentPidConfigs: tuple[PIDConfig, ...] = ()
 
 
 # class Controller(ABC):

@@ -13,6 +13,7 @@ from typing import Any
 import numpy as np
 from protocol import ZMQRecv
 from utils import (
+    CONTROLLER_TYPE,
     ControllerConfig,
     DummyConfig,
     GateEnvironmentConfig,
@@ -389,14 +390,17 @@ def mainGate():
         ]
     )
 
+    pidafraid = PIDConfig(kp=5, kd=20, repulsionFactor=20, repulsionDistFactor=3, racelineIndex=1, actionNoise=0)
+    pidbold = PIDConfig(kp=5, kd=20, repulsionFactor=0, repulsionDistFactor=3, racelineIndex=1, actionNoise=0)
+
     mppiconfig = MPPIConfig(
         nSamples=100000,
         nTimesteps=60,
         inv_temperature=0.01,
         samplingNoise=3,
         gateTraversalMargin=0.95,
+        collDistFactor=1.1,
         # collDistFactor=1.5,
-        collDistFactor=1.5,
         finalAdvWeight=200,
         # finalAdvWeight=0,
         # finalSpeedWeight=50,
@@ -413,21 +417,18 @@ def mainGate():
         outsideCost=1000000,
         collisionCost=1000000,
         winCost=100000,
+        oppKind=CONTROLLER_TYPE.CONT_PID,
+        nPIDStrats=2,
+        opponentPidConfigs=(pidafraid, pidbold),
+        oppPidStrat=0,
     )
-
-    pidconfig = PIDConfig(kp=5, kd=20, repulsionFactor=0, repulsionDistFactor=3, racelineIndex=1, actionNoise=10)
-    # pidconfig = PIDConfig(kp=5, kd=20, repulsionFactor=0, racelineIndex=2)
 
     dummyconfig = DummyConfig()
 
-    # mppiconfig.opponentConfig = blindpidconfig
-    mppiconfig.opponentConfig = pidconfig
-    # mppiconfig.opponentConfig = dummyconfig
-    # mppiconfig2.opponentConfig = pidconfig
-    # mppiconfig.opponentConfig = blindpidconfig
+    cont_configs: list[ControllerConfig] = [pidafraid, mppiconfig]
+    # cont_configs: list[ControllerConfig] = [pidbold, mppiconfig]
 
     # cont_configs: list[ControllerConfig] = [mppiconfig, pidconfig]
-    cont_configs: list[ControllerConfig] = [pidconfig, mppiconfig]
     # cont_configs: list[ControllerConfig] = [blindpidconfig, mppiconfig]
     # cont_configs: list[ControllerConfig] = [mppiconfig, mppiconfig2]
     # cont_configs: list[ControllerConfig] = [mppiconfig, blindpidconfig]

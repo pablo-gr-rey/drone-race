@@ -28,7 +28,7 @@ class BytePacker:
         self.pushInt(a.size)
         self.buf += a.tobytes(order="C")
 
-    def pushObj(self, val: Any) -> bool:
+    def pushObj(self, val: Any, warn: bool = True, log: bool = False) -> bool:
         "Return False if the object (or part of it in case of tuple) could not be pushed"
         if isinstance(val, int):
             self.pushInt(val)
@@ -38,13 +38,30 @@ class BytePacker:
             self.pushFloat(val)
         elif isinstance(val, np.ndarray):
             self.pushArray(val)
-        elif isinstance(val, tuple):
+        elif isinstance(val, tuple) or isinstance(val, list):
             for v in val:
                 if not self.pushObj(v):
+                    return False
+        elif dataclasses.is_dataclass(val) and not isinstance(val, type):
+            for field in dataclasses.fields(val):
+                n_val = getattr(val, field.name)
+                # avoid numeric issues: it's important to send the correct type! (ie. trackWidth=2 instead of 2.0 is wrongly sent as int and reinterpreted as messy float)
+                if field.type is float:
+                    n_val = float(n_val)
+                elif field.type is int:
+                    n_val = int(n_val)
+
+                if log:
+                    print(
+                        f"Packing field {field.name} of type {type(n_val)}, n_value {n_val if not isinstance(n_val, np.ndarray) else n_val}"
+                    )
+
+                if not self.pushObj(n_val):
                     return False
         elif val is None or isinstance(val, types.FunctionType):
             pass
         else:
+            print(f"Failed to pack object of type {type(val)} value {val} ")
             return False
 
         return True
@@ -95,35 +112,7 @@ def encodeConfig(config: Any, msg_type: Optional[int] = None, warn=True, log=Fal
     if log:
         print(f"Encoding {type(config)}...")
 
-    for field in dataclasses.fields(config):
-        val = getattr(config, field.name)
-        # avoid numeric issues: it's important to send the correct type! (ie. trackWidth=2 instead of 2.0 is wrongly sent as int and reinterpreted as messy float)
-        if field.type is float:
-            val = float(val)
-        elif field.type is int:
-            val = int(val)
-
-        if log:
-            print(f"Packing field {field.name} of type {type(val)}, value {val if not isinstance(val, np.ndarray) else val}")
-
-        if field.name == "init_state":
-            # legacy field: skip, explicit init_pos/init_vel are used
-            continue
-
-        if field.name == "init_pos":
-            assert isinstance(val, np.ndarray)
-            p.pushArray(val)
-            continue
-
-        if field.name == "init_vel":
-            assert isinstance(val, np.ndarray)
-            p.pushArray(val)
-            continue
-
-        if isinstance(val, ControllerConfig):
-            encodeConfig(val, None, warn, log, p)
-        elif not p.pushObj(val) and warn:
-            print(f"Cannot pack field {field.name} of type {type(val)} value {val} ")
+    p.pushObj(config, warn, log)
 
     return p
 
