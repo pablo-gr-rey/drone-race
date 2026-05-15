@@ -13,6 +13,7 @@
 constexpr int MAX_AGENTS = 2;
 constexpr int MAX_DIM = 2;
 constexpr int MAX_GATES = 5;
+constexpr int MAX_THETA = 2;
 
 #define DEBUG
 
@@ -154,8 +155,11 @@ struct MPPIConfig
     float finalOppAdvWeight = 5.0f;
     float finalSpeedWeight = 5.0f;
 
+    int nPIDStrats;
     ControllerKind oppKind = CONT_DUMMY;
-    PIDConfig oppPid{};
+    int oppPidStrat;
+
+    PIDConfig oppPid[MAX_THETA];
 };
 
 using ControllerConfig = std::variant<DummyConfig, PIDConfig, MPPIConfig>;

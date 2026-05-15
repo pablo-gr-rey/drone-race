@@ -105,9 +105,10 @@ __global__ void fullRolloutKernel(
                 }
 
                 case ControllerKind::CONT_PID: {
-                    computePIDAction(a, pos, vel, S, currentGates, envConfig, mc.oppPid, trackPts, actions + a * envConfig.dim);
+                    // TODO: should use belief
+                    computePIDAction(a, pos, vel, S, currentGates, envConfig, mc.oppPid[mc.oppPidStrat], trackPts, actions + a * envConfig.dim);
                     for (int d = 0; d < envConfig.dim; d++)
-                        actions[a * envConfig.dim + d] += mc.oppPid.actionNoise * curand_normal(&rng);
+                        actions[a * envConfig.dim + d] += mc.oppPid[mc.oppPidStrat].actionNoise * curand_normal(&rng);
                     break;
                 }
                 }

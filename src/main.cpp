@@ -11,8 +11,6 @@ void runEngine(zmq::socket_t& sock)
 {
     int max_steps = 500;
 
-    std::cout << "EnvironmentConfig size: " << sizeof(EnvironmentConfig) << "\n";
-
     std::cout << "Waiting for track configuration header...\n";
     zmq::message_t msg;
     auto res = sock.recv(msg);
@@ -47,6 +45,8 @@ void runEngine(zmq::socket_t& sock)
 
 int main(int argc, char** argv)
 {
+    std::cout << "EnvironmentConfig size: " << sizeof(EnvironmentConfig) << " bytes; MPPIConfig size: " << sizeof(MPPIConfig) << " bytes\n";
+
     std::string zmqAddr = "tcp://*:5555";
     if (argc > 1) zmqAddr = argv[1];
 

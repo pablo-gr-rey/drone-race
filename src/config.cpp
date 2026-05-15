@@ -138,7 +138,25 @@ static MPPIConfig unpackMPPIConfig(Reader& reader)
     mppiconfig.finalOppAdvWeight = reader.readFloat();
     mppiconfig.finalSpeedWeight = reader.readFloat();
 
-    std::cout << "loaded MPPI samples " << mppiconfig.nSamples << " samplingNoise " << mppiconfig.samplingNoise << " finalAdvWeight " << mppiconfig.finalAdvWeight << " finalOppAdvWeight " << mppiconfig.finalOppAdvWeight << '\n';
+    mppiconfig.nPIDStrats = reader.readInt32();
+    mppiconfig.oppKind = (ControllerKind) reader.readInt32();
+    mppiconfig.oppPidStrat = reader.readInt32();
+
+    if (mppiconfig.nPIDStrats > MAX_THETA)
+        throw std::runtime_error(std::format("Received MPPI config for %d PID strategies but MAX_THETA is set to %d. Edit this constant and recompile", mppiconfig.nPIDStrats, MAX_THETA));
+
+    for (int i = 0; i < mppiconfig.nPIDStrats; i++)
+    {
+        ControllerKind kind = (ControllerKind) reader.readInt32();
+        if (kind != CONT_PID)
+            throw std::runtime_error(std::format("For opponent %d of MPPI config, received kind %d instead of CONT_PID (%d)", i, (int) kind, (int) CONT_PID));
+
+        mppiconfig.oppPid[i] = unpackPIDConfig(reader);
+    }
+
+    std::cout << "loaded MPPI samples " << mppiconfig.nSamples << " timesteps " << mppiconfig.nTimesteps << " collDistFactor " << mppiconfig.collDistFactor << " with " << mppiconfig.nPIDStrats << " opponent strats:\n";
+    for (int i = 0; i < mppiconfig.nPIDStrats; i++)
+        std::cout << "\tConfig " << i << ": repulsionFactor " << mppiconfig.oppPid[i].repulsionFactor << " action noise " << mppiconfig.oppPid[i].actionNoise << "\n";
 
     return mppiconfig;
 }
@@ -163,15 +181,15 @@ void ControllerSpec::unpackHeader(const void* buf, size_t len)
         MPPIConfig mppiconfig = unpackMPPIConfig(reader);
 
         // read opponent
-        mppiconfig.oppKind = (ControllerKind) reader.readInt32();
-        if (mppiconfig.oppKind == CONT_DUMMY)
-        {
-        }
-        //     mppiconfig.opponent = DummyConfig{};
-        else if (mppiconfig.oppKind == CONT_PID)
-            mppiconfig.oppPid = unpackPIDConfig(reader);
-        else
-            throw std::runtime_error("MPPI opponent kind unsupported");
+        // mppiconfig.oppKind = (ControllerKind) reader.readInt32();
+        // if (mppiconfig.oppKind == CONT_DUMMY)
+        // {
+        // }
+        // //     mppiconfig.opponent = DummyConfig{};
+        // else if (mppiconfig.oppKind == CONT_PID)
+        //     mppiconfig.oppPid = unpackPIDConfig(reader);
+        // else
+        //     throw std::runtime_error("MPPI opponent kind unsupported");
 
         config = mppiconfig;
     }
