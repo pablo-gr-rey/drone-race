@@ -1,7 +1,7 @@
 #pragma once
 
 #include "config.h"
-#include "device_config.cuh"
+#include "controllers.h"
 
 #include <curand_kernel.h>
 #include <cstddef>
@@ -10,10 +10,9 @@ __global__ void initRNGKernel(curandState*, unsigned long long, int);
 __global__ void generateNoiseKernel(float*, curandState*, float, int, int, int);
 __global__ void fullRolloutKernel(
     int controlAgent,
-    const DeviceEnvironmentConfig envConfig,
-    const DeviceMPPIConfig mc,
-    OpponentModelType oppModel,
-    const PIDConfig oppPid,
+    // const DeviceEnvironmentConfig envConfig,
+    const EnvironmentConfig envConfig,
+    const MPPIConfig mc,
     const float* __restrict__ initPos,
     const float* __restrict__ initVel,
     const float* __restrict__ initS,

@@ -2,15 +2,7 @@
 #include <iostream>
 #include <format>
 
-// static void print_vector(std::string name, std::vector<float> vec)
-// {
-//     std::cout << name << " size " << vec.size() << "\t";
-//     for (float v : vec)
-//         std::cout << v << " ";
-//     std::cout << "\n";
-// }
-
-void EnvironmentConfig::unpackHeader(const void* buf, size_t len)
+std::vector<float> EnvironmentConfig::unpackHeader(const void* buf, size_t len)
 {
     Reader reader(buf, len);
 
@@ -26,50 +18,76 @@ void EnvironmentConfig::unpackHeader(const void* buf, size_t len)
     nRacelines = (int) reader.readInt32();
     nGates = (int) reader.readInt32();
 
-    initPos = reader.readFloatArray();
-    initSpeed = reader.readFloatArray();
+    if (nAgents > MAX_AGENTS)
+        throw std::runtime_error(std::format("Received config for %d agents but MAX_AGENTS is set to %d. Edit this constant and recompile", nAgents, MAX_AGENTS));
+    if (dim > MAX_DIM)
+        throw std::runtime_error(std::format("Received config for dimension %d but MAX_DIM is set to %d. Edit this constant and recompile", dim, MAX_DIM));
+    if (nGates > MAX_GATES)
+        throw std::runtime_error(std::format("Received config for %d gates but MAX_GATES is set to %d. Edit this constant and recompile", nGates, MAX_GATES));
 
-    initS = reader.readFloatArray();
-    initLaps = reader.readIntArray();
-    initGates = reader.readIntArray();
+    // initPos = reader.readFloatArray();
+    // initSpeed = reader.readFloatArray();
+
+    // initS = reader.readFloatArray();
+    // initLaps = reader.readIntArray();
+    // initGates = reader.readIntArray();
+
+    reader.readFloatArray(initPos);
+    reader.readFloatArray(initSpeed);
+
+    reader.readFloatArray(initS);
+    reader.readIntArray(initLaps);
+    reader.readIntArray(initGates);
 
     minDist = reader.readFloat();
     posNoiseLevel = reader.readFloat();
     speedNoiseLevel = reader.readFloat();
     actionNoiseLevel = reader.readFloat();
 
-    std::vector<float> ms = reader.readFloatArray(); // expecting length nAgents
-    std::vector<float> ma = reader.readFloatArray(); // expecting length nAgents
+    // std::vector<float> ms = reader.readFloatArray(); // expecting length nAgents
+    // std::vector<float> ma = reader.readFloatArray(); // expecting length nAgents
 
-    if ((int) ms.size() != nAgents || (int) ma.size() != nAgents)
-        throw std::runtime_error("Error unpacking EnvironmentConfig: maxSpeed/maxAccel length must equal nAgents");
-    if (nAgents > MAX_AGENTS)
-        throw std::runtime_error("Error unpacking EnvironmentConfig: nAgents > MAX_AGENTS");
+    // if ((int) ms.size() != nAgents || (int) ma.size() != nAgents)
+    //     throw std::runtime_error("Error unpacking EnvironmentConfig: maxSpeed/maxAccel length must equal nAgents");
+    // if (nAgents > MAX_AGENTS)
+    //     throw std::runtime_error("Error unpacking EnvironmentConfig: nAgents > MAX_AGENTS");
 
-    std::memcpy(maxSpeed, ms.data(), ms.size() * sizeof(float));
-    std::memcpy(maxAccel, ma.data(), ma.size() * sizeof(float));
+    // std::memcpy(maxSpeed, ms.data(), ms.size() * sizeof(float));
+    // std::memcpy(maxAccel, ma.data(), ma.size() * sizeof(float));
+
+    reader.readFloatArray(maxSpeed);
+    reader.readFloatArray(maxAccel);
 
     nTrackSamples = (int) reader.readInt32();
     nWinLaps = (int) reader.readInt32();
     targetDistance = reader.readFloat();
 
-    gateCenters = reader.readFloatArray();
-    gateVectors = reader.readFloatArray();
-    gateRadius = reader.readFloatArray();
+    // gateCenters = reader.readFloatArray();
+    // gateVectors = reader.readFloatArray();
+    // gateRadius = reader.readFloatArray();
 
-    arenaMin = reader.readFloatArray();
-    arenaMax = reader.readFloatArray();
+    // arenaMin = reader.readFloatArray();
+    // arenaMax = reader.readFloatArray();
 
-    trackPoints = reader.readFloatArray();
+    reader.readFloatArray(gateCenters);
+    reader.readFloatArray(gateVectors);
+    reader.readFloatArray(gateRadius);
+
+    reader.readFloatArray(arenaMin);
+    reader.readFloatArray(arenaMax);
+
+    // float* trackPoints = (float*) malloc(nRacelines * nTrackSamples * dim * sizeof(float));
+    // reader.readFloatArray(trackPoints);
+    std::vector<float> trackPoints = reader.readFloatArray();
 
     reader.assertFinished();
 
-    std::cout << "read nAgents " << nAgents << " actionNoiseLevel " << actionNoiseLevel << " max speed " << maxSpeed[0] << ' ' << maxSpeed[1] << " length of track points " << trackPoints.size() << "\ngate vectors:";
+    std::cout << "read nAgents " << nAgents << " nWinLaps " << nWinLaps << " max speed " << maxSpeed[0] << ' ' << maxSpeed[1] << " nTrackSamples" << nTrackSamples << "\ngate vectors:";
     for (float val : gateVectors)
         std::cout << val << " ";
     std::cout << "\n";
 
-    recompute();
+    return trackPoints;
 }
 
 static PIDConfig unpackPIDConfig(Reader& reader)
@@ -85,7 +103,9 @@ static PIDConfig unpackPIDConfig(Reader& reader)
 
     pidconfig.racelineIndex = reader.readInt32();
 
-    std::cout << "loaded PID repulsionFactor " << pidconfig.repulsionFactor << " racelineIndex " << pidconfig.racelineIndex << '\n';
+    pidconfig.actionNoise = reader.readFloat();
+
+    std::cout << "loaded PID repulsionFactor " << pidconfig.repulsionFactor << " racelineIndex " << pidconfig.racelineIndex << " noise level " << pidconfig.actionNoise << '\n';
 
     return pidconfig;
 }
@@ -133,21 +153,23 @@ void ControllerSpec::unpackHeader(const void* buf, size_t len)
 
     int contKind = reader.readInt32();
 
-    if (contKind == CONT_DUMMY)
+    if (contKind == ControllerKind::CONT_DUMMY)
         config = DummyConfig{};
-    else if (contKind == CONT_PID)
+    else if (contKind == ControllerKind::CONT_PID)
         config = unpackPIDConfig(reader);
-    else if (contKind == CONT_MPPI)
+    else if (contKind == ControllerKind::CONT_MPPI)
     {
         // read scalar parameters
         MPPIConfig mppiconfig = unpackMPPIConfig(reader);
 
         // read opponent
-        int oppKind = (int) reader.readInt32();
-        if (oppKind == CONT_DUMMY)
-            mppiconfig.opponent = DummyConfig{};
-        else if (oppKind == CONT_PID)
-            mppiconfig.opponent = unpackPIDConfig(reader);
+        mppiconfig.oppKind = (ControllerKind) reader.readInt32();
+        if (mppiconfig.oppKind == CONT_DUMMY)
+        {
+        }
+        //     mppiconfig.opponent = DummyConfig{};
+        else if (mppiconfig.oppKind == CONT_PID)
+            mppiconfig.oppPid = unpackPIDConfig(reader);
         else
             throw std::runtime_error("MPPI opponent kind unsupported");
 

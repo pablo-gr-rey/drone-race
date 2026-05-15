@@ -11,28 +11,50 @@
 #include <variant>
 #include <type_traits>
 #include <iomanip>
+#include <cuda_runtime.h>
+
 
 SimulationEngine::SimulationEngine(
     const EnvironmentConfig& config,
+    std::vector<float> trackPts,
     const std::vector<ControllerSpec>& specs)
-    : envConfig(config), rng(42)
+    : rng(42)
 {
-    envConfig.recompute();
-
     hasCollision = false;
     isWinner = -1;
     isOutside = -1;
-    pos = config.initPos;
-    speed = config.initSpeed;
-    currentS = config.initS;
-    nLaps = config.initLaps;
-    currentGates = config.initGates;
+    d_trackPoints = nullptr;
+
+    trackPoints = trackPts;
+    envConfig = config;
+    // pos = config.initPos;
+    // speed = config.initSpeed;
+    // currentS = config.initS;
+    // nLaps = config.initLaps;
+    // currentGates = config.initGates;
+
+    pos.assign(config.initPos, config.initPos + config.nAgents * config.dim);
+    speed.assign(config.initSpeed, config.initSpeed + config.nAgents * config.dim);
+
+    currentS.assign(config.initS, config.initS + config.nAgents);
+    nLaps.assign(config.initLaps, config.initLaps + config.nAgents);
+    currentGates.assign(config.initGates, config.initGates + config.nAgents);
 
     for (int i = 0; i < envConfig.nAgents; i++)
     {
         std::unique_ptr<Controller> ctrl = makeController(specs[i]);
         controllerNames.push_back(ctrl->name);
         controllers.push_back(std::move(ctrl));
+    }
+}
+
+SimulationEngine::~SimulationEngine()
+{
+    if (d_trackPoints != nullptr)
+    {
+        if (cudaFree(d_trackPoints) != cudaSuccess)
+            std::cerr << "Failed to free d_trackPoints during cleanup!";
+        d_trackPoints = nullptr;
     }
 }
 
@@ -49,7 +71,12 @@ std::unique_ptr<Controller> SimulationEngine::makeController(const ControllerSpe
             else if constexpr (std::is_same_v<T, PIDConfig>)
                 ctrl = std::make_unique<PIDController>(envConfig, contConfig);
             else if constexpr (std::is_same_v<T, MPPIConfig>)
-                ctrl = std::make_unique<MPPIController>(envConfig, contConfig);
+            {
+                if (d_trackPoints == nullptr)
+                    allocTrack();
+
+                ctrl = std::make_unique<MPPIController>(envConfig, contConfig, d_trackPoints);
+            }
         }, sp.config);
 
     if (!ctrl)
@@ -58,6 +85,17 @@ std::unique_ptr<Controller> SimulationEngine::makeController(const ControllerSpe
     ctrl->name = sp.name;
     ctrl->engine = this;
     return ctrl;
+}
+
+void SimulationEngine::allocTrack()
+{
+    if (d_trackPoints != nullptr)
+        return;
+
+    // upload track
+    size_t bytes = envConfig.nRacelines * envConfig.nTrackSamples * envConfig.dim * sizeof(float);
+    CUDA_CHECK(cudaMalloc(&d_trackPoints, bytes));
+    CUDA_CHECK(cudaMemcpy(d_trackPoints, trackPoints.data(), bytes, cudaMemcpyHostToDevice));
 }
 
 void SimulationEngine::sendState(zmq::socket_t& sock, int step)
@@ -101,8 +139,6 @@ void SimulationEngine::sendDone(zmq::socket_t& sock)
 
 void SimulationEngine::dynStep(const std::vector<float>& actions)
 {
-    std::normal_distribution<float> nd(0.0f, 1.0f);
-
     // clamp + noise actions
 
     std::vector<float> act = actions;
@@ -163,8 +199,9 @@ void SimulationEngine::dynStep(const std::vector<float>& actions)
     // update S, gates and laps
     for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
     {
-        // float s = cpuProjectOnTrack(envConfig.trackPoints, envConfig.nTrackSamples, dim, phys_state.begin() + 2 * iAgent * dim, 2).first;
-        float s = cpuProjectOnTrack(pos, iAgent).first;
+        float dist;
+        float s = fastProjectOnTrack(trackPoints.data(), envConfig.nTrackSamples, envConfig.dim, pos.data() + iAgent * envConfig.dim, nullptr, dist, -1.0f);
+        // float s = projectOnTrack(trackPoints.data(), envConfig.nTrackSamples, envConfig.dim, pos.data() + iAgent * envConfig.dim, nullptr, dist);
         currentS[iAgent] = s;
 
         // if (s > currentS[iAgent] + 0.5f)
@@ -227,12 +264,14 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
     {
         // std::cout << "at step " << step << "\n";
         // compute actions
-        std::vector<float> actions(envConfig.actionDim, 0.0f);
+        std::vector<float> actions(envConfig.nAgents * envConfig.dim, 0.0f);
         for (int i = 0; i < envConfig.nAgents; i++)
             controllers[i]->getControl(i, pos.data(), speed.data(), currentS.data(),
                 nLaps.data(),
                 currentGates.data(),
-                actions.data() + i * envConfig.dim);
+                actions.data() + i * envConfig.dim,
+                nd,
+                rng);
 
         // step dynamics
         // std::vector<float> np(envConfig.physDim), ns(envConfig.nAgents), nl(envConfig.nAgents);
@@ -315,30 +354,6 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
         std::cout << "Simulation truncated (maxSteps reached)\n";
 }
 
-
-std::vector<float> SimulationEngine::getTarget(int agent, const float* S, int racelineIndex) const
-{
-    if (racelineIndex == -1)    // just return the center of the next gate
-        return std::vector<float>(envConfig.gateCenters.begin() + (currentGates[agent] + 1) % envConfig.nGates * envConfig.dim, envConfig.gateCenters.begin() + ((currentGates[agent] + 1) % envConfig.nGates + 1) * envConfig.dim);
-
-    // std::vector<float> ans = cpuSampleCenterline(envConfig.trackPoints, envConfig.nTrackSamples, envConfig.dim, std::fmod(S[agent] + envConfig.targetDistance, 1.0f), racelineIndex);
-    std::vector<float> ans = cpuSampleCenterline(std::fmod(S[agent] + envConfig.targetDistance, 1.0f), racelineIndex);
-
-    // if (racelineIndex == 1)
-    // {
-    //     std::cout << "for S = " << S[agent] << ": sampled ";
-    //     for (int i = 0; i < envConfig.dim; i++)
-    //         std::cout << ans[i] << ' ';
-    //     int ind = racelineIndex * envConfig.nTrackSamples + (int) (S[agent] * envConfig.nTrackSamples);
-    //     std::cout << "sampling on this single S (from ind " << ind << ") ";
-    //     for (int i = 0; i < envConfig.dim; i++)
-    //         std::cout << envConfig.trackPoints[ind * envConfig.dim + i] << ' ';
-    //     std::cout << '\n';
-    // }
-
-    return ans;
-}
-
 bool SimulationEngine::checkCollision() const
 {
     for (int a = 0; a < envConfig.nAgents; a++)
@@ -371,47 +386,4 @@ int SimulationEngine::checkWinner() const
     for (int a = 0; a < envConfig.nAgents; a++)
         if (nLaps[a] >= (float) envConfig.nWinLaps) return a;
     return -1;
-}
-
-
-// return the centerline sampled at given s
-std::vector<float> SimulationEngine::cpuSampleCenterline(float s, int racelineIndex) const
-{
-    std::vector<float> out(envConfig.dim);
-
-    s = s - std::floor(s);
-    float idx_f = s * envConfig.nTrackSamples;
-    int idx0 = (int) idx_f;
-    int idx1 = (idx0 + 1) % envConfig.nTrackSamples;
-    float t = idx_f - idx0;
-
-    for (int d = 0; d < envConfig.dim; d++)
-        out[d] = (1.0f - t) * envConfig.trackPoints[(envConfig.nTrackSamples * racelineIndex + idx0) * envConfig.dim + d] + t * envConfig.trackPoints[(envConfig.nTrackSamples * racelineIndex + idx1) * envConfig.dim + d];
-
-    return out;
-}
-
-// return the closest S and the distance to it for the given pos.
-std::pair<float, float> SimulationEngine::cpuProjectOnTrack(const std::vector<float>& posVec, int iAgent) const
-{
-    float bestS = 0.0f, bestdSq = 1e30f;
-    const float sStep = 1.0f / envConfig.nTrackSamples;
-
-    int iTrack = 0;
-
-    for (int i = 0; i < envConfig.nTrackSamples; ++i)
-    {
-        float dSq = 0.0f;
-
-        for (int d = 0; d < envConfig.dim; ++d)
-        {
-            float dx = envConfig.trackPoints[iTrack] - posVec[iAgent * envConfig.dim + d];
-            dSq += dx * dx;
-            iTrack++;
-        }
-
-        if (dSq < bestdSq) { bestdSq = dSq; bestS = i * sStep; }
-    }
-
-    return std::make_pair(bestS, std::sqrt(bestdSq));
 }

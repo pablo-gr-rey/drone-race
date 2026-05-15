@@ -1,9 +1,7 @@
 #pragma once
 
 #include "config.h"
-#include "device_config.cuh"
 #include "state.h"
-#include "track.cuh"
 #include <cmath>
 
 // ── Running cost ─────────────────────────────────────────────────────
@@ -11,8 +9,8 @@ __device__ inline float stateCost(
     int agent,
     const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates,
     int timestep,
-    const DeviceEnvironmentConfig& envConfig,
-    const DeviceMPPIConfig& mppiConfig,
+    const EnvironmentConfig& envConfig,
+    const MPPIConfig& mppiConfig,
     const float* trackPoints, int nTP)
 {
     float cost = 0.0f;
@@ -60,8 +58,8 @@ __device__ inline float stateCost(
 __device__ inline float finalCost(
     int agent,
     const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates,
-    const DeviceEnvironmentConfig& envConfig,
-    const DeviceMPPIConfig& mppiConfig,
+    const EnvironmentConfig& envConfig,
+    const MPPIConfig& mppiConfig,
     const float* trackPoints, int nTP)
 {
     float cost = 0.0f;

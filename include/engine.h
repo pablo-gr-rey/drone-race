@@ -11,7 +11,8 @@
 class SimulationEngine
 {
 public:
-    SimulationEngine(const EnvironmentConfig& cfg, const std::vector<ControllerSpec>& specs);
+    SimulationEngine(const EnvironmentConfig& cfg, std::vector<float> trackPoints, const std::vector<ControllerSpec>& specs);
+    ~SimulationEngine();
 
     void sendState(zmq::socket_t& sock, int step);
     void sendEvent(zmq::socket_t& sock, EventType type, int info);
@@ -20,12 +21,15 @@ public:
     // Run until termination or maxSteps. Publishes over ZMQ.
     void run(int maxSteps, zmq::socket_t& sock);
 
-    std::vector<float> getTarget(int agent, const float* S, int racelineIndex) const;
-
     // public config & track data
     EnvironmentConfig envConfig;
+    std::vector<float> trackPoints;
 
 private:
+    std::normal_distribution<float> nd{ 0.0f, 1.0f };
+
+    float* d_trackPoints;   // shared across all MPPI controllers
+
     // state
     std::vector<float> pos;   // (nAgents * dim) positions (x1 y1 .. x2 y2 ..)
     std::vector<float> speed; // (nAgents * dim) speeds  (vx1 vy1 .. vx2 vy2 ..)
@@ -46,6 +50,7 @@ private:
 
     // build actual controller from spec
     std::unique_ptr<Controller> makeController(const ControllerSpec& sp);
+    void allocTrack();
 
     void dynStep(const std::vector<float>& actions);
 
@@ -53,12 +58,4 @@ private:
     bool checkCollision() const;
     int  checkOutside()   const;  // -1 = none
     int  checkWinner()    const;  // -1 = none
-
-    // track utils
-
-    // return the centerline sampled at given s
-    std::vector<float> cpuSampleCenterline(float s, int racelineIndex) const;
-
-    // return the closest S and the distance to it for the given pos.
-    std::pair<float, float> cpuProjectOnTrack(const std::vector<float>& pos, int iAgent) const;
 };

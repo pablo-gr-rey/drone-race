@@ -11,6 +11,8 @@ void runEngine(zmq::socket_t& sock)
 {
     int max_steps = 500;
 
+    std::cout << "EnvironmentConfig size: " << sizeof(EnvironmentConfig) << "\n";
+
     std::cout << "Waiting for track configuration header...\n";
     zmq::message_t msg;
     auto res = sock.recv(msg);
@@ -18,7 +20,7 @@ void runEngine(zmq::socket_t& sock)
         throw std::runtime_error("Track configuration zmq recv failed");
 
     EnvironmentConfig envConfig;
-    envConfig.unpackHeader(msg.data(), msg.size());
+    std::vector<float> trackPoints = envConfig.unpackHeader(msg.data(), msg.size());
 
     std::cout << "Header unpacked, starting simulation\n";
 
@@ -32,7 +34,7 @@ void runEngine(zmq::socket_t& sock)
         specs[i].unpackHeader(msg.data(), msg.size());
     }
 
-    SimulationEngine engine(envConfig, specs);
+    SimulationEngine engine(envConfig, trackPoints, specs);
 
     auto begin = std::chrono::steady_clock::now();
 

@@ -10,15 +10,19 @@
 #include <type_traits>
 
 // ── compile-time limits ──────────────────────────────────────────────
-constexpr int MAX_AGENTS = 4;
+constexpr int MAX_AGENTS = 2;
 constexpr int MAX_DIM = 2;
 constexpr int MAX_GATES = 5;
-constexpr int MAX_PHYS_DIM = MAX_AGENTS * MAX_DIM * 2; // pos+vel
-constexpr int MAX_ACTION_DIM = MAX_AGENTS * MAX_DIM;
 
 #define DEBUG
 
-// if defined, fastProjectOnTrack will be compared to projectOnTrack. use this to test that the margin is correct (it will be much slower, though)
+#ifdef __CUDACC__
+#define HD __host__ __device__
+#else
+#define HD
+#endif
+
+// if defined, fastProjectOnTrack will be compared to projectOnTrack. use this to test that the margin is correct when changing track (it will be much slower, though)
 // #define CHECK_PROJECTION
 
 // ── CUDA error helper ────────────────────────────────────────────────
@@ -47,11 +51,17 @@ struct EnvironmentConfig
     int nRacelines;
     int nGates;
 
-    std::vector<float> initPos;
-    std::vector<float> initSpeed;
-    std::vector<float> initS;
-    std::vector<int> initLaps;
-    std::vector<int> initGates;
+    // std::vector<float> initPos;
+    // std::vector<float> initSpeed;
+    // std::vector<float> initS;
+    // std::vector<int> initLaps;
+    // std::vector<int> initGates;
+
+    float initPos[MAX_AGENTS * MAX_DIM];
+    float initSpeed[MAX_AGENTS * MAX_DIM];
+    float initS[MAX_AGENTS];
+    int initLaps[MAX_AGENTS * MAX_DIM];
+    int initGates[MAX_AGENTS * MAX_DIM];
 
     float minDist;
     float posNoiseLevel;
@@ -66,33 +76,40 @@ struct EnvironmentConfig
     int nWinLaps;
     float targetDistance;
 
-    std::vector<float> gateCenters; // (nGates * dim)
-    std::vector<float> gateVectors; // (nGates * dim)
-    std::vector<float> gateRadius;  // (nGates)
+    // std::vector<float> gateCenters; // (nGates * dim)
+    // std::vector<float> gateVectors; // (nGates * dim)
+    // std::vector<float> gateRadius;  // (nGates)
 
-    std::vector<float> arenaMin;    // (dim)
-    std::vector<float> arenaMax;    // (dim)
+    // std::vector<float> arenaMin;    // (dim)
+    // std::vector<float> arenaMax;    // (dim)
 
-    std::vector<float> trackPoints; // (nTrackSamples * nRacelines, dim)
+    // std::vector<float> trackPoints; // (nTrackSamples * nRacelines, dim)
 
-    // derived
-    int physDim = 0;   // nAgents * dim * 2
-    int actionDim = 0;   // nAgents * dim
+    float gateCenters[MAX_GATES * MAX_DIM]; // (nGates * dim)
+    float gateVectors[MAX_GATES * MAX_DIM]; // (nGates * dim)
+    float gateRadius[MAX_GATES];  // (nGates)
+
+    float arenaMin[MAX_DIM];    // (dim)
+    float arenaMax[MAX_DIM];    // (dim)
+
+    // float* trackPoints = nullptr; // (nTrackSamples * nRacelines, dim)
 
     EnvironmentConfig()
     {}
 
-    void unpackHeader(const void* buf, size_t len);
-
-    void recompute()
-    {
-        physDim = nAgents * dim * 2;
-        actionDim = nAgents * dim;
-    }
+    std::vector<float> unpackHeader(const void* buf, size_t len);   // returns trackPoints
 };
 
 // dummy controller parameters
 struct DummyConfig {};
+
+// ── Opponent model type (for GPU kernels) ────────────────────────────
+enum ControllerKind
+{
+    CONT_DUMMY = 0,   // zero acceleration
+    CONT_PID = 1,
+    CONT_MPPI = 2
+};
 
 // ── PID parameters (also used for opponent modelling on GPU) ─────────
 struct PIDConfig
@@ -105,9 +122,9 @@ struct PIDConfig
     float repulsionDistFact = 10.0f;
 
     int racelineIndex = 0;
-};
 
-using OpponentControllerConfig = std::variant<DummyConfig, PIDConfig>;
+    float actionNoise = 0.0f;
+};
 
 // ── MPPI configuration ───────────────────────────────────────────────
 struct MPPIConfig
@@ -137,14 +154,8 @@ struct MPPIConfig
     float finalOppAdvWeight = 5.0f;
     float finalSpeedWeight = 5.0f;
 
-    OpponentControllerConfig opponent = PIDConfig{};
-};
-
-// ── Opponent model type (for GPU kernels) ────────────────────────────
-enum class OpponentModelType
-{
-    PID,
-    Dummy,   // zero acceleration
+    ControllerKind oppKind = CONT_DUMMY;
+    PIDConfig oppPid{};
 };
 
 using ControllerConfig = std::variant<DummyConfig, PIDConfig, MPPIConfig>;
@@ -152,13 +163,8 @@ using ControllerConfig = std::variant<DummyConfig, PIDConfig, MPPIConfig>;
 // ── Controller specification (POD, used to construct controllers) ────
 struct ControllerSpec
 {
-    // enum Kind { Dummy, PID_Kind, MPPI_Kind } kind = Dummy;
     std::string name = "dummy";
     ControllerConfig config = DummyConfig{};
-    // PIDConfig  pidParams;
-    // MPPIConfig mppiConfig;
-    // OpponentModelType oppModel = OpponentModelType::PID;
-    // PIDConfig  oppPidParams;
 
     void unpackHeader(const void* buf, size_t len);
 };

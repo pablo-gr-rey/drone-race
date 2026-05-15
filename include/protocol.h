@@ -20,13 +20,6 @@ enum EventType : uint32_t
     EVT_TRUNCATED = 3,
 };
 
-enum ControllerTypeProto : uint32_t
-{
-    CONT_DUMMY = 0,
-    CONT_PID = 1,
-    CONT_MPPI = 2,
-};
-
 // byte reader util
 struct Reader
 {
@@ -44,6 +37,9 @@ struct Reader
 
     std::vector<float> readFloatArray();
     std::vector<int> readIntArray();
+
+    void readFloatArray(float* arr);    // assumes array is allocated and has the right size
+    void readIntArray(int* arr);        // assumes array is allocated and has the right size
 
     void assertFinished();
 };

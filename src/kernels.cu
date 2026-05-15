@@ -1,8 +1,6 @@
 #include "config.h"
 #include "state.h"
-#include "track.cuh"
 #include "costs.cuh"
-#include "opponent_models.cuh"
 #include "kernels.cuh"
 
 #include <cub/cub.cuh>
@@ -33,10 +31,9 @@ __global__ void generateNoiseKernel(float* noise, curandState* rng,
 // Fused rollout step
 __global__ void fullRolloutKernel(
     int controlAgent,
-    const DeviceEnvironmentConfig envConfig,
-    const DeviceMPPIConfig mc,
-    OpponentModelType oppModel,
-    const PIDConfig oppPid,
+    const EnvironmentConfig envConfig,
+    // const DeviceEnvironmentConfig envConfig,
+    const MPPIConfig mc,
     const float* __restrict__ initPos,
     const float* __restrict__ initVel,
     const float* __restrict__ initS,
@@ -90,7 +87,7 @@ __global__ void fullRolloutKernel(
             prevPos[i] = pos[i];
 
         // 1. Build actions
-        float actions[MAX_ACTION_DIM];
+        float actions[MAX_AGENTS * MAX_DIM];
         for (int a = 0; a < envConfig.nAgents; a++)
         {
             if (a == controlAgent)
@@ -99,7 +96,21 @@ __global__ void fullRolloutKernel(
                     actions[a * envConfig.dim + d] = nominal[t * envConfig.dim + d] + noise[(t * N + s) * envConfig.dim + d];
             }
             else
-                predictOpponent(oppModel, a, pos, vel, S, laps, currentGates, envConfig, oppPid, trackPts, nTP, actions + a * envConfig.dim);
+                switch (mc.oppKind)
+                {
+                case ControllerKind::CONT_DUMMY: {
+                    for (int d = 0; d < envConfig.dim; d++)
+                        actions[a * envConfig.dim + d] = 0.0f;
+                    break;
+                }
+
+                case ControllerKind::CONT_PID: {
+                    computePIDAction(a, pos, vel, S, currentGates, envConfig, mc.oppPid, trackPts, actions + a * envConfig.dim);
+                    for (int d = 0; d < envConfig.dim; d++)
+                        actions[a * envConfig.dim + d] += mc.oppPid.actionNoise * curand_normal(&rng);
+                    break;
+                }
+                }
         }
 
         // 2. Clamp + action noise
@@ -194,7 +205,9 @@ __global__ void fullRolloutKernel(
             // std::cout.precision(5);
             // std::cout << std::fixed << "\tsqDist = " << sqDist << " sq radius " << envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate] << "\n";
 
-            if (sqDist <= envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate] * mc.gateTraversalMargin * mc.gateTraversalMargin)
+            float margin = iAgent == controlAgent ? mc.gateTraversalMargin * mc.gateTraversalMargin : 1.0f;
+
+            if (sqDist <= envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate] * margin)
             {
                 currentGates[iAgent]++;
                 if (currentGates[iAgent] == envConfig.nGates)

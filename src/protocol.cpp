@@ -46,6 +46,30 @@ std::vector<int> Reader::readIntArray()
     return ans;
 }
 
+
+void Reader::readFloatArray(float* arr)
+{
+    int32_t n = readInt32();
+    if (n < 0)
+        throw std::runtime_error("read negative size for array");
+
+    size_t nBytes = size_t(n) * sizeof(float);
+    if (offset + nBytes > size)
+        throw std::runtime_error("failed to read array from buffer (underflow)");
+
+    std::memcpy(arr, data + offset, nBytes);
+    offset += nBytes;
+}
+
+void Reader::readIntArray(int* arr)
+{
+    std::vector<float> temp = readFloatArray();
+
+    for (size_t i = 0; i < temp.size(); i++)
+        arr[i] = std::round(temp[i]);
+}
+
+
 void Reader::assertFinished()
 {
     if (offset != size)

@@ -1,7 +1,6 @@
 #include "controllers.h"
 #include "engine.h"
 #include "config.h"
-#include "device_config.cuh"
 #include "state.h"
 #include "kernels.cuh"
 
@@ -17,30 +16,13 @@
 #include <cub/cub.cuh>
 
 // Construction
-MPPIController::MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc)
+MPPIController::MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc, float* d_trackPoints)
 {
     std::cout << "MPPI INIT" << std::endl;
     name = "MPPI";
-    envConfig = &c;
+    envConfig = c;
     mppiCfg = mc;
-
-    deviceEnvConfig = DeviceEnvironmentConfig(c);
-    deviceMPPIConfig = DeviceMPPIConfig(mc);
-
-    h_nominal.resize(mc.nTimesteps * c.dim, 0.0f);
-
-    std::visit([&](auto&& opp)
-        {
-            using O = std::decay_t<decltype(opp)>;
-
-            if constexpr (std::is_same_v<O, DummyConfig>)
-                oppModel = OpponentModelType::Dummy;
-            else if constexpr (std::is_same_v<O, PIDConfig>)
-            {
-                oppModel = OpponentModelType::PID;
-                oppPidParams = opp;
-            }
-        }, mc.opponent);
+    d_trackPts = d_trackPoints;
 }
 
 MPPIController::~MPPIController()
@@ -55,32 +37,31 @@ void MPPIController::allocDevice()
 {
     if (deviceReady) return;
 
-    const auto& c = *envConfig;
     int N = mppiCfg.nSamples;
     int T = mppiCfg.nTimesteps;
 
     // Single authoritative state (uploaded each call)
-    CUDA_CHECK(cudaMalloc(&d_pos, (size_t) c.nAgents * c.dim * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_speed, (size_t) c.nAgents * c.dim * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_S, c.nAgents * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_laps, c.nAgents * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_currentGates, c.nAgents * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_pos, (size_t) envConfig.nAgents * envConfig.dim * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_speed, (size_t) envConfig.nAgents * envConfig.dim * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_S, envConfig.nAgents * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_laps, envConfig.nAgents * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_currentGates, envConfig.nAgents * sizeof(int)));
 
     // Final state output buffers (one per sample, optional / for debug)
-    CUDA_CHECK(cudaMalloc(&d_sampPos, (size_t) N * c.nAgents * c.dim * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_sampSpeed, (size_t) N * c.nAgents * c.dim * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_sampS, (size_t) N * c.nAgents * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_sampLaps, (size_t) N * c.nAgents * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_sampGates, (size_t) N * c.nAgents * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_sampPos, (size_t) N * envConfig.nAgents * envConfig.dim * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_sampSpeed, (size_t) N * envConfig.nAgents * envConfig.dim * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_sampS, (size_t) N * envConfig.nAgents * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_sampLaps, (size_t) N * envConfig.nAgents * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_sampGates, (size_t) N * envConfig.nAgents * sizeof(int)));
 
     // Noise: (T, N, dim)
-    CUDA_CHECK(cudaMalloc(&d_noise, (size_t) T * N * c.dim * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_noise, (size_t) T * N * envConfig.dim * sizeof(float)));
 
     // Costs: (N,)
     CUDA_CHECK(cudaMalloc(&d_costs, N * sizeof(float)));
 
     // Nominal action: (T, dim)
-    CUDA_CHECK(cudaMalloc(&d_nominal, T * c.dim * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_nominal, T * envConfig.dim * sizeof(float)));
 
     // Scalar for min reduction
     CUDA_CHECK(cudaMalloc(&d_minCost, sizeof(float)));
@@ -116,25 +97,13 @@ void MPPIController::allocDevice()
     deviceReady = true;
 }
 
-void MPPIController::uploadTrack()
-{
-    if (d_trackPts)
-        return;                 // already uploaded
-    if (!engine)
-        throw std::runtime_error("MPPI: engine not set, cannot upload track");
-
-    size_t bytes = engine->envConfig.trackPoints.size() * sizeof(float);
-    CUDA_CHECK(cudaMalloc(&d_trackPts, bytes));
-    CUDA_CHECK(cudaMemcpy(d_trackPts, engine->envConfig.trackPoints.data(),
-        bytes, cudaMemcpyHostToDevice));
-}
 
 void MPPIController::freeDevice()
 {
     auto safe_free = [](auto*& p) {
         if (p)
         {
-            cudaFree(p);
+            CUDA_CHECK(cudaFree(p));
             p = nullptr;
         }
         };
@@ -153,7 +122,6 @@ void MPPIController::freeDevice()
     safe_free(d_costs);
     safe_free(d_nominal);
     safe_free(d_minCost);
-    safe_free(d_trackPts);
     safe_free(d_rng);
     safe_free(d_temp_storage);
 
@@ -180,30 +148,29 @@ void MPPIController::getControl(int agent,
     const float* S,
     const int* laps,
     const int* currentGates,
-    float* outAction)
+    float* outAction,
+    std::normal_distribution<float>& /* nd */, std::mt19937& /* rng */)
 {
     if (!engine)
         throw std::runtime_error("MPPI: engine not set");
 
     // Lazy allocation (needs engine pointer for track data)
     allocDevice();
-    uploadTrack();
 
-    const auto& c = *envConfig;
     int N = mppiCfg.nSamples;
     int T = mppiCfg.nTimesteps;
-    int dim = c.dim;
-    int nTP = c.nTrackSamples;
+    int dim = envConfig.dim;
+    int nTP = envConfig.nTrackSamples;
 
     int blk = 256;
     int grd = (N + blk - 1) / blk;
 
     // 1. upload current state
-    CUDA_CHECK(cudaMemcpy(d_pos, pos, (size_t) c.nAgents * c.dim * sizeof(float), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_speed, speed, (size_t) c.nAgents * c.dim * sizeof(float), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_S, S, c.nAgents * sizeof(float), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_laps, laps, c.nAgents * sizeof(int), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_currentGates, currentGates, c.nAgents * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_pos, pos, (size_t) envConfig.nAgents * envConfig.dim * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_speed, speed, (size_t) envConfig.nAgents * envConfig.dim * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_S, S, envConfig.nAgents * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_laps, laps, envConfig.nAgents * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_currentGates, currentGates, envConfig.nAgents * sizeof(int), cudaMemcpyHostToDevice));
 
     // 2. generate all noise at once: (T, N, dim)
     generateNoiseKernel << <grd, blk >> > (
@@ -217,16 +184,17 @@ void MPPIController::getControl(int agent,
     //    then writes out total cost and final state
     fullRolloutKernel << <grd, blk >> > (
         agent,
-        deviceEnvConfig,
-        deviceMPPIConfig,
-        oppModel, oppPidParams,
+        envConfig,
+        mppiCfg,
+        // oppModel, oppPidParams,
         d_pos, d_speed, d_S, d_laps, d_currentGates,         // initial state (broadcast by reads)
         d_nominal,                      // (T, dim)
         d_noise,                        // (T, N, dim)
         d_costs,                        // (N,) output: total cost per sample
         d_sampPos, d_sampSpeed, d_sampS, d_sampLaps, d_sampGates, // (N, ...) output: final states
         d_rng,
-        d_trackPts, nTP,
+        d_trackPts,
+        nTP,
         N);
 
     // 4. find minimum cost (parallel reduction)
