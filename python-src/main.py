@@ -377,10 +377,9 @@ def mainGate():
 
     angles = np.linspace(0, 2 * np.pi, config.nTrackSamples, endpoint=False)
 
-    config.nRaceLines = 3
+    config.nRaceLines = 2
     config.trackPoints = np.concat(
         [
-            config.trackPoints,
             trackRadius * np.stack([np.cos(angles), np.sin(angles)], axis=1),
             (trackRadius - 0.5 * gateRadius[0])
             * np.stack(
@@ -393,11 +392,11 @@ def mainGate():
     mppiconfig = MPPIConfig(
         nSamples=100000,
         nTimesteps=60,
-        inv_temperature=0.1,
+        inv_temperature=0.01,
         samplingNoise=3,
         gateTraversalMargin=0.95,
         # collDistFactor=1.5,
-        collDistFactor=1.0,
+        collDistFactor=1.5,
         finalAdvWeight=200,
         # finalAdvWeight=0,
         # finalSpeedWeight=50,
@@ -416,7 +415,7 @@ def mainGate():
         winCost=100000,
     )
 
-    pidconfig = PIDConfig(kp=5, kd=20, repulsionFactor=20, repulsionDistFactor=3, racelineIndex=2)
+    pidconfig = PIDConfig(kp=5, kd=20, repulsionFactor=0, repulsionDistFactor=3, racelineIndex=1, actionNoise=10)
     # pidconfig = PIDConfig(kp=5, kd=20, repulsionFactor=0, racelineIndex=2)
 
     dummyconfig = DummyConfig()

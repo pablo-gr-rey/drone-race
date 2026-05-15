@@ -284,6 +284,8 @@ class PIDConfig(ControllerConfig):
 
     racelineIndex: int = 0
 
+    actionNoise: float = 0.0
+
 
 @dataclass
 class MPPIConfig(ControllerConfig):
