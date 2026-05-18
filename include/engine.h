@@ -52,7 +52,7 @@ private:
     std::unique_ptr<Controller> makeController(const ControllerSpec& sp);
     void allocTrack();
 
-    void dynStep(const std::vector<float>& actions);
+    void dynStep(const std::vector<float>& actions, bool updateGates = true);
 
     // checks
     bool checkCollision() const;

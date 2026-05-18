@@ -15,7 +15,7 @@ DummyController::DummyController(const EnvironmentConfig& c)
 
 void DummyController::getControl(int /*agent*/, const float* /*pos*/, const float* /*speed*/,
     const float* /*S*/, const int* /*laps*/, const int* /* currentGates */,
-    float* outAction, std::normal_distribution<float>& /* nd */, std::mt19937& /* rng */)
+    float* outAction, std::normal_distribution<float>& /* nd */, std::mt19937& /* rng */, std::optional<std::vector<float>> /* pastAction */)
 {
     for (int d = 0; d < envConfig->dim; d++)
         outAction[d] = 0.0f;
@@ -30,7 +30,7 @@ PIDController::PIDController(const EnvironmentConfig& c, const PIDConfig& p) : p
     envConfig = &c;
 }
 
-void PIDController::getControl(int agent, const float* pos, const float* speed, const float* S, const int* /* laps */, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng)
+void PIDController::getControl(int agent, const float* pos, const float* speed, const float* S, const int* /* laps */, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng, std::optional<std::vector<float>> /* pastAction */)
 {
     if (!engine)
         throw std::runtime_error("PID: engine not set");

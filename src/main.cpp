@@ -52,6 +52,7 @@ int main(int argc, char** argv)
 
     zmq::context_t ctx{ 1 };
     zmq::socket_t sock{ ctx, zmq::socket_type::pair };
+    sock.set(zmq::sockopt::linger, 0);
 
     std::cout << "Binding ZMQ to addr " << zmqAddr << "...\n";
     sock.bind(zmqAddr);

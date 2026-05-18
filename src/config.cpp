@@ -138,14 +138,14 @@ static MPPIConfig unpackMPPIConfig(Reader& reader)
     mppiconfig.finalOppAdvWeight = reader.readFloat();
     mppiconfig.finalSpeedWeight = reader.readFloat();
 
-    mppiconfig.nPIDStrats = reader.readInt32();
+    mppiconfig.minConfidence = reader.readFloat();
+    mppiconfig.nModels = reader.readInt32();
     mppiconfig.oppKind = (ControllerKind) reader.readInt32();
-    mppiconfig.oppPidStrat = reader.readInt32();
 
-    if (mppiconfig.nPIDStrats > MAX_THETA)
-        throw std::runtime_error(std::format("Received MPPI config for %d PID strategies but MAX_THETA is set to %d. Edit this constant and recompile", mppiconfig.nPIDStrats, MAX_THETA));
+    if (mppiconfig.nModels > MAX_MODELS)
+        throw std::runtime_error(std::format("Received MPPI config for %d PID strategies but MAX_MODELS is set to %d. Edit this constant and recompile", mppiconfig.nModels, MAX_MODELS));
 
-    for (int i = 0; i < mppiconfig.nPIDStrats; i++)
+    for (int i = 0; i < mppiconfig.nModels; i++)
     {
         ControllerKind kind = (ControllerKind) reader.readInt32();
         if (kind != CONT_PID)
@@ -154,9 +154,11 @@ static MPPIConfig unpackMPPIConfig(Reader& reader)
         mppiconfig.oppPid[i] = unpackPIDConfig(reader);
     }
 
-    std::cout << "loaded MPPI samples " << mppiconfig.nSamples << " timesteps " << mppiconfig.nTimesteps << " collDistFactor " << mppiconfig.collDistFactor << " with " << mppiconfig.nPIDStrats << " opponent strats:\n";
-    for (int i = 0; i < mppiconfig.nPIDStrats; i++)
-        std::cout << "\tConfig " << i << ": repulsionFactor " << mppiconfig.oppPid[i].repulsionFactor << " action noise " << mppiconfig.oppPid[i].actionNoise << "\n";
+    reader.readFloatArray(mppiconfig.initBelief);
+
+    std::cout << "loaded MPPI samples " << mppiconfig.nSamples << " timesteps " << mppiconfig.nTimesteps << " collDistFactor " << mppiconfig.collDistFactor << " with " << mppiconfig.nModels << " opponent strats:\n";
+    for (int i = 0; i < mppiconfig.nModels; i++)
+        std::cout << "\tConfig " << i << ": initBelief " << mppiconfig.initBelief[i] << " repulsionFactor " << mppiconfig.oppPid[i].repulsionFactor << " action noise " << mppiconfig.oppPid[i].actionNoise << "\n";
 
     return mppiconfig;
 }

@@ -4,19 +4,13 @@ project(drone_race LANGUAGES CXX CUDA)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CUDA_STANDARD 20)
 
-list(APPEND CMAKE_PREFIX_PATH $ENV{CONDA_PREFIX})
-
-# set(ENV{PKG_CONFIG_PATH} "~/.local/lib/pkgconfig")
-
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-add_compile_options(-Wall -Wextra -Wshadow -std=c++20)
-
-if(CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA")
-    add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra>)
-    add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:--source-in-ptx>)
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
 endif()
+message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
+list(APPEND CMAKE_PREFIX_PATH $ENV{CONDA_PREFIX})
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(CUDAToolkit REQUIRED)
 find_package(PkgConfig REQUIRED)
@@ -32,14 +26,37 @@ add_executable(drone_race
     src/protocol.cpp
 )
 
+target_compile_options(drone_race PRIVATE 
+    -Wall -Wextra -Wshadow
+    $<$<CONFIG:Debug>:-g -O0>
+    $<$<CONFIG:Release>:-O3 -march=native>
+)
+
+if(CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA")
+    target_compile_options(drone_race PRIVATE 
+        $<$<COMPILE_LANGUAGE:CUDA>:--source-in-ptx>
+        $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:Debug>>:-g -G -Xcompiler=-Wall,-Wextra>
+        $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:Release>>:-O3 -lineinfo>
+    )
+endif()
+
 target_compile_features(drone_race PRIVATE cxx_std_20)
 
-target_include_directories(drone_race PRIVATE include proto ${ZMQ_INCLUDE_DIRS} ${CUDAToolkit_INCLUDE_DIRS})
+target_include_directories(drone_race PRIVATE 
+    include 
+    proto 
+    ${ZMQ_INCLUDE_DIRS} 
+    ${CUDAToolkit_INCLUDE_DIRS}
+)
+
 target_link_directories(drone_race PRIVATE ${ZMQ_LIBRARY_DIRS})
+
 target_link_libraries(drone_race PRIVATE
-    CUDA::curand CUDA::cudart
+    CUDA::curand 
+    CUDA::cudart
     ${ZMQ_LIBRARIES}
 )
+
 set_target_properties(drone_race PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
     CUDA_STANDARD 20

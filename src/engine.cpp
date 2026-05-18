@@ -12,6 +12,7 @@
 #include <type_traits>
 #include <iomanip>
 #include <cuda_runtime.h>
+#include <optional>
 
 
 SimulationEngine::SimulationEngine(
@@ -113,6 +114,20 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
         writer.pushIntArray(nLaps);
         writer.pushIntArray(currentGates);
 
+        // send MPPI info
+        for (int iCont = 0; iCont < envConfig.nAgents; iCont++)
+            if (MPPIController* cont = dynamic_cast<MPPIController*>(controllers[iCont].get()))
+            {
+                std::cout << "controller " << iCont << " is MPPI controller" << std::endl;
+                // send belief
+                writer.pushInt32(iCont);
+                writer.pushFloatArray(cont->h_belief);
+
+                // build the predicted probabilities
+                // we simulate it for nominal and every theta
+
+            }
+
         sock.send(zmq::buffer(writer.data));
     }
 }
@@ -137,7 +152,7 @@ void SimulationEngine::sendDone(zmq::socket_t& sock)
     sock.send(zmq::buffer(writer.data));
 }
 
-void SimulationEngine::dynStep(const std::vector<float>& actions)
+void SimulationEngine::dynStep(const std::vector<float>& actions, bool updateGates)
 {
     // clamp + noise actions
 
@@ -197,60 +212,61 @@ void SimulationEngine::dynStep(const std::vector<float>& actions)
     }
 
     // update S, gates and laps
-    for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
-    {
-        float dist;
-        float s = fastProjectOnTrack(trackPoints.data(), envConfig.nTrackSamples, envConfig.dim, pos.data() + iAgent * envConfig.dim, nullptr, dist, -1.0f);
-        // float s = projectOnTrack(trackPoints.data(), envConfig.nTrackSamples, envConfig.dim, pos.data() + iAgent * envConfig.dim, nullptr, dist);
-        currentS[iAgent] = s;
-
-        // if (s > currentS[iAgent] + 0.5f)
-        //     nLaps[iAgent] -= 1.0f;
-        // if (s < currentS[iAgent] - 0.5f)
-        //     nLaps[iAgent] += 1.0f;
-
-        // check if we passed through next gate: compute lambda = dot(vec, center - x_t) / dot(vec, x_{t+1} - x_t)
-        int nextGate = (currentGates[iAgent] + 1) % envConfig.nGates;
-        float num = 0., denom = 0.;
-        for (int d = 0; d < dim; d++)
+    if (updateGates)
+        for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
         {
-            num += envConfig.gateVectors[nextGate * dim + d] * (envConfig.gateCenters[nextGate * dim + d] - old_pos[iAgent * dim + d]);
-            denom += envConfig.gateVectors[nextGate * dim + d] * (pos[iAgent * dim + d] - old_pos[iAgent * dim + d]);
-        }
+            float dist;
+            float s = fastProjectOnTrack(trackPoints.data(), envConfig.nTrackSamples, envConfig.dim, pos.data() + iAgent * envConfig.dim, nullptr, dist, -1.0f);
+            // float s = projectOnTrack(trackPoints.data(), envConfig.nTrackSamples, envConfig.dim, pos.data() + iAgent * envConfig.dim, nullptr, dist);
+            currentS[iAgent] = s;
 
-        // direction is inside the gate plan: cannot cross
-        if (std::fabs(denom) < 1e-10)
-            continue;
+            // if (s > currentS[iAgent] + 0.5f)
+            //     nLaps[iAgent] -= 1.0f;
+            // if (s < currentS[iAgent] - 0.5f)
+            //     nLaps[iAgent] += 1.0f;
 
-        float lambda = num / denom;
-        // we cross if 0 <= lambda <= 1 and if the projection of the segment (x_t, x_t+1) on the gate plan (ie. (1 - lambda) * x_t + lambda * x_t+1) is at distance <= radius from the center
-        // if we want to make sure we cross the gate in the right direction, we have to check num >= 0 (<=> denom > 0)
-
-        // std::cout << "\nnum = " << num << " denom = " << denom << " went from " << old_phys[0] << "; " << old_phys[2] << " to " << phys_state[0] << "; " << phys_state[2] << "\n";
-
-        if (lambda < 0. || lambda > 1.)
-            continue;
-
-        float sqDist = 0.;
-        for (int d = 0; d < dim; d++)
-        {
-            float dx = (1. - lambda) * old_pos[iAgent * dim + d] + lambda * pos[iAgent * dim + d] - envConfig.gateCenters[nextGate * dim + d];
-            sqDist += dx * dx;
-        }
-
-        // std::cout.precision(5);
-        // std::cout << std::fixed << "\tsqDist = " << sqDist << " sq radius " << envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate] << "\n";
-
-        if (sqDist <= envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate])
-        {
-            currentGates[iAgent]++;
-            if (currentGates[iAgent] == envConfig.nGates)
+            // check if we passed through next gate: compute lambda = dot(vec, center - x_t) / dot(vec, x_{t+1} - x_t)
+            int nextGate = (currentGates[iAgent] + 1) % envConfig.nGates;
+            float num = 0., denom = 0.;
+            for (int d = 0; d < dim; d++)
             {
-                currentGates[iAgent] = 0;
-                nLaps[iAgent]++;
+                num += envConfig.gateVectors[nextGate * dim + d] * (envConfig.gateCenters[nextGate * dim + d] - old_pos[iAgent * dim + d]);
+                denom += envConfig.gateVectors[nextGate * dim + d] * (pos[iAgent * dim + d] - old_pos[iAgent * dim + d]);
+            }
+
+            // direction is inside the gate plan: cannot cross
+            if (std::fabs(denom) < 1e-10)
+                continue;
+
+            float lambda = num / denom;
+            // we cross if 0 <= lambda <= 1 and if the projection of the segment (x_t, x_t+1) on the gate plan (ie. (1 - lambda) * x_t + lambda * x_t+1) is at distance <= radius from the center
+            // if we want to make sure we cross the gate in the right direction, we have to check num >= 0 (<=> denom > 0)
+
+            // std::cout << "\nnum = " << num << " denom = " << denom << " went from " << old_phys[0] << "; " << old_phys[2] << " to " << phys_state[0] << "; " << phys_state[2] << "\n";
+
+            if (lambda < 0. || lambda > 1.)
+                continue;
+
+            float sqDist = 0.;
+            for (int d = 0; d < dim; d++)
+            {
+                float dx = (1. - lambda) * old_pos[iAgent * dim + d] + lambda * pos[iAgent * dim + d] - envConfig.gateCenters[nextGate * dim + d];
+                sqDist += dx * dx;
+            }
+
+            // std::cout.precision(5);
+            // std::cout << std::fixed << "\tsqDist = " << sqDist << " sq radius " << envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate] << "\n";
+
+            if (sqDist <= envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate])
+            {
+                currentGates[iAgent]++;
+                if (currentGates[iAgent] == envConfig.nGates)
+                {
+                    currentGates[iAgent] = 0;
+                    nLaps[iAgent]++;
+                }
             }
         }
-    }
 }
 
 void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
@@ -259,10 +275,12 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
 
     int step;
 
+    std::vector<float> prevAction;
+
     // ── simulation loop ──────────────────────────────────────────────
     for (step = 1; step <= maxSteps; step++)
     {
-        // std::cout << "at step " << step << "\n";
+        std::cout << "\nSTEP " << step << "\n";
         // compute actions
         std::vector<float> actions(envConfig.nAgents * envConfig.dim, 0.0f);
         for (int i = 0; i < envConfig.nAgents; i++)
@@ -271,7 +289,10 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
                 currentGates.data(),
                 actions.data() + i * envConfig.dim,
                 nd,
-                rng);
+                rng,
+                step == 1 ? std::nullopt : std::optional<std::vector<float>>{ prevAction });
+
+        prevAction = actions;
 
         // step dynamics
         // std::vector<float> np(envConfig.physDim), ns(envConfig.nAgents), nl(envConfig.nAgents);
@@ -286,39 +307,39 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
 
         sendState(sock, step);
 
-        // int best = -1;
-        // float bestAdvance = 0.;
-        // for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
-        // {
-        //     float advance = getAdvance(nLaps.data(), currentGates.data(), iAgent, envConfig.nGates, phys_state.data() + 2 * envConfig.dim * iAgent, envConfig.gateCenters.data(), envConfig.dim);
-        //     if (iAgent == 0 || advance > bestAdvance)
-        //     {
-        //         best = iAgent;
-        //         bestAdvance = advance;
-        //     }
-        // }
+        int best = -1;
+        float bestAdvance = 0.;
+        for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
+        {
+            float advance = getAdvance(nLaps.data(), currentGates.data(), iAgent, envConfig.nGates, pos.data() + envConfig.dim * iAgent, envConfig.gateCenters, envConfig.dim);
+            if (iAgent == 0 || advance > bestAdvance)
+            {
+                best = iAgent;
+                bestAdvance = advance;
+            }
+        }
 
-        // std::cout << std::fixed << std::setprecision(2);
+        std::cout << std::fixed << std::setprecision(2);
 
-        // std::cout << "Current state at step " << step << ": agent " << (best + 1) << " in front (advance " << bestAdvance << ")" << std::endl;
+        std::cout << "Current state at step " << step << ": agent " << (best + 1) << " in front (advance " << bestAdvance << ")" << std::endl;
 
-        // for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
-        // {
-        //     std::cout << "\tAgent " << (iAgent + 1)
-        //         << ": currentS: " << currentS[iAgent]
-        //         << "\tcurrentGates: " << currentGates[iAgent]
-        //         << "\tnLaps: " << nLaps[iAgent]
-        //         << "\tposition ";
+        for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
+        {
+            std::cout << "\tAgent " << (iAgent + 1)
+                << ": currentS: " << currentS[iAgent]
+                << "\tcurrentGates: " << currentGates[iAgent]
+                << "\tnLaps: " << nLaps[iAgent]
+                << "\tposition ";
 
-        //     for (int d = 0; d < envConfig.dim; d++)
-        //         std::cout << phys_state[iAgent * envConfig.dim * 2 + d * 2] << " ";
+            for (int d = 0; d < envConfig.dim; d++)
+                std::cout << pos[iAgent * envConfig.dim + d] << " ";
 
-        //     std::cout << "\tspeed: ";
-        //     for (int d = 0; d < envConfig.dim; d++)
-        //         std::cout << phys_state[iAgent * envConfig.dim * 2 + d * 2 + 1] << " ";
+            std::cout << "\tspeed: ";
+            for (int d = 0; d < envConfig.dim; d++)
+                std::cout << speed[iAgent * envConfig.dim + d] << " ";
 
-        //     std::cout << std::endl;
-        // }
+            std::cout << std::endl;
+        }
 
         // termination checks
         hasCollision = checkCollision();

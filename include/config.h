@@ -13,7 +13,7 @@
 constexpr int MAX_AGENTS = 2;
 constexpr int MAX_DIM = 2;
 constexpr int MAX_GATES = 5;
-constexpr int MAX_THETA = 2;
+constexpr int MAX_MODELS = 2;
 
 #define DEBUG
 
@@ -61,8 +61,8 @@ struct EnvironmentConfig
     float initPos[MAX_AGENTS * MAX_DIM];
     float initSpeed[MAX_AGENTS * MAX_DIM];
     float initS[MAX_AGENTS];
-    int initLaps[MAX_AGENTS * MAX_DIM];
-    int initGates[MAX_AGENTS * MAX_DIM];
+    int initLaps[MAX_AGENTS];
+    int initGates[MAX_AGENTS];
 
     float minDist;
     float posNoiseLevel;
@@ -155,11 +155,13 @@ struct MPPIConfig
     float finalOppAdvWeight = 5.0f;
     float finalSpeedWeight = 5.0f;
 
-    int nPIDStrats;
-    ControllerKind oppKind = CONT_DUMMY;
-    int oppPidStrat;
+    float minConfidence = 0.9f;
 
-    PIDConfig oppPid[MAX_THETA];
+    int nModels;
+    ControllerKind oppKind = CONT_DUMMY;
+
+    PIDConfig oppPid[MAX_MODELS];
+    float initBelief[MAX_MODELS];
 };
 
 using ControllerConfig = std::variant<DummyConfig, PIDConfig, MPPIConfig>;

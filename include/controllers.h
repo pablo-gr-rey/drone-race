@@ -22,9 +22,7 @@ public:
     virtual ~Controller() = default;
 
     // Writes `dim` floats into outAction.
-    virtual void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng) = 0;
-
-    virtual void reset() {}
+    virtual void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng, std::optional<std::vector<float>> pastAction = std::nullopt) = 0;
 };
 
 // ── Dummy ────────────────────────────────────────────────────────────
@@ -32,7 +30,7 @@ class DummyController : public Controller
 {
 public:
     explicit DummyController(const EnvironmentConfig& c);
-    void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng) override;
+    void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng, std::optional<std::vector<float>> pastAction = std::nullopt) override;
 };
 
 // ── PID ──────────────────────────────────────────────────────────────
@@ -40,7 +38,7 @@ class PIDController : public Controller
 {
 public:
     PIDController(const EnvironmentConfig& c, const PIDConfig& p);
-    void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng) override;
+    void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng, std::optional<std::vector<float>> pastAction = std::nullopt) override;
 
     PIDConfig params;
 };
@@ -49,40 +47,40 @@ public:
 class MPPIController : public Controller
 {
 public:
-    MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc, float* d_trackPoints);
+    // if belief is not given, assumed uniform; if nominal (size (nModels+1) * T * dim) is not given, assumed 0
+    MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc, float* d_trackPoints, std::optional<std::vector<float>> nominal = std::nullopt);
     ~MPPIController();
-    void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng) override;
-    void reset() override;
+    void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng, std::optional<std::vector<float>> pastAction = std::nullopt) override;
 
-    MPPIConfig mppiCfg;
+    MPPIConfig mppiConfig;
+
+    std::vector<float> h_nominal;   // host mirror (nModels+1, T, dim)
+    std::vector<float> h_belief;    // host belief (nModels)
 private:
     EnvironmentConfig envConfig;
 
     // device memory
-    float* d_pos = nullptr;   // (nAgents * dim) - initial positions
-    float* d_speed = nullptr; // (nAgents * dim) - initial speeds
+    float* d_pos = nullptr;   // (nAgents, dim) - initial positions
+    float* d_speed = nullptr; // (nAgents, dim) - initial speeds
     float* d_S = nullptr;      // (nAgents) - initial advance along the track
     int* d_laps = nullptr;   // (nAgents) - initial number of laps
     int* d_currentGates = nullptr;    // (nAgents) - initial gate progression
-    float* d_sampPos = nullptr;   // (N, nAgents * dim) - final positions
-    float* d_sampSpeed = nullptr; // (N, nAgents * dim) - final speeds
-    float* d_sampS = nullptr;  // (N, nAgents) - final advance along the track 
-    int* d_sampLaps = nullptr;  // (N, nAgents) - final number of laps
-    int* d_sampGates = nullptr; // (N, nAgents) - final gate progression
-    float* d_newS = nullptr;
-    float* d_newLaps = nullptr;
-    float* d_noise = nullptr;  // (T, N, dim)
+    float* d_belief = nullptr;  // (nModels) - initial belief
+
+    float* d_noise = nullptr;  // (nModels+1, T, N, dim)
+
     float* d_costs = nullptr;  // (N)
-    float* d_nominal = nullptr;  // (T, dim)
-    float* d_actions = nullptr;  // (N, actionDim)
+
+    float* d_nominal = nullptr;  // (nModels+1, T, dim)
     float* d_minCost = nullptr;  // scalar
+
     float* d_trackPts = nullptr;  // cached on device
+
     void* d_temp_storage = nullptr; // for min-reduce
     size_t temp_storage_bytes = 0;  // for min-reduce
+
     curandState* d_rng = nullptr;
 
-    std::vector<float> h_nominal;   // host mirror (T * dim)
-    float* host_trackPoints;    // original value of EnvironmentConfig.trackPoints
     bool deviceReady = false;
 
     void allocDevice();
@@ -146,7 +144,9 @@ HD inline void computePIDAction(
     // repulsion
     for (int other = 0; other < envConfig.nAgents; other++)
     {
-        if (other == agent) continue;
+        if (other == agent)
+            continue;
+
         float diff[MAX_DIM];
         float dist2 = 0.0f;
         for (int d = 0; d < envConfig.dim; d++)

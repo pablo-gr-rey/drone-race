@@ -14,15 +14,35 @@
 #include <variant>
 #include <type_traits>
 #include <cub/cub.cuh>
+#include <format>
 
 // Construction
-MPPIController::MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc, float* d_trackPoints)
+MPPIController::MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc, float* d_trackPoints, std::optional<std::vector<float>> nominal)
 {
     std::cout << "MPPI INIT" << std::endl;
     name = "MPPI";
     envConfig = c;
-    mppiCfg = mc;
+    mppiConfig = mc;
     d_trackPts = d_trackPoints;
+
+    // if (belief)
+    // {
+    //     if ((int) belief->size() != mc.nModels)
+    //         throw std::runtime_error(std::format("Invalid MPPI construction: expected belief size %d, got %d", mc.nModels, belief->size()));
+    //     h_belief = belief.value();
+    // }
+    // else
+    //     h_belief.assign(mc.nModels, 1.0f / mc.nModels);
+    h_belief.assign(std::begin(mc.initBelief), std::end(mc.initBelief));
+
+    if (nominal)
+    {
+        if ((int) nominal->size() != (mc.nModels + 1) * mc.nTimesteps * envConfig.dim)
+            throw std::runtime_error(std::format("Invalid MPPI construction: expected nominal size %d, got %d", (mc.nModels + 1) * mc.nTimesteps * envConfig.dim, nominal->size()));
+        h_nominal = nominal.value();
+    }
+    else
+        h_nominal.assign((mc.nModels + 1) * mc.nTimesteps * envConfig.dim, 0.);
 }
 
 MPPIController::~MPPIController()
@@ -35,44 +55,49 @@ MPPIController::~MPPIController()
 // ═════════════════════════════════════════════════════════════════════
 void MPPIController::allocDevice()
 {
-    if (deviceReady) return;
+    if (deviceReady)
+        return;
 
-    int N = mppiCfg.nSamples;
-    int T = mppiCfg.nTimesteps;
+    int N = mppiConfig.nSamples;
+    int T = mppiConfig.nTimesteps;
+    int dim = envConfig.dim;
+    int nAgents = envConfig.nAgents;
+    int nModels = mppiConfig.nModels;
 
     // Single authoritative state (uploaded each call)
-    CUDA_CHECK(cudaMalloc(&d_pos, (size_t) envConfig.nAgents * envConfig.dim * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_speed, (size_t) envConfig.nAgents * envConfig.dim * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_S, envConfig.nAgents * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_laps, envConfig.nAgents * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_currentGates, envConfig.nAgents * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_pos, nAgents * dim * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_speed, nAgents * dim * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_S, nAgents * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_laps, nAgents * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_currentGates, nAgents * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_belief, nModels * sizeof(float)));
 
-    // Final state output buffers (one per sample, optional / for debug)
-    CUDA_CHECK(cudaMalloc(&d_sampPos, (size_t) N * envConfig.nAgents * envConfig.dim * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_sampSpeed, (size_t) N * envConfig.nAgents * envConfig.dim * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_sampS, (size_t) N * envConfig.nAgents * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_sampLaps, (size_t) N * envConfig.nAgents * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_sampGates, (size_t) N * envConfig.nAgents * sizeof(int)));
+    // Noise: (nModels+1, T, N, dim)
+    CUDA_CHECK(cudaMalloc(&d_noise, (nModels + 1) * T * N * dim * sizeof(float)));
 
-    // Noise: (T, N, dim)
-    CUDA_CHECK(cudaMalloc(&d_noise, (size_t) T * N * envConfig.dim * sizeof(float)));
-
-    // Costs: (N,)
+    // Costs
     CUDA_CHECK(cudaMalloc(&d_costs, N * sizeof(float)));
 
-    // Nominal action: (T, dim)
-    CUDA_CHECK(cudaMalloc(&d_nominal, T * envConfig.dim * sizeof(float)));
+    // Nominal action: (nModels+1, T, dim)
+    CUDA_CHECK(cudaMalloc(&d_nominal, (nModels + 1) * T * dim * sizeof(float)));
 
     // Scalar for min reduction
     CUDA_CHECK(cudaMalloc(&d_minCost, sizeof(float)));
 
     // Per-sample RNG states
     CUDA_CHECK(cudaMalloc(&d_rng, N * sizeof(curandState)));
+    CUDA_CHECK(cudaMemset(d_rng, 0, N * sizeof(curandState)));  // otherwise, memory is flagged as unitialized even though initRng does get called
 
     // Initialise RNG
     int blk = 256;
     int grd = (N + blk - 1) / blk;
     initRNGKernel << <grd, blk >> > (d_rng, 12345ULL, N);
+
+#ifdef DEBUG
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Upload initial (zero) nominal action
@@ -113,11 +138,8 @@ void MPPIController::freeDevice()
     safe_free(d_S);
     safe_free(d_laps);
     safe_free(d_currentGates);
-    safe_free(d_sampPos);
-    safe_free(d_sampSpeed);
-    safe_free(d_sampS);
-    safe_free(d_sampLaps);
-    safe_free(d_sampGates);
+    safe_free(d_belief);
+
     safe_free(d_noise);
     safe_free(d_costs);
     safe_free(d_nominal);
@@ -130,15 +152,6 @@ void MPPIController::freeDevice()
     deviceReady = false;
 }
 
-void MPPIController::reset()
-{
-    std::fill(h_nominal.begin(), h_nominal.end(), 0.0f);
-    if (d_nominal)
-        CUDA_CHECK(cudaMemcpy(d_nominal, h_nominal.data(),
-            h_nominal.size() * sizeof(float),
-            cudaMemcpyHostToDevice));
-}
-
 // ═════════════════════════════════════════════════════════════════════
 // getControl — the main MPPI routine
 // ═════════════════════════════════════════════════════════════════════
@@ -149,21 +162,46 @@ void MPPIController::getControl(int agent,
     const int* laps,
     const int* currentGates,
     float* outAction,
-    std::normal_distribution<float>& /* nd */, std::mt19937& /* rng */)
+    std::normal_distribution<float>& /* nd */, std::mt19937& /* rng */,
+    std::optional<std::vector<float>> pastAction)
 {
     if (!engine)
         throw std::runtime_error("MPPI: engine not set");
 
     // Lazy allocation (needs engine pointer for track data)
-    allocDevice();
+    if (!deviceReady)
+        allocDevice();
 
-    int N = mppiCfg.nSamples;
-    int T = mppiCfg.nTimesteps;
+    std::cout << "MPPI BEGIN" << std::endl;
+
+    int N = mppiConfig.nSamples;
+    int T = mppiConfig.nTimesteps;
     int dim = envConfig.dim;
     int nTP = envConfig.nTrackSamples;
+    int nModels = mppiConfig.nModels;
 
     int blk = 256;
     int grd = (N + blk - 1) / blk;
+
+    // 0. Update belief
+    if (pastAction)
+    {
+        // compute nominal actions
+        std::vector<float> nomPidAction(mppiConfig.nModels * envConfig.dim);
+
+        for (int thetaT = 0; thetaT < mppiConfig.nModels; thetaT++)
+        {
+            // std::cout << "computing PID action for model " << thetaT << std::endl;
+            computePIDAction(1 - agent, pos, speed, S, currentGates, envConfig, mppiConfig.oppPid[thetaT], engine->trackPoints.data(), nomPidAction.data() + thetaT * envConfig.dim);
+        }
+
+        updateBelief(h_belief.data(), pastAction->data() + (1 - agent) * envConfig.dim, nomPidAction.data(), mppiConfig.oppPid, mppiConfig.nModels, envConfig.dim);
+    }
+
+    std::cout << "MPPI belief: ";
+    for (float v : h_belief)
+        std::cout << v << " ";
+    std::cout << "\n";
 
     // 1. upload current state
     CUDA_CHECK(cudaMemcpy(d_pos, pos, (size_t) envConfig.nAgents * envConfig.dim * sizeof(float), cudaMemcpyHostToDevice));
@@ -171,31 +209,40 @@ void MPPIController::getControl(int agent,
     CUDA_CHECK(cudaMemcpy(d_S, S, envConfig.nAgents * sizeof(float), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_laps, laps, envConfig.nAgents * sizeof(int), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_currentGates, currentGates, envConfig.nAgents * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_belief, h_belief.data(), nModels * sizeof(float), cudaMemcpyHostToDevice));
 
     // 2. generate all noise at once: (T, N, dim)
     generateNoiseKernel << <grd, blk >> > (
         d_noise, d_rng,
-        mppiCfg.samplingNoise,
-        T, N, dim);
+        mppiConfig.samplingNoise,
+        T, N, dim, nModels);
 
-    // 3. Full rollout - single kernel, each thread = one sample
+#ifdef DEBUG
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+
+    // 3. Full rollout - single kernel, each thread = one sample (nominal + all models)
     //    Each thread loads the shared initial state into registers,
-    //    loops over T timesteps (dynamics + opponent prediction + cost),
+    //    loops over T timesteps & nModels models (dynamics + belief update + cost per-model),
     //    then writes out total cost and final state
     fullRolloutKernel << <grd, blk >> > (
         agent,
         envConfig,
-        mppiCfg,
-        // oppModel, oppPidParams,
-        d_pos, d_speed, d_S, d_laps, d_currentGates,         // initial state (broadcast by reads)
+        mppiConfig,
+        d_pos, d_speed, d_S, d_laps, d_currentGates, d_belief,        // initial state (broadcast by reads)
         d_nominal,                      // (T, dim)
         d_noise,                        // (T, N, dim)
         d_costs,                        // (N,) output: total cost per sample
-        d_sampPos, d_sampSpeed, d_sampS, d_sampLaps, d_sampGates, // (N, ...) output: final states
         d_rng,
         d_trackPts,
         nTP,
         N);
+
+#ifdef DEBUG
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+#endif
 
     // 4. find minimum cost (parallel reduction)
     float initMin = FLT_MAX;
@@ -206,45 +253,72 @@ void MPPIController::getControl(int agent,
     //     d_costs, d_minCost, N);
     minReduceCUB(d_costs, d_minCost, N, d_temp_storage, temp_storage_bytes);
 
+#ifdef DEBUG
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+
     float hostMin;
     CUDA_CHECK(cudaMemcpy(&hostMin, d_minCost, sizeof(float), cudaMemcpyDeviceToHost));
 
     // 5. Weighted average of noise -> update nominal action
     //    One block per (timestep × dim) entry.
-    int wGrid = T * dim;
+    int wGrid = (nModels + 1) * T * dim;
     weightedAverageKernel << <wGrid, blk, 2 * blk * sizeof(float) >> > (
         d_costs, d_noise, d_nominal,
-        hostMin, mppiCfg.invTemperature,
-        N, T, dim);
+        hostMin, mppiConfig.invTemperature,
+        nModels, N, T, dim);
+
+#ifdef DEBUG
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+#endif
 
     // 6. Download updated nominal action sequence
-    std::vector<float> buf(T * dim);
-    CUDA_CHECK(cudaMemcpy(buf.data(), d_nominal, T * dim * sizeof(float), cudaMemcpyDeviceToHost));
+    // TODO: we don't need to copy everything, we could just copy the interesting action and do the shift on GPU
+    CUDA_CHECK(cudaMemcpy(h_nominal.data(), d_nominal, h_nominal.size() * sizeof(float), cudaMemcpyDeviceToHost));
 
-    // First timestep's action is the output
+    int predTheta = findConfident(h_belief.data(), mppiConfig.nModels, mppiConfig.minConfidence);
+    // if predTheta == -1, submit nominal general action; otherwise, submit nominal action corresponding to this hypothesis
+
     for (int d = 0; d < dim; d++)
-        outAction[d] = buf[d];
+        outAction[d] = h_nominal[(predTheta + 1) * T * envConfig.dim + d];
 
-    // printf("Minimum cost: %f\n", hostMin);
-    // for (int d = 0; d < dim; d++)
-    //     printf("%.5f", outAction[d]);
-    // printf("\n");
+    if (predTheta == -1)
+        std::cout << "Submitting nominal action: ";
+    else
+        std::cout << "Submitting action for predicted model " << predTheta << ": ";
+    for (int d = 0; d < dim; d++)
+        std::cout << outAction[d] << " ";
+    std::cout << std::endl;
+
+    std::cout << "Minimum cost: " << hostMin << std::endl;
 
     // 7. Shift nominal action sequence left by one timestep (warm-start for next call)
-    h_nominal.assign(buf.begin(), buf.end());
-
     for (int t = 0; t < T - 1; t++)
         for (int d = 0; d < dim; d++)
             h_nominal[t * dim + d] = h_nominal[(t + 1) * dim + d];
-
     // Last timestep becomes zero
     for (int d = 0; d < dim; d++)
         h_nominal[(T - 1) * dim + d] = 0.0f;
 
-    // Upload shifted nominal back to device for next call
-    CUDA_CHECK(cudaMemcpy(d_nominal, h_nominal.data(),
-        h_nominal.size() * sizeof(float),
-        cudaMemcpyHostToDevice));
+    // if we submitted a nominal action, shift this one as well
+    if (predTheta >= 0)
+    {
+        for (int t = 0; t < T - 1; t++)
+            for (int d = 0; d < dim; d++)
+                h_nominal[((predTheta + 1) * T + t) * dim + d] = h_nominal[((predTheta + 1) * T + (t + 1)) * dim + d];
+        for (int d = 0; d < dim; d++)
+            h_nominal[((predTheta + 1) * T + T - 1) * dim + d] = 0.0f;
+    }
 
+    // Upload shifted nominal back to device for next call
+    CUDA_CHECK(cudaMemcpy(d_nominal, h_nominal.data(), h_nominal.size() * sizeof(float), cudaMemcpyHostToDevice));
+
+#ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+
+    std::cout << "MPPI DONE" << std::endl;
 }
