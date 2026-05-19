@@ -39,8 +39,8 @@ private:
 
     // stop reason
     bool hasCollision;
-    int isOutside;      // -1 = none
-    int isWinner;       // -1 = none
+    int anyOutside;      // -1 = none
+    int anyWinner;       // -1 = none
 
     // controllers
     std::vector<std::unique_ptr<Controller>> controllers;
@@ -52,7 +52,7 @@ private:
     std::unique_ptr<Controller> makeController(const ControllerSpec& sp);
     void allocTrack();
 
-    void dynStep(const std::vector<float>& actions, bool updateGates = true);
+    void dynStep(const std::vector<float>& actions);
 
     // checks
     bool checkCollision() const;

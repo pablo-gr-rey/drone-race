@@ -15,7 +15,8 @@ DummyController::DummyController(const EnvironmentConfig& c)
 
 void DummyController::getControl(int /*agent*/, const float* /*pos*/, const float* /*speed*/,
     const float* /*S*/, const int* /*laps*/, const int* /* currentGates */,
-    float* outAction, std::normal_distribution<float>& /* nd */, std::mt19937& /* rng */, std::optional<std::vector<float>> /* pastAction */)
+    float* outAction, std::normal_distribution<float>& /* nd */, std::mt19937& /* rng */,
+    std::optional<std::vector<float>> /* pastAction */, std::optional<std::vector<float>> /* pastPos */, std::optional<std::vector<float>> /* pastVel */, std::optional<std::vector<float>> /* pastS */)
 {
     for (int d = 0; d < envConfig->dim; d++)
         outAction[d] = 0.0f;
@@ -30,12 +31,13 @@ PIDController::PIDController(const EnvironmentConfig& c, const PIDConfig& p) : p
     envConfig = &c;
 }
 
-void PIDController::getControl(int agent, const float* pos, const float* speed, const float* S, const int* /* laps */, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng, std::optional<std::vector<float>> /* pastAction */)
+void PIDController::getControl(int agent, const float* pos, const float* speed, const float* S, const int* /* laps */, const int* /* currentGates */, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng,
+    std::optional<std::vector<float>> /* pastAction */, std::optional<std::vector<float>> /* pastPos */, std::optional<std::vector<float>> /* pastVel */, std::optional<std::vector<float>> /* pastS */)
 {
     if (!engine)
         throw std::runtime_error("PID: engine not set");
 
-    computePIDAction(agent, pos, speed, S, currentGates, *envConfig, params, engine->trackPoints.data(), outAction);
+    computePIDAction(agent, pos, speed, S, *envConfig, params, engine->trackPoints.data(), outAction);
 
     for (int d = 0; d < envConfig->dim; d++)
         outAction[d] += nd(rng) * params.actionNoise;

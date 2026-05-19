@@ -22,8 +22,8 @@ SimulationEngine::SimulationEngine(
     : rng(42)
 {
     hasCollision = false;
-    isWinner = -1;
-    isOutside = -1;
+    anyWinner = -1;
+    anyOutside = -1;
     d_trackPoints = nullptr;
 
     trackPoints = trackPts;
@@ -115,20 +115,82 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
         writer.pushIntArray(currentGates);
 
         // send MPPI info
-        for (int iCont = 0; iCont < envConfig.nAgents; iCont++)
-            if (MPPIController* cont = dynamic_cast<MPPIController*>(controllers[iCont].get()))
+        for (int iMppi = 0; iMppi < envConfig.nAgents; iMppi++)
+            if (MPPIController* cont = dynamic_cast<MPPIController*>(controllers[iMppi].get()))
             {
-                std::cout << "controller " << iCont << " is MPPI controller" << std::endl;
+                std::cout << "controller " << iMppi << " is MPPI controller" << std::endl;
                 // send belief
-                writer.pushInt32(iCont);
+                writer.pushInt32(iMppi);
                 writer.pushFloatArray(cont->h_belief);
 
                 // build the predicted probabilities
                 // we simulate it for nominal and every theta
 
-            }
+                // we keep copies of the initial state, since they are modified by dynStep
 
-        sock.send(zmq::buffer(writer.data));
+                std::vector<float> initPos = pos, initSpeed = speed, initS = currentS;
+                std::vector<int> initGates = currentGates, initLaps = nLaps;
+                MPPIConfig mppiConfig = cont->mppiConfig;
+
+                std::vector<float> fullPos(mppiConfig.nTimesteps * envConfig.nAgents * envConfig.dim);
+                std::vector<float> actions(envConfig.nAgents * envConfig.dim);
+                std::vector<float> nomPIDactions(mppiConfig.nModels * envConfig.dim);
+
+                for (int theta = 0; theta < mppiConfig.nModels; theta++)
+                {
+                    std::vector<float> belief = cont->h_belief;
+                    int predTheta = findConfident(belief.data(), mppiConfig.nModels, mppiConfig.minConfidence);
+                    int branchingTime = 0;
+
+                    for (int t = 0; t < mppiConfig.nTimesteps; t++)
+                    {
+                        // build actions (we do not add PID noise for reproductibility) TODO: should we use noise?
+                        for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
+                        {
+                            if (iAgent == iMppi)
+                            {
+                                int startInd = ((predTheta + 1) * mppiConfig.nTimesteps + t - branchingTime) * envConfig.dim;
+                                std::copy(cont->h_nominal.begin() + startInd, cont->h_nominal.begin() + startInd + envConfig.dim, actions.begin() + iAgent * envConfig.dim);
+                            }
+                            else
+                            {
+                                for (int thetaT = 0; thetaT < mppiConfig.nModels; thetaT++)
+                                    computePIDAction(iAgent, pos.data(), speed.data(), currentS.data(), envConfig, mppiConfig.oppPid[thetaT], trackPoints.data(), nomPIDactions.data() + thetaT * envConfig.dim);
+
+                                std::copy(nomPIDactions.begin() + theta * envConfig.dim, nomPIDactions.begin() + (theta + 1) * envConfig.dim, actions.begin() + iAgent * envConfig.dim);
+                            }
+                        }
+
+                        // compute step, and update positions
+                        dynStep(actions);
+                        std::copy(pos.begin(), pos.end(), fullPos.begin() + t * envConfig.nAgents * envConfig.dim);
+
+                        // update belief
+                        updateBelief(belief.data(), actions.data() + (1 - iMppi) * envConfig.dim, nomPIDactions.data(), mppiConfig.oppPid, mppiConfig.nModels, envConfig.dim, envConfig.maxAccel[1 - iMppi]);
+                        if (predTheta == -1 && (predTheta = findConfident(belief.data(), mppiConfig.nModels, mppiConfig.minConfidence)) != -1)
+                            branchingTime = t + 1;
+                    }
+
+                    // copy back original state
+                    pos = initPos;
+                    speed = initSpeed;
+                    currentS = initS;
+                    currentGates = initGates;
+                    nLaps = initLaps;
+
+                    std::cout << "final belief for theta = " << theta << ": ";
+                    for (float v : belief)
+                        std::cout << v << " ";
+                    std::cout << "\n";
+
+                    // send branching time, last predTheta, and full pos
+                    writer.pushInt32(branchingTime);
+                    writer.pushInt32(predTheta);
+                    writer.pushFloatArray(fullPos);
+                }
+
+                sock.send(zmq::buffer(writer.data));
+            }
     }
 }
 
@@ -152,7 +214,7 @@ void SimulationEngine::sendDone(zmq::socket_t& sock)
     sock.send(zmq::buffer(writer.data));
 }
 
-void SimulationEngine::dynStep(const std::vector<float>& actions, bool updateGates)
+void SimulationEngine::dynStep(const std::vector<float>& actions)
 {
     // clamp + noise actions
 
@@ -170,7 +232,7 @@ void SimulationEngine::dynStep(const std::vector<float>& actions, bool updateGat
 
         float factor = 1.0f;
         if (sqNorm > envConfig.maxAccel[a] * envConfig.maxAccel[a])
-            factor = envConfig.maxAccel[a] / fsqrt(sqNorm);
+            factor = envConfig.maxAccel[a] / sqrtf(sqNorm);
 
         for (int d = 0; d < dim; d++)
         {
@@ -212,61 +274,62 @@ void SimulationEngine::dynStep(const std::vector<float>& actions, bool updateGat
     }
 
     // update S, gates and laps
-    if (updateGates)
-        for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
-        {
-            float dist;
-            float s = fastProjectOnTrack(trackPoints.data(), envConfig.nTrackSamples, envConfig.dim, pos.data() + iAgent * envConfig.dim, nullptr, dist, -1.0f);
-            // float s = projectOnTrack(trackPoints.data(), envConfig.nTrackSamples, envConfig.dim, pos.data() + iAgent * envConfig.dim, nullptr, dist);
-            currentS[iAgent] = s;
+    // for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
+    // {
+    //     float dist;
+    //     float s = fastProjectOnTrack(trackPoints.data(), envConfig.nTrackSamples, envConfig.dim, pos.data() + iAgent * envConfig.dim, nullptr, dist, -1.0f);
+    //     // float s = projectOnTrack(trackPoints.data(), envConfig.nTrackSamples, envConfig.dim, pos.data() + iAgent * envConfig.dim, nullptr, dist);
+    //     currentS[iAgent] = s;
 
-            // if (s > currentS[iAgent] + 0.5f)
-            //     nLaps[iAgent] -= 1.0f;
-            // if (s < currentS[iAgent] - 0.5f)
-            //     nLaps[iAgent] += 1.0f;
+    //     // if (s > currentS[iAgent] + 0.5f)
+    //     //     nLaps[iAgent] -= 1.0f;
+    //     // if (s < currentS[iAgent] - 0.5f)
+    //     //     nLaps[iAgent] += 1.0f;
 
-            // check if we passed through next gate: compute lambda = dot(vec, center - x_t) / dot(vec, x_{t+1} - x_t)
-            int nextGate = (currentGates[iAgent] + 1) % envConfig.nGates;
-            float num = 0., denom = 0.;
-            for (int d = 0; d < dim; d++)
-            {
-                num += envConfig.gateVectors[nextGate * dim + d] * (envConfig.gateCenters[nextGate * dim + d] - old_pos[iAgent * dim + d]);
-                denom += envConfig.gateVectors[nextGate * dim + d] * (pos[iAgent * dim + d] - old_pos[iAgent * dim + d]);
-            }
+    //     // check if we passed through next gate: compute lambda = dot(vec, center - x_t) / dot(vec, x_{t+1} - x_t)
+    //     int nextGate = (currentGates[iAgent] + 1) % envConfig.nGates;
+    //     float num = 0., denom = 0.;
+    //     for (int d = 0; d < dim; d++)
+    //     {
+    //         num += envConfig.gateVectors[nextGate * dim + d] * (envConfig.gateCenters[nextGate * dim + d] - old_pos[iAgent * dim + d]);
+    //         denom += envConfig.gateVectors[nextGate * dim + d] * (pos[iAgent * dim + d] - old_pos[iAgent * dim + d]);
+    //     }
 
-            // direction is inside the gate plan: cannot cross
-            if (std::fabs(denom) < 1e-10)
-                continue;
+    //     // direction is inside the gate plan: cannot cross
+    //     if (std::fabs(denom) < 1e-10)
+    //         continue;
 
-            float lambda = num / denom;
-            // we cross if 0 <= lambda <= 1 and if the projection of the segment (x_t, x_t+1) on the gate plan (ie. (1 - lambda) * x_t + lambda * x_t+1) is at distance <= radius from the center
-            // if we want to make sure we cross the gate in the right direction, we have to check num >= 0 (<=> denom > 0)
+    //     float lambda = num / denom;
+    //     // we cross if 0 <= lambda <= 1 and if the projection of the segment (x_t, x_t+1) on the gate plan (ie. (1 - lambda) * x_t + lambda * x_t+1) is at distance <= radius from the center
+    //     // if we want to make sure we cross the gate in the right direction, we have to check num >= 0 (<=> denom > 0)
 
-            // std::cout << "\nnum = " << num << " denom = " << denom << " went from " << old_phys[0] << "; " << old_phys[2] << " to " << phys_state[0] << "; " << phys_state[2] << "\n";
+    //     // std::cout << "\nnum = " << num << " denom = " << denom << " went from " << old_phys[0] << "; " << old_phys[2] << " to " << phys_state[0] << "; " << phys_state[2] << "\n";
 
-            if (lambda < 0. || lambda > 1.)
-                continue;
+    //     if (lambda < 0. || lambda > 1.)
+    //         continue;
 
-            float sqDist = 0.;
-            for (int d = 0; d < dim; d++)
-            {
-                float dx = (1. - lambda) * old_pos[iAgent * dim + d] + lambda * pos[iAgent * dim + d] - envConfig.gateCenters[nextGate * dim + d];
-                sqDist += dx * dx;
-            }
+    //     float sqDist = 0.;
+    //     for (int d = 0; d < dim; d++)
+    //     {
+    //         float dx = (1. - lambda) * old_pos[iAgent * dim + d] + lambda * pos[iAgent * dim + d] - envConfig.gateCenters[nextGate * dim + d];
+    //         sqDist += dx * dx;
+    //     }
 
-            // std::cout.precision(5);
-            // std::cout << std::fixed << "\tsqDist = " << sqDist << " sq radius " << envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate] << "\n";
+    //     // std::cout.precision(5);
+    //     // std::cout << std::fixed << "\tsqDist = " << sqDist << " sq radius " << envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate] << "\n";
 
-            if (sqDist <= envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate])
-            {
-                currentGates[iAgent]++;
-                if (currentGates[iAgent] == envConfig.nGates)
-                {
-                    currentGates[iAgent] = 0;
-                    nLaps[iAgent]++;
-                }
-            }
-        }
+    //     if (sqDist <= envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate])
+    //     {
+    //         currentGates[iAgent]++;
+    //         if (currentGates[iAgent] == envConfig.nGates)
+    //         {
+    //             currentGates[iAgent] = 0;
+    //             nLaps[iAgent]++;
+    //         }
+    //     }
+    // }
+
+    updateGates(envConfig, pos.data(), old_pos.data(), currentS.data(), currentGates.data(), nLaps.data(), trackPoints.data());
 }
 
 void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
@@ -275,6 +338,9 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
 
     int step;
 
+    std::vector<float> prevPos;
+    std::vector<float> prevSpeed;
+    std::vector<float> prevS;
     std::vector<float> prevAction;
 
     // ── simulation loop ──────────────────────────────────────────────
@@ -290,9 +356,16 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
                 actions.data() + i * envConfig.dim,
                 nd,
                 rng,
-                step == 1 ? std::nullopt : std::optional<std::vector<float>>{ prevAction });
+                step == 1 ? std::nullopt : std::make_optional(prevAction),
+                step == 1 ? std::nullopt : std::make_optional(prevPos),
+                step == 1 ? std::nullopt : std::make_optional(prevSpeed),
+                step == 1 ? std::nullopt : std::make_optional(prevS)
+            );
 
         prevAction = actions;
+        prevPos = pos;
+        prevSpeed = speed;
+        prevS = currentS;
 
         // step dynamics
         // std::vector<float> np(envConfig.physDim), ns(envConfig.nAgents), nl(envConfig.nAgents);
@@ -343,15 +416,15 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
 
         // termination checks
         hasCollision = checkCollision();
-        isOutside = checkOutside();
-        isWinner = checkWinner();
+        anyOutside = checkOutside();
+        anyWinner = checkWinner();
 
-        if (hasCollision || isOutside >= 0 || isWinner >= 0)
+        if (hasCollision || anyOutside >= 0 || anyWinner >= 0)
         {
-            if (isOutside >= 0)
-                sendEvent(sock, EVT_OUTSIDE, isOutside);
-            else if (isWinner >= 0)
-                sendEvent(sock, EVT_WINNER, isWinner);
+            if (anyOutside >= 0)
+                sendEvent(sock, EVT_OUTSIDE, anyOutside);
+            else if (anyWinner >= 0)
+                sendEvent(sock, EVT_WINNER, anyWinner);
             else
                 sendEvent(sock, EVT_COLLISION, -1);
 
@@ -367,10 +440,10 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
     std::cout << "Simulation finished. " << envConfig.nAgents << " agents, " << envConfig.nTrackSamples << " track samples after " << step << " steps.\nStop reason: ";
     if (hasCollision)
         std::cout << "Collision\n";
-    else if (isOutside >= 0)
-        std::cout << "Agent " << (isOutside + 1) << " is outside\n";
-    else if (isWinner >= 0)
-        std::cout << "Agent " << (isWinner + 1) << "wins\n";
+    else if (anyOutside >= 0)
+        std::cout << "Agent " << (anyOutside + 1) << " is outside\n";
+    else if (anyWinner >= 0)
+        std::cout << "Agent " << (anyWinner + 1) << "wins\n";
     else
         std::cout << "Simulation truncated (maxSteps reached)\n";
 }
@@ -388,15 +461,18 @@ int SimulationEngine::checkOutside() const
 {
     for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
     {
-        for (int d = 0; d < envConfig.dim; d++)
-        {
-            float p = pos[iAgent * envConfig.dim + d];
-            if (p < envConfig.arenaMin[d] || p > envConfig.arenaMax[d])
-            {
-                std::cout << "agent " << (iAgent + 1) << " outside (dimension " << d << ": position " << p << " outside of arena\n";
-                return iAgent;
-            }
-        }
+        if (isOutside(envConfig, pos.data() + iAgent * envConfig.dim))
+            return iAgent;
+
+        // for (int d = 0; d < envConfig.dim; d++)
+        // {
+        //     float p = pos[iAgent * envConfig.dim + d];
+        //     if (p < envConfig.arenaMin[d] || p > envConfig.arenaMax[d])
+        //     {
+        //         std::cout << "agent " << (iAgent + 1) << " outside (dimension " << d << ": position " << p << " outside of arena\n";
+        //         return iAgent;
+        //     }
+        // }
     }
 
     return -1;

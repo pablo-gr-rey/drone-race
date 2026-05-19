@@ -135,7 +135,7 @@ __global__ void fullRolloutKernel(
 
                     case ControllerKind::CONT_PID: {
                         // we use theta for the actual action (which is assumed to be the real model)
-                        computePIDAction(a, pos, vel, S, currentGates, envConfig, mc.oppPid[theta], trackPts, actions + a * envConfig.dim);
+                        computePIDAction(a, pos, vel, S, envConfig, mc.oppPid[theta], trackPts, actions + a * envConfig.dim);
                         for (int d = 0; d < envConfig.dim; d++)
                             actions[a * envConfig.dim + d] += mc.oppPid[theta].actionNoise * curand_normal(&rng);
 
@@ -143,7 +143,7 @@ __global__ void fullRolloutKernel(
                         // if the nominal action are not too close, then we can get a good idea of which strategy the opponent is using since it will be the one corresponding to the nominal action closest to the actual action
                         // note: this assumes only 1 other agent!
                         for (int thetaT = 0; thetaT < mc.nModels; thetaT++)
-                            computePIDAction(a, pos, vel, S, currentGates, envConfig, mc.oppPid[thetaT], trackPts, nomPidAction + thetaT * envConfig.dim);
+                            computePIDAction(a, pos, vel, S, envConfig, mc.oppPid[thetaT], trackPts, nomPidAction + thetaT * envConfig.dim);
                         break;
                     }
                     }
@@ -198,62 +198,68 @@ __global__ void fullRolloutKernel(
                     vel[a * envConfig.dim + d] += curand_normal(&rng) * envConfig.speedNoiseLevel;
                 }
 
+
+            updateGates(envConfig, pos, prevPos, S, currentGates, laps, trackPts);
+
             // 7. Track S / laps / gates update
             for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
             {
                 const float* curPos = pos + iAgent * envConfig.dim;
 
                 // if agent is outside, stop rollout (subsequent samples do not matter)
-                for (int d = 0; d < envConfig.dim; d++)
-                    if (curPos[d] < envConfig.arenaMin[d] || curPos[d] > envConfig.arenaMax[d])
-                        stop = true;
+                // for (int d = 0; d < envConfig.dim; d++)
+                //     if (curPos[d] < envConfig.arenaMin[d] || curPos[d] > envConfig.arenaMax[d])
+                //         stop = true;
 
-                // TODO: this is duplicated
+                // TODO: this is duplicated, but for some reason, calling updateGates is super slow? maybe it's the same for computePID?
 
-                float dist;
-                float newSa = fastProjectOnTrack(trackPts, nTP, envConfig.dim, curPos, nullptr, dist, S[iAgent]);
-                S[iAgent] = newSa;
+                // float dist;
+                // float newSa = fastProjectOnTrack(trackPts, nTP, envConfig.dim, curPos, nullptr, dist, S[iAgent]);
+                // S[iAgent] = newSa;
 
-                int nextGate = (currentGates[iAgent] + 1) % envConfig.nGates;
-                float num = 0., denom = 0.;
-                for (int d = 0; d < envConfig.dim; d++)
-                {
-                    num += envConfig.gateVectors[nextGate * envConfig.dim + d] * (envConfig.gateCenters[nextGate * envConfig.dim + d] - prevPos[iAgent * envConfig.dim + d]);
-                    denom += envConfig.gateVectors[nextGate * envConfig.dim + d] * (pos[iAgent * envConfig.dim + d] - prevPos[iAgent * envConfig.dim + d]);
-                }
+                // int nextGate = (currentGates[iAgent] + 1) % envConfig.nGates;
+                // float num = 0.f, denom = 0.f;
+                // for (int d = 0; d < envConfig.dim; d++)
+                // {
+                //     num += envConfig.gateVectors[nextGate * envConfig.dim + d] * (envConfig.gateCenters[nextGate * envConfig.dim + d] - prevPos[iAgent * envConfig.dim + d]);
+                //     denom += envConfig.gateVectors[nextGate * envConfig.dim + d] * (pos[iAgent * envConfig.dim + d] - prevPos[iAgent * envConfig.dim + d]);
+                // }
 
-                // direction is inside the gate plan: cannot cross
-                if (fabsf(denom) < 1e-10f)
-                    continue;
+                // // direction is inside the gate plan: cannot cross
+                // if (fabsf(denom) < 1e-10f)
+                //     continue;
 
-                float lambda = num / denom;
-                // we cross if 0 <= lambda <= 1 and if the projection of the segment (x_t, x_t+1) on the gate plan (ie. (1 - lambda) * x_t + lambda * x_t+1) is at distance <= radius from the center
-                // if we want to make sure we cross the gate in the right direction, we have to check num >= 0 (<=> denom > 0)
+                // float lambda = num / denom;
+                // // we cross if 0 <= lambda <= 1 and if the projection of the segment (x_t, x_t+1) on the gate plan (ie. (1 - lambda) * x_t + lambda * x_t+1) is at distance <= radius from the center
+                // // if we want to make sure we cross the gate in the right direction, we have to check num >= 0 (<=> denom > 0)
 
-                if (lambda < 0.f || lambda > 1.f)
-                    continue;
+                // if (lambda < 0.f || lambda > 1.f)
+                //     continue;
 
-                float sqDist = 0.;
-                for (int d = 0; d < envConfig.dim; d++)
-                {
-                    float dx = (1. - lambda) * prevPos[iAgent * envConfig.dim + d] + lambda * pos[iAgent * envConfig.dim + d] - envConfig.gateCenters[nextGate * envConfig.dim + d];
-                    sqDist += dx * dx;
-                }
+                // float sqDist = 0.;
+                // for (int d = 0; d < envConfig.dim; d++)
+                // {
+                //     float dx = (1. - lambda) * prevPos[iAgent * envConfig.dim + d] + lambda * pos[iAgent * envConfig.dim + d] - envConfig.gateCenters[nextGate * envConfig.dim + d];
+                //     sqDist += dx * dx;
+                // }
 
-                float margin = iAgent == controlAgent ? mc.gateTraversalMargin * mc.gateTraversalMargin : 1.0f;
+                // float margin = iAgent == controlAgent ? mc.gateTraversalMargin * mc.gateTraversalMargin : 1.0f;
 
-                if (sqDist <= envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate] * margin)
-                {
-                    currentGates[iAgent]++;
-                    if (currentGates[iAgent] == envConfig.nGates)
-                    {
-                        currentGates[iAgent] = 0;
-                        laps[iAgent]++;
-                    }
-                }
+                // if (sqDist <= envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate] * margin)
+                // {
+                //     currentGates[iAgent]++;
+                //     if (currentGates[iAgent] == envConfig.nGates)
+                //     {
+                //         currentGates[iAgent] = 0;
+                //         laps[iAgent]++;
+                //     }
+                // }
 
                 // if agent won, stop rollout
                 if (laps[iAgent] >= envConfig.nWinLaps)
+                    stop = true;
+
+                if (isOutside(envConfig, curPos))
                     stop = true;
             }
 
@@ -278,9 +284,10 @@ __global__ void fullRolloutKernel(
             cost += stateCost(controlAgent, pos, vel, S, laps, currentGates, t, envConfig, mc, trackPts, nTP);
 
             // 9. Update belief & potential branching time
-            updateBelief(belief, actions + (1 - controlAgent) * envConfig.dim, nomPidAction, mc.oppPid, mc.nModels, envConfig.dim);
+            updateBelief(belief, actions + (1 - controlAgent) * envConfig.dim, nomPidAction, mc.oppPid, mc.nModels, envConfig.dim, envConfig.maxAccel[1 - controlAgent]);
+
             if (predTheta == -1 && (predTheta = findConfident(belief, mc.nModels, mc.minConfidence)) != -1)
-                branchingTime = t;
+                branchingTime = t + 1;
         }
 
         // ── Terminal cost ────────────────────────────────────────────────
@@ -315,7 +322,8 @@ __global__ void weightedAverageKernel(
     const float* __restrict__ noise,
     float* __restrict__ nominal,
     float minCost, float invTemp,
-    int nModels, int N, int T, int dim)
+    int nModels, int N, int T, int dim,
+    float* __restrict__ nu)
 {
     int mtd = blockIdx.x;
     if (mtd >= (nModels + 1) * T * dim)
@@ -358,5 +366,7 @@ __global__ void weightedAverageKernel(
         nominal[(theta * T + t) * dim + d] += s_wn[0] / s_w[0];
 
     if (threadIdx.x == 0 && blockIdx.x == 0)
-        printf("Sum of w_k (nu): %f\n", s_w[0]);
+    {
+        *nu = s_w[0];
+    }
 }

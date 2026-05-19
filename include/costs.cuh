@@ -5,7 +5,7 @@
 #include <cmath>
 
 // ── Running cost ─────────────────────────────────────────────────────
-__device__ inline float stateCost(
+__device__ INLINE float stateCost(
     int agent,
     const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates,
     int timestep,
@@ -16,7 +16,7 @@ __device__ inline float stateCost(
     float cost = 0.0f;
     const float* curPos = pos + agent * envConfig.dim;
 
-    float decay = powf(0.9f, (float) timestep);
+    float decay = powf(0.95f, (float) timestep);
 
     for (int other = 0; other < envConfig.nAgents; other++)
     {
@@ -55,7 +55,7 @@ __device__ inline float stateCost(
 }
 
 // ── Terminal cost ────────────────────────────────────────────────────
-__device__ inline float finalCost(
+__device__ INLINE float finalCost(
     int agent,
     const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates,
     const EnvironmentConfig& envConfig,

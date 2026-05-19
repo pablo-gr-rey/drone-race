@@ -25,13 +25,6 @@ std::vector<float> EnvironmentConfig::unpackHeader(const void* buf, size_t len)
     if (nGates > MAX_GATES)
         throw std::runtime_error(std::format("Received config for %d gates but MAX_GATES is set to %d. Edit this constant and recompile", nGates, MAX_GATES));
 
-    // initPos = reader.readFloatArray();
-    // initSpeed = reader.readFloatArray();
-
-    // initS = reader.readFloatArray();
-    // initLaps = reader.readIntArray();
-    // initGates = reader.readIntArray();
-
     reader.readFloatArray(initPos);
     reader.readFloatArray(initSpeed);
 
@@ -44,30 +37,12 @@ std::vector<float> EnvironmentConfig::unpackHeader(const void* buf, size_t len)
     speedNoiseLevel = reader.readFloat();
     actionNoiseLevel = reader.readFloat();
 
-    // std::vector<float> ms = reader.readFloatArray(); // expecting length nAgents
-    // std::vector<float> ma = reader.readFloatArray(); // expecting length nAgents
-
-    // if ((int) ms.size() != nAgents || (int) ma.size() != nAgents)
-    //     throw std::runtime_error("Error unpacking EnvironmentConfig: maxSpeed/maxAccel length must equal nAgents");
-    // if (nAgents > MAX_AGENTS)
-    //     throw std::runtime_error("Error unpacking EnvironmentConfig: nAgents > MAX_AGENTS");
-
-    // std::memcpy(maxSpeed, ms.data(), ms.size() * sizeof(float));
-    // std::memcpy(maxAccel, ma.data(), ma.size() * sizeof(float));
-
     reader.readFloatArray(maxSpeed);
     reader.readFloatArray(maxAccel);
 
     nTrackSamples = (int) reader.readInt32();
     nWinLaps = (int) reader.readInt32();
     targetDistance = reader.readFloat();
-
-    // gateCenters = reader.readFloatArray();
-    // gateVectors = reader.readFloatArray();
-    // gateRadius = reader.readFloatArray();
-
-    // arenaMin = reader.readFloatArray();
-    // arenaMax = reader.readFloatArray();
 
     reader.readFloatArray(gateCenters);
     reader.readFloatArray(gateVectors);
@@ -76,15 +51,18 @@ std::vector<float> EnvironmentConfig::unpackHeader(const void* buf, size_t len)
     reader.readFloatArray(arenaMin);
     reader.readFloatArray(arenaMax);
 
-    // float* trackPoints = (float*) malloc(nRacelines * nTrackSamples * dim * sizeof(float));
-    // reader.readFloatArray(trackPoints);
+    nObstacles = reader.readInt32();
+    if (nObstacles > MAX_OBSTACLES)
+        throw std::runtime_error(std::format("Received config for %d obstacles but MAX_OBSTACLES is set to %d. Edit this constant and recompile", nObstacles, MAX_OBSTACLES));
+    reader.readFloatArray(obstacles);
+
     std::vector<float> trackPoints = reader.readFloatArray();
 
     reader.assertFinished();
 
     std::cout << "read nAgents " << nAgents << " nWinLaps " << nWinLaps << " max speed " << maxSpeed[0] << ' ' << maxSpeed[1] << " nTrackSamples" << nTrackSamples << "\ngate vectors:";
-    for (float val : gateVectors)
-        std::cout << val << " ";
+    for (int i = 0; i < nGates * dim; i++)
+        std::cout << gateVectors[i] << (i % dim ? " " : ";  ");
     std::cout << "\n";
 
     return trackPoints;

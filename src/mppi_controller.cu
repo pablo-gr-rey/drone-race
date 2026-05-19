@@ -33,7 +33,7 @@ MPPIController::MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc,
     // }
     // else
     //     h_belief.assign(mc.nModels, 1.0f / mc.nModels);
-    h_belief.assign(std::begin(mc.initBelief), std::end(mc.initBelief));
+    h_belief.assign(mc.initBelief, mc.initBelief + mc.nModels);
 
     if (nominal)
     {
@@ -83,6 +83,7 @@ void MPPIController::allocDevice()
 
     // Scalar for min reduction
     CUDA_CHECK(cudaMalloc(&d_minCost, sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_nu, sizeof(float)));
 
     // Per-sample RNG states
     CUDA_CHECK(cudaMalloc(&d_rng, N * sizeof(curandState)));
@@ -144,6 +145,7 @@ void MPPIController::freeDevice()
     safe_free(d_costs);
     safe_free(d_nominal);
     safe_free(d_minCost);
+    safe_free(d_nu);
     safe_free(d_rng);
     safe_free(d_temp_storage);
 
@@ -163,7 +165,10 @@ void MPPIController::getControl(int agent,
     const int* currentGates,
     float* outAction,
     std::normal_distribution<float>& /* nd */, std::mt19937& /* rng */,
-    std::optional<std::vector<float>> pastAction)
+    std::optional<std::vector<float>> pastAction,
+    std::optional<std::vector<float>> pastPos,
+    std::optional<std::vector<float>> pastVel,
+    std::optional<std::vector<float>> pastS)
 {
     if (!engine)
         throw std::runtime_error("MPPI: engine not set");
@@ -192,10 +197,10 @@ void MPPIController::getControl(int agent,
         for (int thetaT = 0; thetaT < mppiConfig.nModels; thetaT++)
         {
             // std::cout << "computing PID action for model " << thetaT << std::endl;
-            computePIDAction(1 - agent, pos, speed, S, currentGates, envConfig, mppiConfig.oppPid[thetaT], engine->trackPoints.data(), nomPidAction.data() + thetaT * envConfig.dim);
+            computePIDAction(1 - agent, pastPos->data(), pastVel->data(), pastS->data(), envConfig, mppiConfig.oppPid[thetaT], engine->trackPoints.data(), nomPidAction.data() + thetaT * envConfig.dim);
         }
 
-        updateBelief(h_belief.data(), pastAction->data() + (1 - agent) * envConfig.dim, nomPidAction.data(), mppiConfig.oppPid, mppiConfig.nModels, envConfig.dim);
+        updateBelief(h_belief.data(), pastAction->data() + (1 - agent) * envConfig.dim, nomPidAction.data(), mppiConfig.oppPid, mppiConfig.nModels, envConfig.dim, envConfig.maxAccel[1 - agent]);
     }
 
     std::cout << "MPPI belief: ";
@@ -267,7 +272,10 @@ void MPPIController::getControl(int agent,
     weightedAverageKernel << <wGrid, blk, 2 * blk * sizeof(float) >> > (
         d_costs, d_noise, d_nominal,
         hostMin, mppiConfig.invTemperature,
-        nModels, N, T, dim);
+        nModels, N, T, dim, d_nu);
+
+    float nu;
+    CUDA_CHECK(cudaMemcpy(&nu, d_nu, sizeof(float), cudaMemcpyDeviceToHost));
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
@@ -293,6 +301,19 @@ void MPPIController::getControl(int agent,
     std::cout << std::endl;
 
     std::cout << "Minimum cost: " << hostMin << std::endl;
+    std::cout << "Sum of computed sample costs w_k (nu): " << nu << "\n";
+    if (nu > max_nu * (float) N)
+    {
+        std::cout << "\tdecreasing inverse temperature from " << mppiConfig.invTemperature << " to ";
+        mppiConfig.invTemperature *= 0.9f;
+        std::cout << mppiConfig.invTemperature << "\n";
+    }
+    else if (nu < min_nu * (float) N)
+    {
+        std::cout << "\tincreasing inverse temperature from " << mppiConfig.invTemperature << " to ";
+        mppiConfig.invTemperature *= 1.2f;
+        std::cout << mppiConfig.invTemperature << "\n";
+    }
 
     // 7. Shift nominal action sequence left by one timestep (warm-start for next call)
     for (int t = 0; t < T - 1; t++)

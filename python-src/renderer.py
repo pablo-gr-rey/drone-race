@@ -3,6 +3,8 @@ import os
 import time
 from typing import Any, Optional
 
+from matplotlib import patches
+from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.collections import LineCollection
@@ -13,7 +15,7 @@ from matplotlib.transforms import Bbox
 from matplotlib.widgets import Button, Slider, TextBox
 from PIL import Image
 from tqdm import tqdm
-from utils import GateEnvironmentConfig
+from utils import GateEnvironmentConfig, MPPIConfig
 
 
 class EnvironmentRenderer:
@@ -25,13 +27,16 @@ class EnvironmentRenderer:
         self,
         envConfig: GateEnvironmentConfig,
         contNames: list[str],
-        axis=(0, 1),
+        oppNames: list[str],
+        mppiConfig: MPPIConfig,
+        axis: tuple[int, ...] = (0, 1),
         interval: int = 30,
         autoplay: bool = True,
         frameSkipPlayback: int = 2,
         frameSkipWaiting: int = 1,
         defaultZoomAgent: int = 0,
         display_raceline: bool | list[bool] = True,
+        renderTrails: bool = True,
     ):
         "interval: refresh rate. frameSkipWaiting: how many frames to skip if emitting states faster than we can display (use -1 to always display last frame). use defaultZoomAgent=-1 to start viewing full track, otherwise start zooming on agent"
         self.envConfig = envConfig
@@ -39,6 +44,9 @@ class EnvironmentRenderer:
         self.interval = interval
         self.frameSkipPlayback = frameSkipPlayback
         self.frameSkipWaiting = frameSkipWaiting
+        self.oppNames = oppNames
+        self.mppiConfig = mppiConfig
+        self.renderTrails = renderTrails
 
         self.posLog: list[np.ndarray] = []
         self.velLog: list[np.ndarray] = []
@@ -46,6 +54,8 @@ class EnvironmentRenderer:
         self.sLog: list[np.ndarray] = []
         self.nLapsLog: list[np.ndarray] = []
         self.currentGatesLog: list[np.ndarray] = []
+
+        self.beliefLog: list[tuple[int, np.ndarray, list[tuple[int, int, np.ndarray]]]] = []
 
         self.collision = False
         self.winner: Optional[int] = None
@@ -65,7 +75,7 @@ class EnvironmentRenderer:
             figure=self.fig,
             width_ratios=[3, 1],
             height_ratios=[15, 1],
-            wspace=0,
+            wspace=0.2,
             hspace=0.1,
             left=0.04,
             right=0.96,
@@ -75,8 +85,12 @@ class EnvironmentRenderer:
 
         self.ax = self.fig.add_subplot(gs[0, 0])  # track ax
 
-        self.ax_status = self.fig.add_subplot(gs[0, 1])  # for text status
+        gs_status = gs[0, 1].subgridspec(2, 1, height_ratios=[1, 1], hspace=0.1)
+
+        self.ax_status = self.fig.add_subplot(gs_status[0])  # for text status
         self.ax_status.axis("off")
+
+        self.ax_belief = self.fig.add_subplot(gs_status[1])  # for belief
 
         # slider, empty space, play/pause, save gif, gif name, zoom, +/-, focus
         gs_ui = gs[1, :].subgridspec(1, 8, width_ratios=[7, 1, 1, 1, 1, 1, 0.4, 1], wspace=0.1)
@@ -88,6 +102,7 @@ class EnvironmentRenderer:
         # color maps and patch/marker colors
         self.cmaps = ["Blues", "Reds", "Greens", "Purples", "Oranges", "Greys", "YlOrBr", "BuPu"]
         self.colors = ["blue", "red", "green", "purple", "orange", "gray", "brown", "pink"]
+        self.pred_colors = ["brown", "green", "orange"]  # for nominal + models
 
         self.nAgents = self.envConfig.nAgents
 
@@ -95,11 +110,21 @@ class EnvironmentRenderer:
         self.lcs: list[LineCollection] = []
 
         for i_agent in range(self.nAgents):
-            lc = LineCollection([], cmap=self.cmaps[i_agent % self.nAgents])
-            lc.set_linewidth(4)
-            lc.set_alpha(0.8)
+            lc = LineCollection([], cmap=self.cmaps[i_agent % self.nAgents], linewidth=4, alpha=0.8)
             self.lcs.append(lc)
             self.ax.add_collection(lc)  # type: ignore
+
+        # line collections for MPPI predictions
+        # length: nModels, with items being (nominalMPPItraj, branchedTraj, PIDtraj)
+        self.lcs_pred: list[tuple[Line2D, Line2D, Line2D]] = []
+        for iPred in range(len(oppNames)):
+            self.lcs_pred.append(
+                (
+                    self.ax.plot([], color=self.pred_colors[0], marker=None, linewidth=4, alpha=0.8)[0],
+                    self.ax.plot([], color=self.pred_colors[iPred + 1], marker=None, linewidth=4, alpha=0.8)[0],
+                    self.ax.plot([], color=self.pred_colors[iPred + 1], marker=None, linewidth=4, alpha=0.8)[0],
+                )
+            )
 
         # points and collision circles
         self.points: list[Any] = []
@@ -154,6 +179,42 @@ class EnvironmentRenderer:
                 transform=self.ax_status.transAxes,
             )
             self.agent_value_texts.append(t_val)
+
+        # MPPI belief
+        if self.oppNames:
+            x_pos = np.arange(len(oppNames))
+
+            self.belief_bars = self.ax_belief.bar(x_pos, np.zeros(len(oppNames)), color="#3498db", edgecolor="black", alpha=0.8)
+
+            # threshold line
+            self.ax_belief.axhline(y=self.mppiConfig.minConfidence, color="#e74c3c", linestyle="--", linewidth=1.5)
+
+            # texte for the initial values (initially empty)
+            self.belief_texts = []
+            for i in range(len(oppNames)):
+                t = self.ax_belief.text(
+                    i, 0.02, "", ha="center", va="bottom", fontsize=8, fontweight="bold", color=self.pred_colors[1 + i]
+                )
+                self.belief_texts.append(t)
+
+            self.ax_belief.set_xticks(x_pos)
+            self.ax_belief.set_xticklabels(oppNames, fontsize=9, rotation=45)
+
+            # ax_belief.set_xlim(0, 1.05)
+            self.ax_belief.set_ylim(-0.5, 1.05)
+            self.ax_belief.set_ylabel("Probability", fontsize=8)
+            self.ax_belief.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
+
+            self.ax_belief.set_title("Model Beliefs", fontsize=10, fontweight="bold")
+            self.ax_belief.spines["top"].set_visible(False)
+            self.ax_belief.spines["right"].set_visible(False)
+            self.ax_belief.grid(axis="y", linestyle=":", alpha=0.4)
+
+            # we need to draw to get back the labels
+            self.fig.canvas.draw_idle()
+            x_labels = self.ax_belief.get_xticklabels()
+            for label, color in zip(x_labels, self.pred_colors[1:]):
+                label.set_color(color)
 
         # UI: slider, play, save GIF, textbox and zoom
         max_idx = max(1, len(self.posLog) - 1)
@@ -240,6 +301,21 @@ class EnvironmentRenderer:
                     pts = self.envConfig.trackPoints[i * self.envConfig.nTrackSamples : (i + 1) * self.envConfig.nTrackSamples, :]
                     self.ax.plot(pts[:, 0], pts[:, 1], "g--", alpha=0.5)
 
+        # draw obstacles
+        for omin, omax in self.envConfig.obstacles.reshape(self.envConfig.nObstacles, 2, self.envConfig.dim):
+            self.ax.add_patch(
+                patches.Rectangle(
+                    omin,
+                    width=omax[0] - omin[0],
+                    height=omax[1] - omin[1],
+                    linewidth=3,
+                    edgecolor="black",
+                    facecolor="gray",
+                    hatch="/",
+                    fill=True,
+                )
+            )
+
     def coordIndex(self, agent: int, coord: int) -> int:
         return agent * self.envConfig.dim + coord
 
@@ -259,12 +335,34 @@ class EnvironmentRenderer:
             return
         i = max(0, min(i, n - 1))
 
-        for idx, lc in enumerate(self.lcs):
-            x_arr = [self.getPos(j, idx)[0] for j in range(i + 1)]
-            y_arr = [self.getPos(j, idx)[1] for j in range(i + 1)]
-            lc.set_segments([[[x_arr[j], y_arr[j]], [x_arr[j + 1], y_arr[j + 1]]] for j in range(i)])
-            if i > 1:
-                lc.set_array(np.linspace(0, 1, i))
+        self.updateStatus(i)
+
+        # update trails
+        if self.renderTrails:
+            for idx, lc in enumerate(self.lcs):
+                x_arr = [self.getPos(j, idx)[0] for j in range(i + 1)]
+                y_arr = [self.getPos(j, idx)[1] for j in range(i + 1)]
+                lc.set_segments([[[x_arr[j], y_arr[j]], [x_arr[j + 1], y_arr[j + 1]]] for j in range(i)])
+                if i > 1:
+                    lc.set_array(np.linspace(0, 1, i))
+
+        # update MPPI predictions
+        if self.beliefLog and self.oppNames:
+            iMppi, belief, preds = self.beliefLog[i]
+            for theta, ((lc_nom, lc_branch, lc_opp), (branchingTime, predTheta, fullPos)) in enumerate(zip(self.lcs_pred, preds)):
+                fullPos = fullPos.reshape((self.mppiConfig.nTimesteps, self.envConfig.nAgents, self.envConfig.dim))
+
+                if predTheta == -1:
+                    branchingTime = self.mppiConfig.nTimesteps
+
+                lc_nom.set_data(fullPos[:branchingTime, iMppi, 0], fullPos[:branchingTime, iMppi, 1])
+                if branchingTime != 0 or predTheta == theta:
+                    # if we branch at time 0, only show the corresponding plot (otherwise, it might get confuding)
+                    lc_branch.set_data(fullPos[branchingTime:, iMppi, 0], fullPos[branchingTime:, iMppi, 1])
+                    lc_opp.set_data(fullPos[:, 1 - iMppi, 0], fullPos[:, 1 - iMppi, 1])
+                else:
+                    lc_branch.set_data([], [])
+                    lc_opp.set_data([], [])
 
         # update points and circles
         for idx, pt in enumerate(self.points):
@@ -285,8 +383,6 @@ class EnvironmentRenderer:
             self.ax.set_ylim(bmin[self.axis[1]], bmax[self.axis[1]])  # type: ignore
         self.ax.set_aspect("equal", adjustable="box")
 
-        self.updateStatus(i)
-
         # update slider value without triggering callback
         self.slider_is_updating = True
         self.slider.set_val(i)
@@ -298,6 +394,7 @@ class EnvironmentRenderer:
         if i is None:
             i = self.current_index
 
+        # update text status
         if self.collision:
             self.status_text.set_text("Collision")
             self.status_text.set_color("red")
@@ -320,14 +417,36 @@ class EnvironmentRenderer:
                 f"Lap {int(laps[iAgent])}/{self.envConfig.nWinLaps} Gate {int(gates[iAgent])}/{self.envConfig.nGates}\nSpeed {speed:.2f}"
             )
 
+        # update MPPI belief
+        if self.beliefLog and self.oppNames:
+            iAgent, belief, preds = self.beliefLog[i]
+            for i, (bar, b_val) in enumerate(zip(self.belief_bars, belief)):
+                bar.set_height(b_val)
+
+                color = "#2ecc71" if b_val >= self.mppiConfig.minConfidence else "#3498db"
+                bar.set_facecolor(color)
+
+                # Mise à jour du texte de valeur
+                self.belief_texts[i].set_text(f"{b_val:.2f}")
+                self.belief_texts[i].set_y(b_val + 0.01)
+
     def onNewState(
-        self, pos: np.ndarray, vel: np.ndarray, currentS: np.ndarray, nLaps: np.ndarray, currentGates: np.ndarray
+        self,
+        pos: np.ndarray,
+        vel: np.ndarray,
+        currentS: np.ndarray,
+        nLaps: np.ndarray,
+        currentGates: np.ndarray,
+        belief: Optional[tuple[int, np.ndarray, list[tuple[int, int, np.ndarray]]]],
     ) -> None:
         self.posLog.append(pos)
         self.velLog.append(vel)
         self.sLog.append(currentS)
         self.nLapsLog.append(nLaps)
         self.currentGatesLog.append(currentGates)
+
+        if belief is not None:
+            self.beliefLog.append(belief)
 
         # Called by the environment when a new frame is available
         n = len(self.posLog)
@@ -458,7 +577,7 @@ class EnvironmentRenderer:
             self.updateDisplay(i)
             self.fig.canvas.draw()
 
-            axes_to_capture = [self.ax, self.ax_status]
+            axes_to_capture = [self.ax, self.ax_status, self.ax_belief]
             bboxes = [a.get_window_extent().transformed(self.fig.dpi_scale_trans.inverted()) for a in axes_to_capture]
             full_bbox = Bbox.union(bboxes).padded(0.5)
 

@@ -6,7 +6,7 @@ from typing import Any, Optional
 import numpy as np
 import zmq
 from renderer import EnvironmentRenderer
-from utils import EVENT_TYPE, MSG_TYPE, ControllerConfig, GateEnvironmentConfig, PIDConfig
+from utils import EVENT_TYPE, MSG_TYPE, ControllerConfig, GateEnvironmentConfig, PIDConfig, MPPIConfig
 
 
 class BytePacker:
@@ -98,6 +98,9 @@ class ByteUnpacker:
         arr = np.frombuffer(raw, dtype=np.float32, count=n)
         return arr.copy() if copy else arr
 
+    def is_finished(self):
+        return self.offset == len(self.buf)
+
     def assert_finished(self):
         if self.offset != len(self.buf):
             raise ValueError(f"{len(self.buf) - self.offset} trailing bytes left")
@@ -117,8 +120,18 @@ def encodeConfig(config: Any, msg_type: Optional[int] = None, warn=True, log=Fal
     return p
 
 
-def unpackState(unpack: ByteUnpacker) -> tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    "Return (step, pos, vel, currentS, nLaps, currentGates) from bytes"
+def unpackState(
+    unpack: ByteUnpacker,
+) -> tuple[
+    int,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    Optional[tuple[int, np.ndarray, list[tuple[int, int, np.ndarray]]]],
+]:
+    "Return (step, pos, vel, currentS, nLaps, currentGates, Optional[iMppi, belief, list[(branchingTime, predTheta, fullPos)]]) from bytes"
 
     step = unpack.readInt()
     pos = unpack.readArray()
@@ -127,9 +140,17 @@ def unpackState(unpack: ByteUnpacker) -> tuple[int, np.ndarray, np.ndarray, np.n
     nLaps = unpack.readArray()
     currentGates = unpack.readArray()
 
+    mppiInfo = None
+    if not unpack.is_finished():
+        iMppi, belief = unpack.readInt(), unpack.readArray()
+        preds = []
+        while not unpack.is_finished():
+            preds.append((unpack.readInt(), unpack.readInt(), unpack.readArray()))
+        mppiInfo = (iMppi, belief, preds)
+
     unpack.assert_finished()
 
-    return step, pos, vel, currentS, nLaps, currentGates
+    return step, pos, vel, currentS, nLaps, currentGates, mppiInfo
 
 
 class ZMQRecv:
@@ -145,12 +166,15 @@ class ZMQRecv:
         self.nLapsLog: list[np.ndarray] = []
         self.currentGatesLog: list[np.ndarray] = []
 
+        self.beliefLog: list[tuple[int, np.ndarray, list[tuple[int, int, np.ndarray]]]] = []
+
     def runSim(
         self,
         config: GateEnvironmentConfig,
         contConfigs: list[ControllerConfig],
         render: bool = True,
         contNames: Optional[list[str]] = None,
+        oppNames: Optional[list[str]] = None,
     ) -> tuple[EVENT_TYPE, int]:
         if render:
             # only display the racelines which are actually used
@@ -158,18 +182,41 @@ class ZMQRecv:
             for cfg in contConfigs:
                 if isinstance(cfg, PIDConfig) and cfg.racelineIndex >= 0:
                     used[cfg.racelineIndex] = True
+                elif isinstance(cfg, MPPIConfig):
+                    for opp in cfg.opponentPidConfigs:
+                        if opp.racelineIndex:
+                            used[opp.racelineIndex] = True
+
+            mppiConfig = None
+
+            for cont in contConfigs:
+                if isinstance(cont, MPPIConfig):
+                    mppiConfig = cont
+
+            if mppiConfig is None:
+                print("Warning: did not find any MPPIConfig, proceeding with default")
+                mppiConfig = MPPIConfig()
 
             if contNames is None:
                 contNames = [cfg.getDefaultName() for cfg in contConfigs]
+            if oppNames is None:
+                oppNames = []
+                for cont in contConfigs:
+                    if isinstance(cont, MPPIConfig):
+                        oppNames = [f"Model {i}" for i in range(cont.nModels)]
+                        mppiConfig = cont
 
             renderer = EnvironmentRenderer(
                 config,
                 contNames,
+                oppNames,
+                mppiConfig,
                 interval=0,
-                frameSkipWaiting=5,
+                frameSkipWaiting=1,
                 frameSkipPlayback=2,
                 defaultZoomAgent=-1,
                 display_raceline=used,
+                renderTrails=False,
             )
         else:
             renderer = None
@@ -195,7 +242,7 @@ class ZMQRecv:
                 print("Received unexpected header message from C++")
 
             elif msg_type == MSG_TYPE.MSG_STATE:
-                step, pos, vel, newS, newLaps, newGates = unpackState(unpack)
+                step, pos, vel, newS, newLaps, newGates, belief = unpackState(unpack)
 
                 # print(f"received step {step}")
 
@@ -221,8 +268,11 @@ class ZMQRecv:
                 self.nLapsLog.append(newLaps)
                 self.currentGatesLog.append(newGates)
 
+                if belief is not None:
+                    self.beliefLog.append(belief)
+
                 if renderer is not None:
-                    renderer.onNewState(pos, vel, newS, newLaps, newGates)
+                    renderer.onNewState(pos, vel, newS, newLaps, newGates, belief)
 
             elif msg_type == MSG_TYPE.MSG_EVENT:
                 evt_type, agent_id = unpack.readInt(), unpack.readInt()

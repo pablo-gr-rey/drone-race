@@ -1,18 +1,19 @@
 name: drone-race
 channels:
   - defaults
+  - conda-forge
 dependencies:
   - pkg-config
   - python=3.14
   - pip
   - cppzmq
   - zeromq
-  - cuda-version=12.4
-  - cuda-cudart-dev
-  - sysroot_linux-64
-  - gxx_linux-64=13
-  - gcc_linux-64=13
-  - binutils_linux-64
+  - cuda=13.2
+  # - cuda-cudart-dev
+  # - sysroot_linux-64
+  # - gxx_linux-64=15
+  # - gcc_linux-64=15
+  # - binutils_linux-64
   - pip:
     - tqdm
     - numpy

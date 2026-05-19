@@ -42,4 +42,5 @@ __global__ void weightedAverageKernel(
     int nModels,
     int    nSamples,
     int    nTimesteps,
-    int    dim);
+    int    dim,
+    float* __restrict__ nu);

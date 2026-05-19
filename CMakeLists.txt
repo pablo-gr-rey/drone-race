@@ -7,10 +7,11 @@ set(CMAKE_CUDA_STANDARD 20)
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
 endif()
-message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
 list(APPEND CMAKE_PREFIX_PATH $ENV{CONDA_PREFIX})
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+set(CONDA_PREFIX $ENV{CONDA_PREFIX})
 
 find_package(CUDAToolkit REQUIRED)
 find_package(PkgConfig REQUIRED)
@@ -42,9 +43,9 @@ endif()
 
 target_compile_features(drone_race PRIVATE cxx_std_20)
 
-target_include_directories(drone_race PRIVATE 
-    include 
-    proto 
+target_include_directories(drone_race PUBLIC 
+    include
+    $ENV{CONDA_PREFIX}/include
     ${ZMQ_INCLUDE_DIRS} 
     ${CUDAToolkit_INCLUDE_DIRS}
 )
@@ -61,5 +62,5 @@ set_target_properties(drone_race PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED YES
-    CUDA_ARCHITECTURES "70;80;86;89;90"
+    CUDA_ARCHITECTURES "80;86;89;90"
 )

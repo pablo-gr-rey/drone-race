@@ -14,13 +14,16 @@ constexpr int MAX_AGENTS = 2;
 constexpr int MAX_DIM = 2;
 constexpr int MAX_GATES = 5;
 constexpr int MAX_MODELS = 2;
+constexpr int MAX_OBSTACLES = 1;
 
 #define DEBUG
 
 #ifdef __CUDACC__
 #define HD __host__ __device__
+#define INLINE static __forceinline__ 
 #else
 #define HD
+#define INLINE inline
 #endif
 
 // if defined, fastProjectOnTrack will be compared to projectOnTrack. use this to test that the margin is correct when changing track (it will be much slower, though)
@@ -52,12 +55,6 @@ struct EnvironmentConfig
     int nRacelines;
     int nGates;
 
-    // std::vector<float> initPos;
-    // std::vector<float> initSpeed;
-    // std::vector<float> initS;
-    // std::vector<int> initLaps;
-    // std::vector<int> initGates;
-
     float initPos[MAX_AGENTS * MAX_DIM];
     float initSpeed[MAX_AGENTS * MAX_DIM];
     float initS[MAX_AGENTS];
@@ -77,21 +74,15 @@ struct EnvironmentConfig
     int nWinLaps;
     float targetDistance;
 
-    // std::vector<float> gateCenters; // (nGates * dim)
-    // std::vector<float> gateVectors; // (nGates * dim)
-    // std::vector<float> gateRadius;  // (nGates)
-
-    // std::vector<float> arenaMin;    // (dim)
-    // std::vector<float> arenaMax;    // (dim)
-
-    // std::vector<float> trackPoints; // (nTrackSamples * nRacelines, dim)
-
     float gateCenters[MAX_GATES * MAX_DIM]; // (nGates * dim)
     float gateVectors[MAX_GATES * MAX_DIM]; // (nGates * dim)
     float gateRadius[MAX_GATES];  // (nGates)
 
     float arenaMin[MAX_DIM];    // (dim)
     float arenaMax[MAX_DIM];    // (dim)
+
+    int nObstacles;
+    float obstacles[MAX_OBSTACLES * MAX_DIM * 2];   // (nObstacles * dim * 2): rectangle obstacles, i.e. [xmin, ymin, xmax, ymax]
 
     // float* trackPoints = nullptr; // (nTrackSamples * nRacelines, dim)
 

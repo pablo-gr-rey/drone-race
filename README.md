@@ -25,7 +25,13 @@ Use the provided CMake configuration to compile:
 ```
 mkdir build && cd build
 cmake ..
-make -j4
+make -j8
+```
+
+If CMake fails to compile Cuda code (with nvcc outputting an error like `cannot find "cuda_runtime.h"`), it might be because Conda installed CUDA headers in `$CONDA_PREFIX/targets/x86_64-linux/include/` instead of `$CONDA_PREFIX/include`. Check if the former contains `cuda_runtime.h`, and if so, create symbolic links to make sure nvcc is able to find its own headers:
+```
+ln -s $CONDA_PREFIX/targets/x86_64-linux/include/* $CONDA_PREFIX/include/
+ln -s $CONDA_PREFIX/targets/x86_64-linux/lib/* $CONDA_PREFIX/lib/
 ```
 
 Then, run `./build/drone_race`. It will keep listening for configurations sent by the Python side until you ctrl-C (this avoids re-running the engine for each new simulation).

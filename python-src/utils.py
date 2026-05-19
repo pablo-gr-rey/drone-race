@@ -213,6 +213,9 @@ class GateEnvironmentConfig:
     arenaMin: np.ndarray = field(default_factory=lambda: np.array([]))
     arenaMax: np.ndarray = field(default_factory=lambda: np.array([]))
 
+    nObstacles: int = 0
+    obstacles: np.ndarray = field(default_factory=lambda: np.array([]))
+
     trackPoints: Optional[np.ndarray] = None
 
     def __post_init__(self) -> None:
@@ -319,12 +322,19 @@ class MPPIConfig(ControllerConfig):
     #     None  # should be the list of modeled getControl() method of opponents
     # )
 
-    nPIDStrats: int = 1
+    minConfidence: float = 0.9
+
+    nModels: int = 1
     oppKind: CONTROLLER_TYPE = CONTROLLER_TYPE.CONT_DUMMY
-    oppPidStrat: int = 0  # temporary, while there is still no belief
     # obviously, should not be MPPIConfig
-    # opponentConfig: DummyConfig | PIDConfig = field(default_factory=lambda: DummyConfig())
     opponentPidConfigs: tuple[PIDConfig, ...] = ()
+    initBelief: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    def __post_init__(self) -> None:
+        if self.initBelief.size == 0:
+            self.initBelief = np.full(self.nModels, 1.0 / self.nModels)
+
+        super().__post_init__()
 
 
 # class Controller(ABC):
