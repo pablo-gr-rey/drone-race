@@ -333,7 +333,7 @@ class NpJsonEncoder(json.JSONEncoder):
 #     plt.show()
 
 
-def standardGateEnv() -> tuple[GateEnvironmentConfig, PIDConfig, PIDConfig, list[str]]:
+def standardGateEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig, list[str]]:
     nAgents = 2
     # nAgents = 1
     dim = 2
@@ -395,15 +395,49 @@ def standardGateEnv() -> tuple[GateEnvironmentConfig, PIDConfig, PIDConfig, list
     )
     pidbold = PIDConfig(kp=5, kd=20, repulsionFactor=0, repulsionDistFactor=3, racelineIndex=1, actionNoise=2, repulsionPower=2.0)
 
-    return config, pidafraid, pidbold, ["Afraid", "Bold"]
+    mppiconfig = MPPIConfig(
+        nSamples=10000,
+        nTimesteps=60,
+        inv_temperature=10,
+        samplingNoise=3,
+        gateTraversalMargin=0.95,
+        collDistFactor=1.1,
+        # collDistFactor=1.3,
+        finalAdvWeight=200,
+        # finalAdvWeight=0,
+        # finalSpeedWeight=50,
+        finalSpeedWeight=0,
+        # oppDistWeight=1,
+        oppDistWeight=0.0,
+        oppDistThresholdFactor=2,
+        finalOppAdvWeight=0,
+        # finalOppAdvWeight=500,
+        # boundaryCost=0.01,
+        boundaryCost=0.0,
+        boundaryThresholdFactor=2,
+        oppOutsideCost=0,
+        # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
+        outsideCost=1000000,
+        collisionCost=1000000,
+        winCost=100000,
+        minConfidence=0.95,
+        oppKind=CONTROLLER_TYPE.CONT_PID,
+        nModels=2,
+        opponentPidConfigs=(pidafraid, pidbold),
+        initBelief=np.array([0.5, 0.5]),
+        # initBelief=np.array([1, 0]),
+    )
+
+    return config, mppiconfig, pidafraid, pidbold, ["Afraid", "Bold"]
 
 
-def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, PIDConfig, PIDConfig, list[str]]:
+def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig, list[str]]:
     nAgents = 2
     dim = 2
     nTrackSamples = 1000
 
-    startS = np.linspace(0.1, 0.02, nAgents)
+    startS = np.linspace(0.1, 0.0, nAgents)
+    # startS = np.linspace(0.1, 0.02, nAgents)
     nGates = 2
 
     length = 30
@@ -476,13 +510,6 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, PIDConfig,
     pid0 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=0, actionNoise=2)
     pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=1, actionNoise=2)
 
-    return config, pid0, pid1, ["Top", "Bottom"]
-
-
-def mainGate():
-    # envConfig, pid0, pid1, oppNames = standardGateEnv()  # pid0 = afraid; pid1 = bold
-    envConfig, pid0, pid1, oppNames = tinyGateEnv(afraid=False)  # pid0 = top; pid1 = bottom
-
     mppiconfig = MPPIConfig(
         nSamples=10000,
         nTimesteps=60,
@@ -495,8 +522,8 @@ def mainGate():
         # finalAdvWeight=0,
         # finalSpeedWeight=50,
         finalSpeedWeight=0,
-        # oppDistWeight=0.01,
-        oppDistWeight=0.0,
+        oppDistWeight=1,
+        # oppDistWeight=0.0,
         oppDistThresholdFactor=2,
         finalOppAdvWeight=0,
         # finalOppAdvWeight=500,
@@ -516,12 +543,21 @@ def mainGate():
         # initBelief=np.array([1, 0]),
     )
 
-    dummyconfig = DummyConfig()
+    return config, mppiconfig, pid0, pid1, ["Top", "Bottom"]
 
-    cont_configs: list[ControllerConfig] = [pid0, mppiconfig]
+
+def mainGate():
+    # envConfig, pid0, pid1, oppNames = standardGateEnv()  # pid0 = afraid; pid1 = bold
+    envConfig, mppiconfig, pid0, pid1, oppNames = tinyGateEnv(afraid=False)  # pid0 = top; pid1 = bottom
+
+    # dummyconfig = DummyConfig()
+
+    # cont_configs: list[ControllerConfig] = [pid0, mppiconfig]
     # cont_configs: list[ControllerConfig] = [pid1, mppiconfig]
 
     # cont_configs: list[ControllerConfig] = [mppiconfig, pid0]
+    cont_configs: list[ControllerConfig] = [mppiconfig, pid1]
+
     # cont_configs: list[ControllerConfig] = [blindpidconfig, mppiconfig]
     # cont_configs: list[ControllerConfig] = [mppiconfig, mppiconfig2]
     # cont_configs: list[ControllerConfig] = [mppiconfig, blindpidconfig]
