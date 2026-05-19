@@ -65,7 +65,7 @@ private:
     // device memory
     float* d_pos = nullptr;   // (nAgents, dim) - initial positions
     float* d_speed = nullptr; // (nAgents, dim) - initial speeds
-    float* d_S = nullptr;      // (nAgents) - initial advance along the track
+    float* d_S = nullptr;      // (nAgents, nRacelines) - initial advance along the track
     int* d_laps = nullptr;   // (nAgents) - initial number of laps
     int* d_currentGates = nullptr;    // (nAgents) - initial gate progression
     float* d_belief = nullptr;  // (nModels) - initial belief
@@ -104,7 +104,7 @@ HD INLINE void computePIDAction(
 {
     float target[MAX_DIM];
 
-    sampleCenterline(trackPoints + envConfig.nTrackSamples * pid.racelineIndex * envConfig.dim, envConfig.nTrackSamples, envConfig.dim, S[agent] + envConfig.targetDistance, target);
+    sampleCenterline(trackPoints + envConfig.nTrackSamples * pid.racelineIndex * envConfig.dim, envConfig.nTrackSamples, envConfig.dim, S[agent * envConfig.nRacelines + pid.racelineIndex] + envConfig.targetDistance, target);
 
     const float* curPos = pos + agent * envConfig.dim;
     const float* curVel = vel + agent * envConfig.dim;

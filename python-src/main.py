@@ -372,7 +372,7 @@ def standardGateEnv() -> tuple[GateEnvironmentConfig, PIDConfig, PIDConfig, list
     #     [np.stack([config.trackPoints[int(s * config.nTrackSamples)], np.zeros(dim)], axis=1).flatten() for s in startS]
     # ).flatten()
     config.init_pos = np.array([config.trackPoints[int(s * config.nTrackSamples)] for s in startS]).flatten()
-    config.initS = startS
+    config.initS = np.repeat(startS, 2)
     config.initnLaps = np.zeros(nAgents)
     config.initGates = np.array([int(s * nGates) for s in startS], dtype=np.float32)
 
@@ -421,7 +421,7 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, PIDConfig,
     config = GateEnvironmentConfig(
         nAgents=nAgents,
         dim=dim,
-        nRaceLines=3,
+        nRaceLines=2,
         nWinLaps=1,
         nGates=nGates,
         maxSpeed=np.linspace(2, 2.1, nAgents),
@@ -458,14 +458,14 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, PIDConfig,
 
     config.trackPoints = np.concat(
         [
-            np.column_stack((base_x, np.zeros(nTrackSamples))),
             np.column_stack((base_x, base_y)),
             np.column_stack((base_x, -base_y)),
         ]
     )
 
     config.init_pos = np.array([config.trackPoints[int(s * config.nTrackSamples)] for s in startS]).flatten()
-    config.initS = startS
+    config.initS = np.repeat(startS, 2)
+    print(config.initS)
     config.initnLaps = np.zeros(nAgents)
     config.initGates = np.array([1, 1])
 
@@ -473,8 +473,8 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, PIDConfig,
     #     config.init_pos = np.array([10.0, 4.0, 0.1, 0.0])
 
     repulsion = 30 if afraid else 0
-    pid0 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=1, actionNoise=2)
-    pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=2, actionNoise=2)
+    pid0 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=0, actionNoise=2)
+    pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=1, actionNoise=2)
 
     return config, pid0, pid1, ["Top", "Bottom"]
 
@@ -518,8 +518,8 @@ def mainGate():
 
     dummyconfig = DummyConfig()
 
-    # cont_configs: list[ControllerConfig] = [pid0, mppiconfig]
-    cont_configs: list[ControllerConfig] = [pid1, mppiconfig]
+    cont_configs: list[ControllerConfig] = [pid0, mppiconfig]
+    # cont_configs: list[ControllerConfig] = [pid1, mppiconfig]
 
     # cont_configs: list[ControllerConfig] = [mppiconfig, pid0]
     # cont_configs: list[ControllerConfig] = [blindpidconfig, mppiconfig]

@@ -33,7 +33,7 @@ private:
     // state
     std::vector<float> pos;   // (nAgents * dim) positions (x1 y1 .. x2 y2 ..)
     std::vector<float> speed; // (nAgents * dim) speeds  (vx1 vy1 .. vx2 vy2 ..)
-    std::vector<float> currentS;    // (nAgents) current S 
+    std::vector<float> currentS;    // (nAgents * nRacelines) current S relative to the given raceline, -1.0f means it is not used and should not be updated (since it's only useful for PID) 
     std::vector<int> nLaps;       // (nAgents) current number of laps
     std::vector<int> currentGates;  // (nAgents) current number of gates passed (1 = we already went through gates[0], now we aim at gates[1])
 
@@ -48,8 +48,8 @@ private:
 
     std::mt19937 rng;
 
-    // build actual controller from spec
-    std::unique_ptr<Controller> makeController(const ControllerSpec& sp);
+    // build actual controller from spec, and updates currentS (-1.0f if controller is dummy or MPPI, since it won't use S)
+    std::unique_ptr<Controller> makeController(const ControllerSpec& sp, int i);
     void allocTrack();
 
     void dynStep(const std::vector<float>& actions);

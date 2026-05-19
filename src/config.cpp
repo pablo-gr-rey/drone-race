@@ -8,7 +8,7 @@ std::vector<float> EnvironmentConfig::unpackHeader(const void* buf, size_t len)
 
     int kind = reader.readInt32();
     if (kind != MSG_HEADER)
-        throw std::runtime_error(std::format("Expected header message type for environment config (type %d) but got type %d instead", static_cast<int>(MSG_HEADER), kind));
+        throw std::runtime_error(std::format("Expected header message type for environment config (type {}) but got type {} instead", static_cast<int>(MSG_HEADER), kind));
 
     nAgents = (int) reader.readInt32();
     dim = (int) reader.readInt32();
@@ -19,11 +19,13 @@ std::vector<float> EnvironmentConfig::unpackHeader(const void* buf, size_t len)
     nGates = (int) reader.readInt32();
 
     if (nAgents > MAX_AGENTS)
-        throw std::runtime_error(std::format("Received config for %d agents but MAX_AGENTS is set to %d. Edit this constant and recompile", nAgents, MAX_AGENTS));
+        throw std::runtime_error(std::format("Received config for {} agents but MAX_AGENTS is set to {}. Edit this constant and recompile", nAgents, MAX_AGENTS));
     if (dim > MAX_DIM)
-        throw std::runtime_error(std::format("Received config for dimension %d but MAX_DIM is set to %d. Edit this constant and recompile", dim, MAX_DIM));
+        throw std::runtime_error(std::format("Received config for dimension {} but MAX_DIM is set to {}. Edit this constant and recompile", dim, MAX_DIM));
+    if (nRacelines > MAX_RACELINES)
+        throw std::runtime_error(std::format("Received config for {} racelines but MAX_RACELINES is set to {}. Edit this constant and recompile", nRacelines, MAX_RACELINES));
     if (nGates > MAX_GATES)
-        throw std::runtime_error(std::format("Received config for %d gates but MAX_GATES is set to %d. Edit this constant and recompile", nGates, MAX_GATES));
+        throw std::runtime_error(std::format("Received config for {} gates but MAX_GATES is set to {}. Edit this constant and recompile", nGates, MAX_GATES));
 
     reader.readFloatArray(initPos);
     reader.readFloatArray(initSpeed);
@@ -53,7 +55,7 @@ std::vector<float> EnvironmentConfig::unpackHeader(const void* buf, size_t len)
 
     nObstacles = reader.readInt32();
     if (nObstacles > MAX_OBSTACLES)
-        throw std::runtime_error(std::format("Received config for %d obstacles but MAX_OBSTACLES is set to %d. Edit this constant and recompile", nObstacles, MAX_OBSTACLES));
+        throw std::runtime_error(std::format("Received config for {} obstacles but MAX_OBSTACLES is set to {}. Edit this constant and recompile", nObstacles, MAX_OBSTACLES));
     reader.readFloatArray(obstacles);
 
     std::vector<float> trackPoints = reader.readFloatArray();

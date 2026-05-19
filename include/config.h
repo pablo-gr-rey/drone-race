@@ -15,6 +15,7 @@ constexpr int MAX_DIM = 2;
 constexpr int MAX_GATES = 5;
 constexpr int MAX_MODELS = 2;
 constexpr int MAX_OBSTACLES = 1;
+constexpr int MAX_RACELINES = 2;
 
 #define DEBUG
 
@@ -57,7 +58,7 @@ struct EnvironmentConfig
 
     float initPos[MAX_AGENTS * MAX_DIM];
     float initSpeed[MAX_AGENTS * MAX_DIM];
-    float initS[MAX_AGENTS];
+    float initS[MAX_AGENTS * MAX_RACELINES];    // (nAgents * nRacelines). if == -1.0f, will not be updated (since it is only useful for PIDs)
     int initLaps[MAX_AGENTS];
     int initGates[MAX_AGENTS];
 

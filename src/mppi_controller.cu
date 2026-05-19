@@ -67,7 +67,7 @@ void MPPIController::allocDevice()
     // Single authoritative state (uploaded each call)
     CUDA_CHECK(cudaMalloc(&d_pos, nAgents * dim * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_speed, nAgents * dim * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_S, nAgents * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_S, nAgents * envConfig.nRacelines * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_laps, nAgents * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&d_currentGates, nAgents * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&d_belief, nModels * sizeof(float)));
@@ -211,7 +211,7 @@ void MPPIController::getControl(int agent,
     // 1. upload current state
     CUDA_CHECK(cudaMemcpy(d_pos, pos, (size_t) envConfig.nAgents * envConfig.dim * sizeof(float), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_speed, speed, (size_t) envConfig.nAgents * envConfig.dim * sizeof(float), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_S, S, envConfig.nAgents * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_S, S, envConfig.nAgents * envConfig.nRacelines * sizeof(float), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_laps, laps, envConfig.nAgents * sizeof(int), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_currentGates, currentGates, envConfig.nAgents * sizeof(int), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_belief, h_belief.data(), nModels * sizeof(float), cudaMemcpyHostToDevice));

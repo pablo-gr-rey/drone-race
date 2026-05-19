@@ -62,7 +62,7 @@ __global__ void fullRolloutKernel(
     // TODO: use belief
     float pos[MAX_AGENTS * MAX_DIM];
     float vel[MAX_AGENTS * MAX_DIM];
-    float S[MAX_AGENTS];
+    float currentS[MAX_AGENTS * MAX_RACELINES];
     int laps[MAX_AGENTS];
     int currentGates[MAX_AGENTS];
     float belief[MAX_MODELS];
@@ -85,7 +85,8 @@ __global__ void fullRolloutKernel(
 
         for (int a = 0; a < envConfig.nAgents; a++)
         {
-            S[a] = initS[a];
+            for (int i = 0; i < envConfig.nRacelines; i++)
+                currentS[a] = initS[a];
             laps[a] = initLaps[a];
             currentGates[a] = initGates[a];
         }
@@ -134,16 +135,16 @@ __global__ void fullRolloutKernel(
                     }
 
                     case ControllerKind::CONT_PID: {
-                        // we use theta for the actual action (which is assumed to be the real model)
-                        computePIDAction(a, pos, vel, S, envConfig, mc.oppPid[theta], trackPts, actions + a * envConfig.dim);
-                        for (int d = 0; d < envConfig.dim; d++)
-                            actions[a * envConfig.dim + d] += mc.oppPid[theta].actionNoise * curand_normal(&rng);
-
-                        // we also compute the predicted nominal action (without noise), to update the belief
+                        // we compute the predicted nominal action (without noise), to update the belief (which we do after sending our own action, this will only be used at the end of the control loop as MPPI does not have an instantaneous information advantage)
                         // if the nominal action are not too close, then we can get a good idea of which strategy the opponent is using since it will be the one corresponding to the nominal action closest to the actual action
                         // note: this assumes only 1 other agent!
                         for (int thetaT = 0; thetaT < mc.nModels; thetaT++)
-                            computePIDAction(a, pos, vel, S, envConfig, mc.oppPid[thetaT], trackPts, nomPidAction + thetaT * envConfig.dim);
+                            computePIDAction(a, pos, vel, currentS, envConfig, mc.oppPid[thetaT], trackPts, nomPidAction + thetaT * envConfig.dim);
+
+                        // we use theta for the actual action (which is assumed to be the real model), and add noise (reuse the same PID instead of recomputing it)
+                        // computePIDAction(a, pos, vel, currentS, envConfig, mc.oppPid[theta], trackPts, actions + a * envConfig.dim);
+                        for (int d = 0; d < envConfig.dim; d++)
+                            actions[a * envConfig.dim + d] = nomPidAction[theta * envConfig.dim + d] + mc.oppPid[theta].actionNoise * curand_normal(&rng);
                         break;
                     }
                     }
@@ -199,7 +200,7 @@ __global__ void fullRolloutKernel(
                 }
 
 
-            updateGates(envConfig, pos, prevPos, S, currentGates, laps, trackPts);
+            updateGates(envConfig, pos, prevPos, currentS, currentGates, laps, trackPts);
 
             // 7. Track S / laps / gates update
             for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
@@ -281,7 +282,7 @@ __global__ void fullRolloutKernel(
                 }
 
             // 8. Running cost
-            cost += stateCost(controlAgent, pos, vel, S, laps, currentGates, t, envConfig, mc, trackPts, nTP);
+            cost += stateCost(controlAgent, pos, vel, laps, currentGates, t, envConfig, mc);
 
             // 9. Update belief & potential branching time
             updateBelief(belief, actions + (1 - controlAgent) * envConfig.dim, nomPidAction, mc.oppPid, mc.nModels, envConfig.dim, envConfig.maxAccel[1 - controlAgent]);
@@ -291,7 +292,7 @@ __global__ void fullRolloutKernel(
         }
 
         // ── Terminal cost ────────────────────────────────────────────────
-        cost += finalCost(controlAgent, pos, vel, S, laps, currentGates, envConfig, mc, trackPts, nTP);
+        cost += finalCost(controlAgent, pos, vel, laps, currentGates, envConfig, mc);
 
         // actual cost is dependent on the probability that the opponent is actually following theta, ie. initBelief[theta]
         totalCosts[s] += initBelief[theta] * cost;

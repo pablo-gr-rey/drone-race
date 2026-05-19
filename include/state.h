@@ -31,7 +31,7 @@ HD INLINE float agentSpeed(const float* __restrict__ speed, int agent, int dim)
     return sqrtf(s);
 }
 
-// Advance = currentGate + nGates * laps + 0.5 * (1 - normalizedDistToGate) (it is much better to pass through a gate than to just be close to it) (this is a rough measure, it doesn't include speed for example) (expect pos to be of size d, ie. pos[0] should be position of actual agent)
+// Advance = currentGate + nGates * laps + scale * (1 - normalizedDistToGate) (it is much better to pass through a gate than to just be close to it) (this is a rough measure, it doesn't include speed for example) (expect pos to be of size d, ie. pos[0] should be position of actual agent)
 // `pos` points to the agent's contiguous position array of length `dim`.
 HD INLINE float getAdvance(const int* laps, const int* currentGates, int agent, int nGates, const float* __restrict__ pos, const float* __restrict__ gateCenters, int dim)
 {
@@ -306,14 +306,13 @@ HD INLINE void updateGates(const EnvironmentConfig& envConfig, const float* __re
     for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
     {
         float dist;
-        float s = fastProjectOnTrack(trackPoints, envConfig.nTrackSamples, envConfig.dim, pos + iAgent * envConfig.dim, nullptr, dist, currentS[iAgent]);
-        // float s = projectOnTrack(trackPoints.data(), envConfig.nTrackSamples, envConfig.dim, pos.data() + iAgent * envConfig.dim, nullptr, dist);
-        currentS[iAgent] = s;
 
-        // if (s > currentS[iAgent] + 0.5f)
-        //     nLaps[iAgent] -= 1.0f;
-        // if (s < currentS[iAgent] - 0.5f)
-        //     nLaps[iAgent] += 1.0f;
+        if (currentS[iAgent * envConfig.nRacelines] >= 0.0f)
+            for (int iRaceline = 0; iRaceline < envConfig.nRacelines; iRaceline++)
+            {
+                float s = fastProjectOnTrack(trackPoints + iRaceline * envConfig.nTrackSamples * envConfig.dim, envConfig.nTrackSamples, envConfig.dim, pos + iAgent * envConfig.dim, nullptr, dist, currentS[iAgent * envConfig.nRacelines + iRaceline]);
+                currentS[iAgent * envConfig.nRacelines + iRaceline] = s;
+            }
 
         // check if we passed through next gate: compute lambda = dot(vec, center - x_t) / dot(vec, x_{t+1} - x_t)
         int nextGate = (currentGates[iAgent] + 1) % envConfig.nGates;
@@ -330,9 +329,7 @@ HD INLINE void updateGates(const EnvironmentConfig& envConfig, const float* __re
 
         float lambda = num / denom;
         // we cross if 0 <= lambda <= 1 and if the projection of the segment (x_t, x_t+1) on the gate plan (ie. (1 - lambda) * x_t + lambda * x_t+1) is at distance <= radius from the center
-        // if we want to make sure we cross the gate in the right direction, we have to check num >= 0 (<=> denom > 0)
-
-        // std::cout << "\nnum = " << num << " denom = " << denom << " went from " << old_phys[0] << "; " << old_phys[2] << " to " << phys_state[0] << "; " << phys_state[2] << "\n";
+        // if we want to make sure we cross the gate in the right direction, we have to check num >= 0 (<=> denom > 0). Here, we allows passing through in both directions
 
         if (lambda < 0.f || lambda > 1.f)
             continue;
@@ -343,9 +340,6 @@ HD INLINE void updateGates(const EnvironmentConfig& envConfig, const float* __re
             float dx = (1.f - lambda) * prevPos[iAgent * envConfig.dim + d] + lambda * pos[iAgent * envConfig.dim + d] - envConfig.gateCenters[nextGate * envConfig.dim + d];
             sqDist += dx * dx;
         }
-
-        // std::cout.precision(5);
-        // std::cout << std::fixed << "\tsqDist = " << sqDist << " sq radius " << envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate] << "\n";
 
         if (sqDist <= envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate])
         {

@@ -37,13 +37,13 @@ SimulationEngine::SimulationEngine(
     pos.assign(config.initPos, config.initPos + config.nAgents * config.dim);
     speed.assign(config.initSpeed, config.initSpeed + config.nAgents * config.dim);
 
-    currentS.assign(config.initS, config.initS + config.nAgents);
+    currentS.assign(config.initS, config.initS + config.nAgents * config.nRacelines);
     nLaps.assign(config.initLaps, config.initLaps + config.nAgents);
     currentGates.assign(config.initGates, config.initGates + config.nAgents);
 
     for (int i = 0; i < envConfig.nAgents; i++)
     {
-        std::unique_ptr<Controller> ctrl = makeController(specs[i]);
+        std::unique_ptr<Controller> ctrl = makeController(specs[i], i);
         controllerNames.push_back(ctrl->name);
         controllers.push_back(std::move(ctrl));
     }
@@ -59,7 +59,7 @@ SimulationEngine::~SimulationEngine()
     }
 }
 
-std::unique_ptr<Controller> SimulationEngine::makeController(const ControllerSpec& sp)
+std::unique_ptr<Controller> SimulationEngine::makeController(const ControllerSpec& sp, int iCont)
 {
     std::unique_ptr<Controller> ctrl;
 
@@ -67,10 +67,15 @@ std::unique_ptr<Controller> SimulationEngine::makeController(const ControllerSpe
         {
             using T = std::decay_t<decltype(contConfig)>;
 
+            bool useS = false;
+
             if constexpr (std::is_same_v<T, DummyConfig>)
                 ctrl = std::make_unique<DummyController>(envConfig);
             else if constexpr (std::is_same_v<T, PIDConfig>)
+            {
                 ctrl = std::make_unique<PIDController>(envConfig, contConfig);
+                useS = true;
+            }
             else if constexpr (std::is_same_v<T, MPPIConfig>)
             {
                 if (d_trackPoints == nullptr)
@@ -78,6 +83,11 @@ std::unique_ptr<Controller> SimulationEngine::makeController(const ControllerSpe
 
                 ctrl = std::make_unique<MPPIController>(envConfig, contConfig, d_trackPoints);
             }
+
+            if (!useS)       // only PID should update its S (otherwise, it is useless for MPPI or dummy)
+                for (int iRaceline = 0; iRaceline < envConfig.nRacelines; iRaceline++)
+                    currentS[iCont * envConfig.nRacelines + iRaceline] = -1.0f;
+
         }, sp.config);
 
     if (!ctrl)
@@ -367,9 +377,6 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
         prevSpeed = speed;
         prevS = currentS;
 
-        // step dynamics
-        // std::vector<float> np(envConfig.physDim), ns(envConfig.nAgents), nl(envConfig.nAgents);
-
         dynStep(actions);
 
         // float sq = 0.f;
@@ -399,17 +406,20 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
         for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
         {
             std::cout << "\tAgent " << (iAgent + 1)
-                << ": currentS: " << currentS[iAgent]
-                << "\tcurrentGates: " << currentGates[iAgent]
+                << ": currentS:";
+            for (int i = 0; i < envConfig.nRacelines; i++)
+                std::cout << " " << currentS[iAgent * envConfig.nRacelines + i];
+
+            std::cout << "\tcurrentGates: " << currentGates[iAgent]
                 << "\tnLaps: " << nLaps[iAgent]
-                << "\tposition ";
+                << "\tposition";
 
             for (int d = 0; d < envConfig.dim; d++)
-                std::cout << pos[iAgent * envConfig.dim + d] << " ";
+                std::cout << " " << pos[iAgent * envConfig.dim + d];
 
-            std::cout << "\tspeed: ";
+            std::cout << "\tspeed:";
             for (int d = 0; d < envConfig.dim; d++)
-                std::cout << speed[iAgent * envConfig.dim + d] << " ";
+                std::cout << " " << speed[iAgent * envConfig.dim + d];
 
             std::cout << std::endl;
         }

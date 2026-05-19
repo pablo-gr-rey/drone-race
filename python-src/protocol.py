@@ -180,12 +180,11 @@ class ZMQRecv:
             # only display the racelines which are actually used
             used = [False] * config.nRaceLines
             for cfg in contConfigs:
-                if isinstance(cfg, PIDConfig) and cfg.racelineIndex >= 0:
+                if isinstance(cfg, PIDConfig):
                     used[cfg.racelineIndex] = True
                 elif isinstance(cfg, MPPIConfig):
                     for opp in cfg.opponentPidConfigs:
-                        if opp.racelineIndex:
-                            used[opp.racelineIndex] = True
+                        used[opp.racelineIndex] = True
 
             mppiConfig = None
 
@@ -254,7 +253,7 @@ class ZMQRecv:
                     if (
                         not np.all(np.isclose(pos, config.init_pos))
                         or not np.all(np.isclose(vel, config.init_vel))
-                        or not np.all(np.isclose(newS, config.initS))
+                        # or not np.all(np.isclose(newS, config.initS))     # for non-PID agents, engine sets S to -1
                         or not np.all(np.isclose(newLaps, config.initnLaps))
                         or not np.all(np.isclose(newGates, config.initGates))
                     ):
