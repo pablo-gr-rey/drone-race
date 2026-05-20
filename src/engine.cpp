@@ -471,7 +471,7 @@ int SimulationEngine::checkOutside() const
 {
     for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
     {
-        if (isOutside(envConfig, pos.data() + iAgent * envConfig.dim))
+        if (isOutside(envConfig, pos.data() + iAgent * envConfig.dim, envConfig.minDist / 2.0f))
             return iAgent;
 
         // for (int d = 0; d < envConfig.dim; d++)

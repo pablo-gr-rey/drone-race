@@ -546,17 +546,108 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig
     return config, mppiconfig, pid0, pid1, ["Top", "Bottom"]
 
 
+def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig, list[str]]:
+    nAgents = 2
+    dim = 2
+    nTrackSamples = 1000
+
+    startS = np.linspace(0.2, 0.0, nAgents)
+    # startS = np.linspace(0.1, 0.02, nAgents)
+    nGates = 2
+
+    length = 40
+    corridor = 3
+    fullHeight = 5
+
+    gateCenters, gateVectors, gateRadius = (
+        np.array([[length, 0], [0, 0]]),
+        np.array([[1, 0], [1, 0]]),
+        np.array([1, 1]),
+    )
+
+    config = GateEnvironmentConfig(
+        nAgents=nAgents,
+        dim=dim,
+        nRaceLines=1,
+        nWinLaps=1,
+        nGates=nGates,
+        maxSpeed=np.linspace(2, 4, nAgents),
+        maxAccel=np.linspace(3, 5, nAgents),
+        nTrackSamples=nTrackSamples,
+        targetDistance=0.05,
+        gateCenters=gateCenters,
+        gateVectors=gateVectors,
+        gateRadius=gateRadius,
+        minDist=1.8,
+        arenaMin=np.array([-0.1 * length, -fullHeight]),
+        arenaMax=np.array([1.1 * length, fullHeight]),
+        nObstacles=2,
+        obstacles=np.array(
+            [
+                [-0.2 * length, corridor, 1.2 * length, 1.1 * fullHeight],
+                [-0.2 * length, -1.1 * fullHeight, 1.2 * length, -corridor],
+            ]
+        ),
+    )
+
+    config.trackPoints = np.column_stack([np.linspace(0, length * 1.2, nTrackSamples), np.zeros(nTrackSamples)])
+
+    config.init_pos = np.array([config.trackPoints[int(s * config.nTrackSamples)] for s in startS]).flatten()
+    config.initS = np.repeat(startS, 2)
+    config.initnLaps = np.zeros(nAgents)
+    config.initGates = np.array([1, 1])
+
+    pid0 = PIDConfig(kp=5, kd=20, repulsionFactor=120, racelineIndex=0, actionNoise=2, repulsionDistFactor=2)
+    pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=0, racelineIndex=0, actionNoise=2, repulsionDistFactor=2)
+
+    mppiconfig = MPPIConfig(
+        nSamples=10000,
+        nTimesteps=60,
+        inv_temperature=10,
+        samplingNoise=3,
+        gateTraversalMargin=0.95,
+        collDistFactor=1.1,
+        # collDistFactor=1.3,
+        finalAdvWeight=200,
+        # finalAdvWeight=0,
+        # finalSpeedWeight=50,
+        finalSpeedWeight=0,
+        # oppDistWeight=1,
+        oppDistWeight=0.0,
+        oppDistThresholdFactor=2,
+        finalOppAdvWeight=0,
+        # finalOppAdvWeight=500,
+        # boundaryCost=0.01,
+        boundaryCost=0.0,
+        boundaryThresholdFactor=2,
+        oppOutsideCost=0,
+        # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
+        outsideCost=1000000,
+        collisionCost=1000000,
+        winCost=100000,
+        minConfidence=0.95,
+        oppKind=CONTROLLER_TYPE.CONT_PID,
+        nModels=2,
+        opponentPidConfigs=(pid0, pid1),
+        initBelief=np.array([0.5, 0.5]),
+        # initBelief=np.array([0, 1]),
+    )
+
+    return config, mppiconfig, pid0, pid1, ["Afraid", "Bold"]
+
+
 def mainGate():
-    # envConfig, pid0, pid1, oppNames = standardGateEnv()  # pid0 = afraid; pid1 = bold
-    envConfig, mppiconfig, pid0, pid1, oppNames = tinyGateEnv(afraid=False)  # pid0 = top; pid1 = bottom
+    # envConfig, mppiconfig, pid0, pid1, oppNames = standardGateEnv()  # pid0 = afraid; pid1 = bold
+    # envConfig, mppiconfig, pid0, pid1, oppNames = tinyGateEnv(afraid=False)  # pid0 = top; pid1 = bottom
+    envConfig, mppiconfig, pid0, pid1, oppNames = activeEnv()  # pid0 = afraid; pid1 = bold
 
     # dummyconfig = DummyConfig()
 
-    # cont_configs: list[ControllerConfig] = [pid0, mppiconfig]
+    cont_configs: list[ControllerConfig] = [pid0, mppiconfig]
     # cont_configs: list[ControllerConfig] = [pid1, mppiconfig]
 
     # cont_configs: list[ControllerConfig] = [mppiconfig, pid0]
-    cont_configs: list[ControllerConfig] = [mppiconfig, pid1]
+    # cont_configs: list[ControllerConfig] = [mppiconfig, pid1]
 
     # cont_configs: list[ControllerConfig] = [blindpidconfig, mppiconfig]
     # cont_configs: list[ControllerConfig] = [mppiconfig, mppiconfig2]

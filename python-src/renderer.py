@@ -122,7 +122,7 @@ class EnvironmentRenderer:
                 (
                     self.ax.plot([], color=self.pred_colors[0], marker=None, linewidth=4, alpha=0.8)[0],
                     self.ax.plot([], color=self.pred_colors[iPred + 1], marker=None, linewidth=4, alpha=0.8)[0],
-                    self.ax.plot([], color=self.pred_colors[iPred + 1], marker=None, linewidth=4, alpha=0.8)[0],
+                    self.ax.plot([], color=self.pred_colors[iPred + 1], marker=None, linewidth=4, alpha=0.8, linestyle="-.")[0],
                 )
             )
 
@@ -571,6 +571,8 @@ class EnvironmentRenderer:
         save_path = os.path.join("..", "gifs", name)
         os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
 
+        duration = 40
+
         imgs: list[Image.Image] = []
         n = len(self.posLog)
         for i in tqdm(range(n), desc=f"Capturing frames for {name}", unit="frame"):
@@ -596,7 +598,9 @@ class EnvironmentRenderer:
 
         try:
             print(f"Saving animation to {save_path}...")
-            imgs[0].save(save_path, save_all=True, append_images=imgs[1:], duration=20, loop=0)
+            imgs[0].save(
+                save_path, save_all=True, append_images=imgs[1:] + int(1000 / duration) * [imgs[-1]], duration=duration, loop=0
+            )
             print(f"Saved animation to {save_path}")
         except Exception as e:
             print(f"Failed to save GIF: {e}")

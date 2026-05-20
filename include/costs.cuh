@@ -22,35 +22,41 @@ __device__ INLINE float stateCost(
         if (other == agent)
         {
             // own boundary
-            float bd = trackBoundaryDist(envConfig.arenaMin, envConfig.arenaMax, curPos, envConfig.dim);
+            if (mppiConfig.boundaryCost != 0.0f)
+            {
+                float bd = trackBoundaryDist(envConfig, curPos);
 
-            float danger = mppiConfig.boundaryThresholdFactor * envConfig.minDist;
-            if (bd < danger)
-                cost += mppiConfig.boundaryCost * (danger - bd) / danger * decay;
-            if (bd < 0.0f)
-                cost += mppiConfig.outsideCost * decay;
+                float danger = mppiConfig.boundaryThresholdFactor * envConfig.minDist;
+                if (bd < danger)
+                    cost += mppiConfig.boundaryCost * (danger - bd) / danger;
+            }
+
+            // for own agent, add a margin to keep it further off the boundary (since otherwise noise can push it a bit)
+            if (isOutside(envConfig, curPos, envConfig.minDist * mppiConfig.collDistFactor / 2.0f))
+                cost += mppiConfig.outsideCost;
         }
         else
         {
             float dist = agentDist(pos, agent, other, envConfig.dim);
             if (dist < mppiConfig.oppDistThresholdFactor * envConfig.minDist)
-                cost += mppiConfig.oppDistWeight / powf(dist / envConfig.minDist, mppiConfig.oppDistPower) * decay;
+                cost += mppiConfig.oppDistWeight / powf(dist / envConfig.minDist, mppiConfig.oppDistPower);
+
             if (dist < envConfig.minDist * mppiConfig.collDistFactor)
-                cost += mppiConfig.collisionCost * decay;
+                cost += mppiConfig.collisionCost;
 
             // opponent outside: bonus for us
-            const float* oPos = pos + other * envConfig.dim;
-            float oBd = trackBoundaryDist(envConfig.arenaMin, envConfig.arenaMax, oPos, envConfig.dim);
-            if (oBd < 0.0f)
-                cost -= mppiConfig.oppOutsideCost * decay;
+            // float oBd = trackBoundaryDist(envConfig.arenaMin, envConfig.arenaMax, oPos, envConfig.dim);
+            // if (oBd < 0.0f)
+            if (mppiConfig.oppOutsideCost != 0.0f && isOutside(envConfig, pos + other * envConfig.dim, envConfig.minDist / 2.0f))
+                cost -= mppiConfig.oppOutsideCost;
         }
     }
 
     // winner check
     if (laps[agent] >= (float) envConfig.nWinLaps)
-        cost -= mppiConfig.winCost * decay;
+        cost -= mppiConfig.winCost;
 
-    return cost;
+    return cost * decay;
 }
 
 // ── Terminal cost ────────────────────────────────────────────────────

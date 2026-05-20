@@ -260,7 +260,7 @@ __global__ void fullRolloutKernel(
                 if (laps[iAgent] >= envConfig.nWinLaps)
                     stop = true;
 
-                if (isOutside(envConfig, curPos))
+                if (isOutside(envConfig, curPos, envConfig.minDist / 2.0f))
                     stop = true;
             }
 

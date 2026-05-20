@@ -14,7 +14,7 @@ constexpr int MAX_AGENTS = 2;
 constexpr int MAX_DIM = 2;
 constexpr int MAX_GATES = 5;
 constexpr int MAX_MODELS = 2;
-constexpr int MAX_OBSTACLES = 1;
+constexpr int MAX_OBSTACLES = 2;
 constexpr int MAX_RACELINES = 2;
 
 #define DEBUG

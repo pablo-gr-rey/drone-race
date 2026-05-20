@@ -213,11 +213,23 @@ HD INLINE float fastProjectOnTrack(const float* __restrict__ trackPoints,
 }
 
 // Boundary distance = distance to closest boundary (negative if pos is outside of arena)
-HD INLINE float trackBoundaryDist(const float* __restrict__ arenaMin, const float* __restrict__ arenaMax, const float* __restrict__ pos, int dim)
+__device__ INLINE float trackBoundaryDist(const EnvironmentConfig& envConfig, const float* __restrict__ pos)
 {
     float minDist = INFINITY;
-    for (int d = 0; d < dim; d++)
-        minDist = fminf(minDist, fminf(pos[d] - arenaMin[d], arenaMax[d] - pos[d]));
+    for (int d = 0; d < envConfig.dim; d++)
+        minDist = fminf(minDist, fminf(pos[d] - envConfig.arenaMin[d], envConfig.arenaMax[d] - pos[d]));
+
+    for (int iObs = 0; iObs < envConfig.nObstacles; iObs++)
+    {
+        float sqDist = 0.0f;
+        for (int d = 0; d < envConfig.dim; d++)
+        {
+            float dist = fmaxf(0.0f, fmaxf(envConfig.obstacles[iObs * 2 * envConfig.dim + d] - pos[d], pos[d] - envConfig.obstacles[(iObs * 2 + 1) * envConfig.dim + d]));
+            sqDist += dist * dist;
+        }
+        minDist = fminf(minDist, sqrtf(sqDist));
+    }
+
     return minDist;
 }
 
@@ -225,7 +237,7 @@ HD INLINE float trackBoundaryDist(const float* __restrict__ arenaMin, const floa
 HD INLINE void updateBelief(float* __restrict__ belief, const float* __restrict__ oppAction, const float* __restrict__ nomAction, const PIDConfig* __restrict__ params, int nModels, int dim, float maxPIDaccel)
 {
     float sum = 0.0f;
-    const float sigmaEnv = 0.2f;    // account for clamping + various imperfections
+    const float sigmaEnv = 0.0f;    // account for clamping + various imperfections
 
     // opponent is following a normal distribution around nomAction, with given stddev
     for (int theta = 0; theta < nModels; theta++)
@@ -278,17 +290,17 @@ HD INLINE int findConfident(const float* __restrict__ belief, int nModels, float
     return -1;
 }
 
-HD INLINE bool isOutside(const EnvironmentConfig& envConfig, const float* __restrict__ pos)
+HD INLINE bool isOutside(const EnvironmentConfig& envConfig, const float* __restrict__ pos, float margin)   // margin should be e.g. minDist/2 in the actual dynamics and (minDist * factor) / 2 for MPPI
 {
     for (int d = 0; d < envConfig.dim; d++)
-        if (pos[d] < envConfig.arenaMin[d] || pos[d] > envConfig.arenaMax[d])
+        if (pos[d] - margin < envConfig.arenaMin[d] || pos[d] + margin > envConfig.arenaMax[d])
             return true;
 
     for (int iObs = 0; iObs < envConfig.nObstacles; iObs++)
     {
         bool out = true;
         for (int d = 0; d < envConfig.dim; d++)
-            if (pos[d] < envConfig.obstacles[iObs * 2 * envConfig.dim + d] || pos[d] > envConfig.obstacles[(iObs * 2 + 1) * envConfig.dim + d])
+            if (pos[d] + margin < envConfig.obstacles[iObs * 2 * envConfig.dim + d] || pos[d] - margin > envConfig.obstacles[(iObs * 2 + 1) * envConfig.dim + d])
             {
                 out = false;
                 break;
