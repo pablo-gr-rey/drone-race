@@ -371,3 +371,33 @@ __global__ void weightedAverageKernel(
         *nu = s_w[0];
     }
 }
+
+// clamp nominals
+__global__ void clampNominalKernel(
+    float* nominal,
+    float maxAccel,
+    int nModels,
+    int T,
+    int dim)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int nVecs = (nModels + 1) * T;
+    if (idx >= nVecs)
+        return;
+
+    float sqNorm = 0.0f;
+    int base = idx * dim;
+    for (int d = 0; d < dim; ++d)
+    {
+        float v = nominal[base + d];
+        sqNorm += v * v;
+    }
+
+    float maxSq = maxAccel * maxAccel;
+    if (sqNorm > maxSq)
+    {
+        float scale = maxAccel / sqrtf(sqNorm);
+        for (int d = 0; d < dim; ++d)
+            nominal[base + d] *= scale;
+    }
+}

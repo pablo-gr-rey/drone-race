@@ -179,6 +179,15 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
                         updateBelief(belief.data(), actions.data() + (1 - iMppi) * envConfig.dim, nomPIDactions.data(), mppiConfig.oppPid, mppiConfig.nModels, envConfig.dim, envConfig.maxAccel[1 - iMppi]);
                         if (predTheta == -1 && (predTheta = findConfident(belief.data(), mppiConfig.nModels, mppiConfig.minConfidence)) != -1)
                             branchingTime = t + 1;
+
+                        if (checkCollision() || checkOutside() != -1 || checkWinner() != -1)      // should we allow outside??
+                        {
+                            // copy everything and break (i.e. stop simulation)
+                            for (int tt = t + 1; tt < mppiConfig.nTimesteps; tt++)
+                                std::copy(pos.begin(), pos.end(), fullPos.begin() + tt * envConfig.nAgents * envConfig.dim);
+
+                            break;
+                        }
                     }
 
                     // copy back original state
@@ -282,62 +291,6 @@ void SimulationEngine::dynStep(const std::vector<float>& actions)
             speed[iAgent * dim + d] += nd(rng) * envConfig.speedNoiseLevel;
         }
     }
-
-    // update S, gates and laps
-    // for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
-    // {
-    //     float dist;
-    //     float s = fastProjectOnTrack(trackPoints.data(), envConfig.nTrackSamples, envConfig.dim, pos.data() + iAgent * envConfig.dim, nullptr, dist, -1.0f);
-    //     // float s = projectOnTrack(trackPoints.data(), envConfig.nTrackSamples, envConfig.dim, pos.data() + iAgent * envConfig.dim, nullptr, dist);
-    //     currentS[iAgent] = s;
-
-    //     // if (s > currentS[iAgent] + 0.5f)
-    //     //     nLaps[iAgent] -= 1.0f;
-    //     // if (s < currentS[iAgent] - 0.5f)
-    //     //     nLaps[iAgent] += 1.0f;
-
-    //     // check if we passed through next gate: compute lambda = dot(vec, center - x_t) / dot(vec, x_{t+1} - x_t)
-    //     int nextGate = (currentGates[iAgent] + 1) % envConfig.nGates;
-    //     float num = 0., denom = 0.;
-    //     for (int d = 0; d < dim; d++)
-    //     {
-    //         num += envConfig.gateVectors[nextGate * dim + d] * (envConfig.gateCenters[nextGate * dim + d] - old_pos[iAgent * dim + d]);
-    //         denom += envConfig.gateVectors[nextGate * dim + d] * (pos[iAgent * dim + d] - old_pos[iAgent * dim + d]);
-    //     }
-
-    //     // direction is inside the gate plan: cannot cross
-    //     if (std::fabs(denom) < 1e-10)
-    //         continue;
-
-    //     float lambda = num / denom;
-    //     // we cross if 0 <= lambda <= 1 and if the projection of the segment (x_t, x_t+1) on the gate plan (ie. (1 - lambda) * x_t + lambda * x_t+1) is at distance <= radius from the center
-    //     // if we want to make sure we cross the gate in the right direction, we have to check num >= 0 (<=> denom > 0)
-
-    //     // std::cout << "\nnum = " << num << " denom = " << denom << " went from " << old_phys[0] << "; " << old_phys[2] << " to " << phys_state[0] << "; " << phys_state[2] << "\n";
-
-    //     if (lambda < 0. || lambda > 1.)
-    //         continue;
-
-    //     float sqDist = 0.;
-    //     for (int d = 0; d < dim; d++)
-    //     {
-    //         float dx = (1. - lambda) * old_pos[iAgent * dim + d] + lambda * pos[iAgent * dim + d] - envConfig.gateCenters[nextGate * dim + d];
-    //         sqDist += dx * dx;
-    //     }
-
-    //     // std::cout.precision(5);
-    //     // std::cout << std::fixed << "\tsqDist = " << sqDist << " sq radius " << envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate] << "\n";
-
-    //     if (sqDist <= envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate])
-    //     {
-    //         currentGates[iAgent]++;
-    //         if (currentGates[iAgent] == envConfig.nGates)
-    //         {
-    //             currentGates[iAgent] = 0;
-    //             nLaps[iAgent]++;
-    //         }
-    //     }
-    // }
 
     updateGates(envConfig, pos.data(), old_pos.data(), currentS.data(), currentGates.data(), nLaps.data(), trackPoints.data());
 }

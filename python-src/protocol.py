@@ -271,7 +271,10 @@ class ZMQRecv:
                     self.beliefLog.append(belief)
 
                 if renderer is not None:
-                    renderer.onNewState(pos, vel, newS, newLaps, newGates, belief)
+                    # find out if there are waiting states (ie. if they are computed faster than rendered)
+                    events = self.sock.getsockopt(zmq.EVENTS)
+                    hasPending = events & zmq.POLLIN  # type: ignore
+                    renderer.onNewState(pos, vel, newS, newLaps, newGates, belief, pendingState=bool(hasPending))
 
             elif msg_type == MSG_TYPE.MSG_EVENT:
                 evt_type, agent_id = unpack.readInt(), unpack.readInt()

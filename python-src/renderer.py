@@ -438,7 +438,9 @@ class EnvironmentRenderer:
         nLaps: np.ndarray,
         currentGates: np.ndarray,
         belief: Optional[tuple[int, np.ndarray, list[tuple[int, int, np.ndarray]]]],
+        pendingState: bool = False,
     ) -> None:
+        "If pendingState is True, it means that there are other states waiting in the queue (ie. they are computed faster than they are rendered); in this case, only 1 frame out of frameSkipWaiting will be shown"
         self.posLog.append(pos)
         self.velLog.append(vel)
         self.sLog.append(currentS)

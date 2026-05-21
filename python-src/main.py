@@ -15,7 +15,6 @@ from protocol import ZMQRecv
 from utils import (
     CONTROLLER_TYPE,
     ControllerConfig,
-    DummyConfig,
     GateEnvironmentConfig,
     MPPIConfig,
     PIDConfig,
@@ -436,15 +435,16 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig
     dim = 2
     nTrackSamples = 1000
 
-    startS = np.linspace(0.1, 0.0, nAgents)
-    # startS = np.linspace(0.1, 0.02, nAgents)
+    # startS = np.linspace(0.15, 0.0, nAgents)
+    startS = np.linspace(0.1, 0.02, nAgents)
     nGates = 2
 
     length = 30
-    height = 3
-    obsSize = 0.3
+    height = 0.5
+    obsSize = 0.2
     raceDelay = 0.1
-    heightFactor = 1.5
+    margin = 0.05
+    heightFactor = 3
 
     gateCenters, gateVectors, gateRadius = (
         np.array([[length, 0], [length * 0.01, 0]]),
@@ -458,16 +458,17 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig
         nRaceLines=2,
         nWinLaps=1,
         nGates=nGates,
-        maxSpeed=np.linspace(2, 2.1, nAgents),
-        maxAccel=np.linspace(3, 5, nAgents),
+        maxSpeed=np.linspace(2, 2.5, nAgents),
+        # maxSpeed=np.linspace(2, 3, nAgents),
+        maxAccel=np.linspace(3, 3, nAgents),
         nTrackSamples=nTrackSamples,
         targetDistance=0.05,
         gateCenters=gateCenters,
         gateVectors=gateVectors,
         gateRadius=gateRadius,
         minDist=1,
-        arenaMin=np.array([-0.1 * length, -2 * height]),
-        arenaMax=np.array([1.1 * length, 2 * height]),
+        arenaMin=np.array([-0.1 * length, -2 * height * heightFactor]),
+        arenaMax=np.array([1.1 * length, 2 * height * heightFactor]),
         nObstacles=1,
         obstacles=np.array([length * (0.5 - obsSize / 2), -height, length * (0.5 + obsSize / 2), height]),
     )
@@ -476,18 +477,21 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig
 
     def getHeight(x):
         x_norm = x / length
+        if x_norm > 1.0:
+            return 0.0
+
         if x_norm > 0.5:
             x_norm = 1 - x_norm  # track is symmetrical relative to x = 0.5
 
         if x_norm < 0.5 - obsSize / 2 - raceDelay:
             return 0.0
-        elif x_norm < 0.5 - obsSize / 2:
-            x_norm_small = (x_norm - (0.5 - obsSize / 2 - raceDelay)) / raceDelay  # between 0 and 1
+        elif x_norm < 0.5 - obsSize / 2.0 - margin:
+            x_norm_small = (x_norm - (0.5 - obsSize / 2 - raceDelay)) / (raceDelay - margin)  # between 0 and 1
             return np.sin(np.pi / 2.0 * x_norm_small) ** 2  # smooth between 0 and 1
         else:
             return 1.0
 
-    base_x = np.linspace(0.0, length, nTrackSamples)
+    base_x = np.linspace(0.0, length * 1.1, nTrackSamples)
     base_y = np.array([getHeight(x) for x in base_x]) * height * heightFactor
 
     config.trackPoints = np.concat(
@@ -516,13 +520,14 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig
         inv_temperature=10,
         samplingNoise=3,
         gateTraversalMargin=0.95,
-        collDistFactor=1.1,
+        # collDistFactor=1.1,
+        collDistFactor=1.0,
         # collDistFactor=1.3,
         finalAdvWeight=200,
         # finalAdvWeight=0,
         # finalSpeedWeight=50,
         finalSpeedWeight=0,
-        oppDistWeight=1,
+        oppDistWeight=0,
         # oppDistWeight=0.0,
         oppDistThresholdFactor=2,
         finalOppAdvWeight=0,
@@ -638,8 +643,8 @@ def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig
 
 def mainGate():
     # envConfig, mppiconfig, pid0, pid1, oppNames = standardGateEnv()  # pid0 = afraid; pid1 = bold
-    # envConfig, mppiconfig, pid0, pid1, oppNames = tinyGateEnv(afraid=False)  # pid0 = top; pid1 = bottom
-    envConfig, mppiconfig, pid0, pid1, oppNames = activeEnv()  # pid0 = afraid; pid1 = bold
+    envConfig, mppiconfig, pid0, pid1, oppNames = tinyGateEnv(afraid=False)  # pid0 = top; pid1 = bottom
+    # envConfig, mppiconfig, pid0, pid1, oppNames = activeEnv()  # pid0 = afraid; pid1 = bold
 
     # dummyconfig = DummyConfig()
 

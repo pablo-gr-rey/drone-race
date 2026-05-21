@@ -44,3 +44,11 @@ __global__ void weightedAverageKernel(
     int    nTimesteps,
     int    dim,
     float* __restrict__ nu);
+
+// Clamp nominal actions to maxAccel (avoids them drifting to high-magnitude areas from which it's difficult to recover)
+__global__ void clampNominalKernel(
+    float* nominal,
+    float maxAccel,
+    int nModels,
+    int T,
+    int dim);

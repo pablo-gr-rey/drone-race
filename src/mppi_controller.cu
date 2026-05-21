@@ -282,8 +282,23 @@ void MPPIController::getControl(int agent,
     CUDA_CHECK(cudaDeviceSynchronize());
 #endif
 
+    // 5.5 Clamp nominal action sequences
+    int nVecs = (nModels + 1) * T;
+    int clampGrd = (nVecs + blk - 1) / blk;
+    clampNominalKernel << <clampGrd, blk >> > (
+        d_nominal,
+        envConfig.maxAccel[agent],
+        nModels,
+        T,
+        dim);
+
+#ifdef DEBUG
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+
     // 6. Download updated nominal action sequence
-    // TODO: we don't need to copy everything, we could just copy the interesting action and do the shift on GPU
+    // TODO: we don't need to copy everything, we could just copy the interesting action and do the shift on GPU if we are not interested in MPPI predictions (could be argument to engine)
     CUDA_CHECK(cudaMemcpy(h_nominal.data(), d_nominal, h_nominal.size() * sizeof(float), cudaMemcpyDeviceToHost));
 
     int predTheta = findConfident(h_belief.data(), mppiConfig.nModels, mppiConfig.minConfidence);
