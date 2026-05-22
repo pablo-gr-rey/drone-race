@@ -24,19 +24,28 @@ Use the provided CMake configuration to compile:
 
 ```
 mkdir build && cd build
-cmake ..
+cmake .. --preset release
 make -j8
 ```
 
 If CMake fails to compile Cuda code (with nvcc outputting an error like `cannot find "cuda_runtime.h"`), it might be because Conda installed CUDA headers in `$CONDA_PREFIX/targets/x86_64-linux/include/` instead of `$CONDA_PREFIX/include`. Check if the former contains `cuda_runtime.h`, and if so, create symbolic links to make sure nvcc is able to find its own headers:
 ```
 ln -s $CONDA_PREFIX/targets/x86_64-linux/include/* $CONDA_PREFIX/include/
-ln -s $CONDA_PREFIX/targets/x86_64-linux/lib/* $CONDA_PREFIX/lib/
+ln -s $CONDA_PREFIX/targets/x86_64-linux/lib/* $CONDA_PREFIX/lib$$/
 ```
+
+Likewise, if running `which gcc` still shows your system gcc (`/usr/bin/gcc`) and not conda's one, you might have to create symbolic links to make sure CMake uses the right gcc:
+```
+ln -s $CC $CONDA_PREFIX/bin/gcc
+ln -s $CXX $CONDA_PREFIX/bin/g++
+```
+and re-run `which gcc` to makes sure it outputs something like `(env-directory)/bin/gcc` (additionnally, run gcc --version to make sure it is the one in `environment.yml`).
 
 Then, run `./build/drone_race`. It will keep listening for configurations sent by the Python side until you ctrl-C (this avoids re-running the engine for each new simulation).
 
 If you get an error `zmq::error_t: address already in use`, that means the previous run did not close correctly. Run `killall drone_race` to properly close the sockets.
+
+By default, there is a DEBUG and a RELEASE CMake preset. The DEBUG one is way slower, due to added synchronization overhead.
 
 ### Python side
 
@@ -89,7 +98,7 @@ To make sure the CMake extension works well, add this to your `.vscode/settings.
         "CONDA_PREFIX": "${env:HOME}/miniconda3/envs/drone-race",
         "PATH": "${env:HOME}/miniconda3/envs/drone-race/bin:${env:PATH}",
         "LD_LIBRARY_PATH": "${env:HOME}/miniconda3/envs/drone-race/lib:${env:LD_LIBRARY_PATH}"
-    }
+    },
 ```
 
 (modifying `/miniconda3/envs/drone-race` by the value of `$CONDA_PREFIX` in your environment if it does not match).

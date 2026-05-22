@@ -17,8 +17,6 @@ constexpr int MAX_MODELS = 2;
 constexpr int MAX_OBSTACLES = 2;
 constexpr int MAX_RACELINES = 2;
 
-#define DEBUG
-
 #ifdef __CUDACC__
 #define HD __host__ __device__
 #define INLINE static __forceinline__ 

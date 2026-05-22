@@ -606,7 +606,7 @@ def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig
     pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=0, racelineIndex=0, actionNoise=2, repulsionDistFactor=2)
 
     mppiconfig = MPPIConfig(
-        nSamples=10000,
+        nSamples=100000,
         nTimesteps=60,
         inv_temperature=10,
         samplingNoise=3,

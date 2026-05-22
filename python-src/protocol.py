@@ -211,7 +211,7 @@ class ZMQRecv:
                 oppNames,
                 mppiConfig,
                 interval=0,
-                frameSkipWaiting=1,
+                frameSkipWaiting=2,
                 frameSkipPlayback=2,
                 defaultZoomAgent=-1,
                 display_raceline=used,

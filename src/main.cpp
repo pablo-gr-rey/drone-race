@@ -45,6 +45,11 @@ void runEngine(zmq::socket_t& sock)
 
 int main(int argc, char** argv)
 {
+#ifdef DEBUG
+    std::cout << "RUNNING IN DEBUG MODE. Warning: added synchronization will make code VERY slow" << std::endl;
+#else
+    std::cout << "RUNNING IN RELEASE MODE" << std::endl;
+#endif
     std::cout << "EnvironmentConfig size: " << sizeof(EnvironmentConfig) << " bytes; MPPIConfig size: " << sizeof(MPPIConfig) << " bytes\n";
 
     std::string zmqAddr = "tcp://*:5555";
@@ -57,6 +62,9 @@ int main(int argc, char** argv)
     std::cout << "Binding ZMQ to addr " << zmqAddr << "...\n";
     sock.bind(zmqAddr);
 
-    while (1)
-        runEngine(sock);
+    // while (1)
+    runEngine(sock);
+
+    sock.close();
+    ctx.close();
 }

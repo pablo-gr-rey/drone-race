@@ -25,8 +25,7 @@ __global__ void fullRolloutKernel(
     const float* __restrict__ noise,
     float* __restrict__ totalCosts,
     curandState* __restrict__ rngStates,
-    const float* __restrict__ trackPts,
-    int nTP, int N);
+    const float* __restrict__ trackPts);
 
 void minReduceCUB(const float* __restrict__ d_costs, float* __restrict__ d_minCost, int N, void* __restrict__ d_temp_storage, size_t temp_storage_bytes);
 
@@ -37,7 +36,7 @@ __global__ void weightedAverageKernel(
     const float* __restrict__ costs,
     const float* __restrict__ noise,    // (nTimesteps, nSamples, dim)
     float* __restrict__ nominalAction,  // (nTimesteps, dim)
-    float  minCost,
+    const float* __restrict__  minCost,
     float  invTemperature,
     int nModels,
     int    nSamples,

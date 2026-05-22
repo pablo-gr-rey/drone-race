@@ -102,7 +102,7 @@ HD INLINE void computePIDAction(
     const float* trackPoints,
     float* outAction)
 {
-    float target[MAX_DIM];
+    float target[MAX_DIM] = {};
 
     sampleCenterline(trackPoints + envConfig.nTrackSamples * pid.racelineIndex * envConfig.dim, envConfig.nTrackSamples, envConfig.dim, S[agent * envConfig.nRacelines + pid.racelineIndex] + envConfig.targetDistance, target);
 

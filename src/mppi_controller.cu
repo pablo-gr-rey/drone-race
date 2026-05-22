@@ -182,7 +182,6 @@ void MPPIController::getControl(int agent,
     int N = mppiConfig.nSamples;
     int T = mppiConfig.nTimesteps;
     int dim = envConfig.dim;
-    int nTP = envConfig.nTrackSamples;
     int nModels = mppiConfig.nModels;
 
     int blk = 256;
@@ -216,6 +215,9 @@ void MPPIController::getControl(int agent,
     CUDA_CHECK(cudaMemcpy(d_currentGates, currentGates, envConfig.nAgents * sizeof(int), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_belief, h_belief.data(), nModels * sizeof(float), cudaMemcpyHostToDevice));
 
+    float initMin = FLT_MAX;
+    CUDA_CHECK(cudaMemcpy(d_minCost, &initMin, sizeof(float), cudaMemcpyHostToDevice));
+
     // 2. generate all noise at once: (T, N, dim)
     generateNoiseKernel << <grd, blk >> > (
         d_noise, d_rng,
@@ -240,9 +242,7 @@ void MPPIController::getControl(int agent,
         d_noise,                        // (T, N, dim)
         d_costs,                        // (N,) output: total cost per sample
         d_rng,
-        d_trackPts,
-        nTP,
-        N);
+        d_trackPts);
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
@@ -250,8 +250,6 @@ void MPPIController::getControl(int agent,
 #endif
 
     // 4. find minimum cost (parallel reduction)
-    float initMin = FLT_MAX;
-    CUDA_CHECK(cudaMemcpy(d_minCost, &initMin, sizeof(float), cudaMemcpyHostToDevice));
 
     // int rGrid = (N + blk * 2 - 1) / (blk * 2);
     // minReduceKernel << <rGrid, blk, blk * sizeof(float) >> > (
@@ -262,20 +260,14 @@ void MPPIController::getControl(int agent,
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 #endif
-
-    float hostMin;
-    CUDA_CHECK(cudaMemcpy(&hostMin, d_minCost, sizeof(float), cudaMemcpyDeviceToHost));
-
     // 5. Weighted average of noise -> update nominal action
-    //    One block per (timestep × dim) entry.
+    //    One block per (timestep * dim) entry.
     int wGrid = (nModels + 1) * T * dim;
     weightedAverageKernel << <wGrid, blk, 2 * blk * sizeof(float) >> > (
         d_costs, d_noise, d_nominal,
-        hostMin, mppiConfig.invTemperature,
+        d_minCost, mppiConfig.invTemperature,
         nModels, N, T, dim, d_nu);
 
-    float nu;
-    CUDA_CHECK(cudaMemcpy(&nu, d_nu, sizeof(float), cudaMemcpyDeviceToHost));
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
@@ -297,9 +289,13 @@ void MPPIController::getControl(int agent,
     CUDA_CHECK(cudaDeviceSynchronize());
 #endif
 
-    // 6. Download updated nominal action sequence
+    // 6. Download updated nominal action sequence, min cost, sum of cost for display
     // TODO: we don't need to copy everything, we could just copy the interesting action and do the shift on GPU if we are not interested in MPPI predictions (could be argument to engine)
     CUDA_CHECK(cudaMemcpy(h_nominal.data(), d_nominal, h_nominal.size() * sizeof(float), cudaMemcpyDeviceToHost));
+
+    float hostMin, nu;
+    CUDA_CHECK(cudaMemcpy(&hostMin, d_minCost, sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(&nu, d_nu, sizeof(float), cudaMemcpyDeviceToHost));
 
     int predTheta = findConfident(h_belief.data(), mppiConfig.nModels, mppiConfig.minConfidence);
     // if predTheta == -1, submit nominal general action; otherwise, submit nominal action corresponding to this hypothesis

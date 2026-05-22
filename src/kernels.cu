@@ -52,9 +52,10 @@ __global__ void fullRolloutKernel(
     const float* __restrict__ noise,
     float* __restrict__ totalCosts,
     curandState* __restrict__ rngStates,
-    const float* __restrict__ trackPts,
-    int nTP, int N)
+    const float* __restrict__ trackPts)
 {
+    int N = mc.nSamples;
+
     int s = blockIdx.x * blockDim.x + threadIdx.x;
     if (s >= N)
         return;
@@ -322,7 +323,7 @@ __global__ void weightedAverageKernel(
     const float* __restrict__ costs,
     const float* __restrict__ noise,
     float* __restrict__ nominal,
-    float minCost, float invTemp,
+    const float* __restrict__ minCost, float invTemp,
     int nModels, int N, int T, int dim,
     float* __restrict__ nu)
 {
@@ -342,9 +343,11 @@ __global__ void weightedAverageKernel(
     float wSum = 0.0f;
     float wnSum = 0.0f;
 
+    float minC = *minCost;
+
     for (int s = threadIdx.x; s < N; s += blockDim.x)
     {
-        float w = expf(-(costs[s] - minCost) / invTemp);
+        float w = expf(-(costs[s] - minC) / invTemp);
         wSum += w;
         wnSum += w * noise[((theta * T + t) * N + s) * dim + d];
     }
