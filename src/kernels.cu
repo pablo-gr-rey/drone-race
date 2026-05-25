@@ -60,7 +60,6 @@ __global__ void fullRolloutKernel(
     if (s >= N)
         return;
 
-    // TODO: use belief
     float pos[MAX_AGENTS * MAX_DIM];
     float vel[MAX_AGENTS * MAX_DIM];
     float currentS[MAX_AGENTS * MAX_RACELINES];
@@ -74,9 +73,20 @@ __global__ void fullRolloutKernel(
     totalCosts[s] = 0.0f;
     curandState rng = rngStates[s];
 
+    // find out if we are already committed
+    // if so, we only consider that plan (switch to normal MPPI); otherwise, cost at the end could incur slight perturbations for the other branches
+
+    for (int thetaT = 0; thetaT < mc.nModels; thetaT++)
+        belief[thetaT] = initBelief[thetaT];
+
+    int initPredTheta = findConfident(belief, mc.nModels, mc.minConfidence);
+
     // TODO: if there are many models, we could skip them if they have small probability
     for (int theta = 0; theta < mc.nModels; theta++)    // theta is the model the opponent is actually following
     {
+        if (initPredTheta != -1 && theta != initPredTheta)
+            continue;
+
         // copy initial state
         for (int a = 0; a < envConfig.nAgents; a++)
         {
@@ -237,8 +247,11 @@ __global__ void fullRolloutKernel(
         // ── Terminal cost ────────────────────────────────────────────────
         cost += finalCost(controlAgent, pos, vel, laps, currentGates, envConfig, mc);
 
-        // actual cost is dependent on the probability that the opponent is actually following theta, ie. initBelief[theta]
-        totalCosts[s] += initBelief[theta] * cost;
+        // actual cost is dependent on the probability that the opponent is actually following theta, ie. initBelief[theta], unless we are already committed
+        if (initPredTheta == -1)
+            totalCosts[s] += initBelief[theta] * cost;
+        else
+            totalCosts[s] = cost;
     }
 
     rngStates[s] = rng;

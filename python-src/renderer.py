@@ -1,5 +1,6 @@
 import io
 import os
+from pathlib import Path
 import time
 from typing import Any, Optional
 
@@ -577,8 +578,11 @@ class EnvironmentRenderer:
         if not name.endswith(".gif"):
             name = name + ".gif"
 
-        save_path = os.path.join("..", "gifs", name)
-        os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+        rootdir = Path(__file__).parent.parent
+        print("rootdir", rootdir)
+
+        os.makedirs(rootdir / "gifs", exist_ok=True)
+        save_path = rootdir / "gifs" / name
 
         duration = 40
 

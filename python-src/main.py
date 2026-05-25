@@ -516,7 +516,7 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig
     pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=1, actionNoise=2)
 
     mppiconfig = MPPIConfig(
-        nSamples=10000,
+        nSamples=2**14,
         nTimesteps=60,
         inv_temperature=10,
         samplingNoise=3,
@@ -538,15 +538,15 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig
         boundaryThresholdFactor=2,
         oppOutsideCost=0,
         # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
-        outsideCost=1000000,
-        collisionCost=1000000,
-        winCost=100000,
+        outsideCost=1e6,
+        collisionCost=1e6,
+        winCost=1e10,
         minConfidence=0.95,
         oppKind=CONTROLLER_TYPE.CONT_PID,
         nModels=2,
         opponentPidConfigs=(pid0, pid1),
         initBelief=np.array([0.5, 0.5]),
-        # initBelief=np.array([1, 0]),
+        # initBelief=np.array([0.7, 0.3]),
     )
 
     return config, mppiconfig, pid0, pid1, ["Top", "Bottom"]

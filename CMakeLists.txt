@@ -41,7 +41,6 @@ if(CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA")
         $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:Release>>:-O3 -lineinfo>
     )
 endif()
-list(APPEND CUDA_NVCC_FLAGS "-Xptxas=-v")
 
 target_compile_features(drone_race PRIVATE cxx_std_20)
 target_compile_definitions(drone_race PRIVATE
