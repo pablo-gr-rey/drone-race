@@ -6,7 +6,7 @@ from typing import Any, Optional
 import numpy as np
 import zmq
 from renderer import EnvironmentRenderer
-from utils import EVENT_TYPE, MSG_TYPE, ControllerConfig, GateEnvironmentConfig, PIDConfig
+from utils import EVENT_TYPE, MSG_TYPE, ControllerConfig, GateEnvironmentConfig, PIDConfig, MPPIConfig, VerifConfig
 
 
 class BytePacker:
@@ -28,7 +28,7 @@ class BytePacker:
         self.pushInt(a.size)
         self.buf += a.tobytes(order="C")
 
-    def pushObj(self, val: Any) -> bool:
+    def pushObj(self, val: Any, warn: bool = True, log: bool = False) -> bool:
         "Return False if the object (or part of it in case of tuple) could not be pushed"
         if isinstance(val, int):
             self.pushInt(val)
@@ -38,13 +38,30 @@ class BytePacker:
             self.pushFloat(val)
         elif isinstance(val, np.ndarray):
             self.pushArray(val)
-        elif isinstance(val, tuple):
+        elif isinstance(val, tuple) or isinstance(val, list):
             for v in val:
                 if not self.pushObj(v):
+                    return False
+        elif dataclasses.is_dataclass(val) and not isinstance(val, type):
+            for field in dataclasses.fields(val):
+                n_val = getattr(val, field.name)
+                # avoid numeric issues: it's important to send the correct type! (ie. trackWidth=2 instead of 2.0 is wrongly sent as int and reinterpreted as messy float)
+                if field.type is float:
+                    n_val = float(n_val)
+                elif field.type is int:
+                    n_val = int(n_val)
+
+                if log:
+                    print(
+                        f"Packing field {field.name} of type {type(n_val)}, n_value {n_val if not isinstance(n_val, np.ndarray) else n_val}"
+                    )
+
+                if not self.pushObj(n_val):
                     return False
         elif val is None or isinstance(val, types.FunctionType):
             pass
         else:
+            print(f"Failed to pack object of type {type(val)} value {val} ")
             return False
 
         return True
@@ -81,6 +98,9 @@ class ByteUnpacker:
         arr = np.frombuffer(raw, dtype=np.float32, count=n)
         return arr.copy() if copy else arr
 
+    def is_finished(self):
+        return self.offset == len(self.buf)
+
     def assert_finished(self):
         if self.offset != len(self.buf):
             raise ValueError(f"{len(self.buf) - self.offset} trailing bytes left")
@@ -95,41 +115,23 @@ def encodeConfig(config: Any, msg_type: Optional[int] = None, warn=True, log=Fal
     if log:
         print(f"Encoding {type(config)}...")
 
-    for field in dataclasses.fields(config):
-        val = getattr(config, field.name)
-        # avoid numeric issues: it's important to send the correct type! (ie. trackWidth=2 instead of 2.0 is wrongly sent as int and reinterpreted as messy float)
-        if field.type is float:
-            val = float(val)
-        elif field.type is int:
-            val = int(val)
-
-        if log:
-            print(f"Packing field {field.name} of type {type(val)}, value {val if not isinstance(val, np.ndarray) else val}")
-
-        if field.name == "init_state":
-            # legacy field: skip, explicit init_pos/init_vel are used
-            continue
-
-        if field.name == "init_pos":
-            assert isinstance(val, np.ndarray)
-            p.pushArray(val)
-            continue
-
-        if field.name == "init_vel":
-            assert isinstance(val, np.ndarray)
-            p.pushArray(val)
-            continue
-
-        if isinstance(val, ControllerConfig):
-            encodeConfig(val, None, warn, log, p)
-        elif not p.pushObj(val) and warn:
-            print(f"Cannot pack field {field.name} of type {type(val)} value {val} ")
+    p.pushObj(config, warn, log)
 
     return p
 
 
-def unpackState(unpack: ByteUnpacker) -> tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    "Return (step, pos, vel, currentS, nLaps, currentGates) from bytes"
+def unpackState(
+    unpack: ByteUnpacker,
+) -> tuple[
+    int,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    Optional[tuple[int, np.ndarray, np.ndarray, float, list[tuple[int, int, np.ndarray]]]],
+]:
+    "Return (step, pos, vel, currentS, nLaps, currentGates, Optional[iMppi, belief, failCount, eps, list[(branchingTime, predTheta, fullPos)]]) from bytes"
 
     step = unpack.readInt()
     pos = unpack.readArray()
@@ -138,9 +140,17 @@ def unpackState(unpack: ByteUnpacker) -> tuple[int, np.ndarray, np.ndarray, np.n
     nLaps = unpack.readArray()
     currentGates = unpack.readArray()
 
+    mppiInfo = None
+    if not unpack.is_finished():
+        iMppi, belief, failCount, eps = unpack.readInt(), unpack.readArray(), unpack.readArray(), unpack.readFloat()
+        preds = []
+        while not unpack.is_finished():
+            preds.append((unpack.readInt(), unpack.readInt(), unpack.readArray()))
+        mppiInfo = (iMppi, belief, failCount, eps, preds)
+
     unpack.assert_finished()
 
-    return step, pos, vel, currentS, nLaps, currentGates
+    return step, pos, vel, currentS, nLaps, currentGates, mppiInfo
 
 
 class ZMQRecv:
@@ -156,31 +166,58 @@ class ZMQRecv:
         self.nLapsLog: list[np.ndarray] = []
         self.currentGatesLog: list[np.ndarray] = []
 
+        self.beliefLog: list[tuple[int, np.ndarray, np.ndarray, float, list[tuple[int, int, np.ndarray]]]] = []
+
     def runSim(
         self,
         config: GateEnvironmentConfig,
+        verifConfig: VerifConfig,
         contConfigs: list[ControllerConfig],
         render: bool = True,
         contNames: Optional[list[str]] = None,
+        oppNames: Optional[list[str]] = None,
     ) -> tuple[EVENT_TYPE, int]:
         if render:
             # only display the racelines which are actually used
             used = [False] * config.nRaceLines
             for cfg in contConfigs:
-                if isinstance(cfg, PIDConfig) and cfg.racelineIndex >= 0:
+                if isinstance(cfg, PIDConfig):
                     used[cfg.racelineIndex] = True
+                elif isinstance(cfg, MPPIConfig):
+                    for opp in cfg.opponentPidConfigs:
+                        used[opp.racelineIndex] = True
+
+            mppiConfig = None
+
+            for cont in contConfigs:
+                if isinstance(cont, MPPIConfig):
+                    mppiConfig = cont
+
+            if mppiConfig is None:
+                print("Warning: did not find any MPPIConfig, proceeding with default")
+                mppiConfig = MPPIConfig()
 
             if contNames is None:
                 contNames = [cfg.getDefaultName() for cfg in contConfigs]
+            if oppNames is None:
+                oppNames = []
+                for cont in contConfigs:
+                    if isinstance(cont, MPPIConfig):
+                        oppNames = [f"Model {i}" for i in range(cont.nModels)]
+                        mppiConfig = cont
 
             renderer = EnvironmentRenderer(
                 config,
                 contNames,
+                verifConfig,
+                oppNames,
+                mppiConfig,
                 interval=0,
-                frameSkipWaiting=5,
+                frameSkipWaiting=2,
                 frameSkipPlayback=2,
                 defaultZoomAgent=-1,
                 display_raceline=used,
+                renderTrails=False,
             )
         else:
             renderer = None
@@ -190,6 +227,8 @@ class ZMQRecv:
 
         header = encodeConfig(config, MSG_TYPE.MSG_HEADER).toBytes()
         self.sock.send(header)
+
+        self.sock.send(encodeConfig(verifConfig, MSG_TYPE.MSG_HEADER, log=True).toBytes())
 
         for cont in contConfigs:
             self.sock.send(encodeConfig(cont, MSG_TYPE.MSG_HEADER).toBytes())
@@ -206,7 +245,7 @@ class ZMQRecv:
                 print("Received unexpected header message from C++")
 
             elif msg_type == MSG_TYPE.MSG_STATE:
-                step, pos, vel, newS, newLaps, newGates = unpackState(unpack)
+                step, pos, vel, newS, newLaps, newGates, belief = unpackState(unpack)
 
                 # print(f"received step {step}")
 
@@ -218,7 +257,7 @@ class ZMQRecv:
                     if (
                         not np.all(np.isclose(pos, config.init_pos))
                         or not np.all(np.isclose(vel, config.init_vel))
-                        or not np.all(np.isclose(newS, config.initS))
+                        # or not np.all(np.isclose(newS, config.initS))     # for non-PID agents, engine sets S to -1
                         or not np.all(np.isclose(newLaps, config.initnLaps))
                         or not np.all(np.isclose(newGates, config.initGates))
                     ):
@@ -232,8 +271,14 @@ class ZMQRecv:
                 self.nLapsLog.append(newLaps)
                 self.currentGatesLog.append(newGates)
 
+                if belief is not None:
+                    self.beliefLog.append(belief)
+
                 if renderer is not None:
-                    renderer.onNewState(pos, vel, newS, newLaps, newGates)
+                    # find out if there are waiting states (ie. if they are computed faster than rendered)
+                    events = self.sock.getsockopt(zmq.EVENTS)
+                    hasPending = events & zmq.POLLIN  # type: ignore
+                    renderer.onNewState(pos, vel, newS, newLaps, newGates, belief, pendingState=bool(hasPending))
 
             elif msg_type == MSG_TYPE.MSG_EVENT:
                 evt_type, agent_id = unpack.readInt(), unpack.readInt()

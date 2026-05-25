@@ -13,13 +13,16 @@
 constexpr int MAX_AGENTS = 2;
 constexpr int MAX_DIM = 2;
 constexpr int MAX_GATES = 5;
-
-#define DEBUG
+constexpr int MAX_MODELS = 2;
+constexpr int MAX_OBSTACLES = 2;
+constexpr int MAX_RACELINES = 2;
 
 #ifdef __CUDACC__
 #define HD __host__ __device__
+#define INLINE static __forceinline__ 
 #else
 #define HD
+#define INLINE inline
 #endif
 
 // if defined, fastProjectOnTrack will be compared to projectOnTrack. use this to test that the margin is correct when changing track (it will be much slower, though)
@@ -51,17 +54,11 @@ struct EnvironmentConfig
     int nRacelines;
     int nGates;
 
-    // std::vector<float> initPos;
-    // std::vector<float> initSpeed;
-    // std::vector<float> initS;
-    // std::vector<int> initLaps;
-    // std::vector<int> initGates;
-
     float initPos[MAX_AGENTS * MAX_DIM];
     float initSpeed[MAX_AGENTS * MAX_DIM];
-    float initS[MAX_AGENTS];
-    int initLaps[MAX_AGENTS * MAX_DIM];
-    int initGates[MAX_AGENTS * MAX_DIM];
+    float initS[MAX_AGENTS * MAX_RACELINES];    // (nAgents * nRacelines). if == -1.0f, will not be updated (since it is only useful for PIDs)
+    int initLaps[MAX_AGENTS];
+    int initGates[MAX_AGENTS];
 
     float minDist;
     float posNoiseLevel;
@@ -76,15 +73,6 @@ struct EnvironmentConfig
     int nWinLaps;
     float targetDistance;
 
-    // std::vector<float> gateCenters; // (nGates * dim)
-    // std::vector<float> gateVectors; // (nGates * dim)
-    // std::vector<float> gateRadius;  // (nGates)
-
-    // std::vector<float> arenaMin;    // (dim)
-    // std::vector<float> arenaMax;    // (dim)
-
-    // std::vector<float> trackPoints; // (nTrackSamples * nRacelines, dim)
-
     float gateCenters[MAX_GATES * MAX_DIM]; // (nGates * dim)
     float gateVectors[MAX_GATES * MAX_DIM]; // (nGates * dim)
     float gateRadius[MAX_GATES];  // (nGates)
@@ -92,12 +80,25 @@ struct EnvironmentConfig
     float arenaMin[MAX_DIM];    // (dim)
     float arenaMax[MAX_DIM];    // (dim)
 
+    int nObstacles;
+    float obstacles[MAX_OBSTACLES * MAX_DIM * 2];   // (nObstacles * dim * 2): rectangle obstacles, i.e. [xmin, ymin, xmax, ymax]
+
     // float* trackPoints = nullptr; // (nTrackSamples * nRacelines, dim)
 
     EnvironmentConfig()
     {}
 
     std::vector<float> unpackHeader(const void* buf, size_t len);   // returns trackPoints
+};
+
+struct VerifConfig
+{
+    int nVerifSamples;
+    float beta;
+
+    std::vector<int> K;     // assumed to be sorted
+
+    void unpackHeader(const void* buf, size_t len);
 };
 
 // dummy controller parameters
@@ -154,8 +155,13 @@ struct MPPIConfig
     float finalOppAdvWeight = 5.0f;
     float finalSpeedWeight = 5.0f;
 
+    float minConfidence = 0.9f;
+
+    int nModels;
     ControllerKind oppKind = CONT_DUMMY;
-    PIDConfig oppPid{};
+
+    PIDConfig oppPid[MAX_MODELS];
+    float initBelief[MAX_MODELS];
 };
 
 using ControllerConfig = std::variant<DummyConfig, PIDConfig, MPPIConfig>;

@@ -22,9 +22,7 @@ public:
     virtual ~Controller() = default;
 
     // Writes `dim` floats into outAction.
-    virtual void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng) = 0;
-
-    virtual void reset() {}
+    virtual void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng, std::optional<std::vector<float>> pastAction = std::nullopt, std::optional<std::vector<float>> pastPos = std::nullopt, std::optional<std::vector<float>> pastVel = std::nullopt, std::optional<std::vector<float>> pastS = std::nullopt) = 0;
 };
 
 // ── Dummy ────────────────────────────────────────────────────────────
@@ -32,7 +30,7 @@ class DummyController : public Controller
 {
 public:
     explicit DummyController(const EnvironmentConfig& c);
-    void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng) override;
+    void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng, std::optional<std::vector<float>> pastAction = std::nullopt, std::optional<std::vector<float>> pastPos = std::nullopt, std::optional<std::vector<float>> pastVel = std::nullopt, std::optional<std::vector<float>> pastS = std::nullopt) override;
 };
 
 // ── PID ──────────────────────────────────────────────────────────────
@@ -40,7 +38,7 @@ class PIDController : public Controller
 {
 public:
     PIDController(const EnvironmentConfig& c, const PIDConfig& p);
-    void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng) override;
+    void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng, std::optional<std::vector<float>> pastAction = std::nullopt, std::optional<std::vector<float>> pastPos = std::nullopt, std::optional<std::vector<float>> pastVel = std::nullopt, std::optional<std::vector<float>> pastS = std::nullopt) override;
 
     PIDConfig params;
 };
@@ -49,68 +47,76 @@ public:
 class MPPIController : public Controller
 {
 public:
-    MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc, float* d_trackPoints);
+    // if belief is not given, assumed uniform; if nominal (size (nModels+1) * T * dim) is not given, assumed 0
+    MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc, const VerifConfig& vConfig, float* d_trackPoints, std::optional<std::vector<float>> nominal = std::nullopt);
     ~MPPIController();
-    void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng) override;
-    void reset() override;
+    void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng, std::optional<std::vector<float>> pastAction = std::nullopt, std::optional<std::vector<float>> pastPos = std::nullopt, std::optional<std::vector<float>> pastVel = std::nullopt, std::optional<std::vector<float>> pastS = std::nullopt) override;
 
-    MPPIConfig mppiCfg;
+    MPPIConfig mppiConfig;
+
+    std::vector<float> h_nominal;   // host mirror (nModels+1, T, dim)
+    std::vector<float> h_belief;    // host belief (nModels)
+
+    std::vector<uint> failCount;    // size 2: nColl, nOutside (only MPPI outside is counted)
+    double epsilon;
+
+    float min_nu = 0.005;    // in terms of proportion of nSamples   // TODO: tune this better? (previously: 0.01, 0.05)
+    float max_nu = 0.01;
 private:
     EnvironmentConfig envConfig;
+    VerifConfig verifConfig;
 
-    // device memory
-    float* d_pos = nullptr;   // (nAgents * dim) - initial positions
-    float* d_speed = nullptr; // (nAgents * dim) - initial speeds
-    float* d_S = nullptr;      // (nAgents) - initial advance along the track
+    // Device memory
+
+    // Rollout side
+    float* d_pos = nullptr;   // (nAgents, dim) - initial positions
+    float* d_speed = nullptr; // (nAgents, dim) - initial speeds
+    float* d_S = nullptr;      // (nAgents, nRacelines) - initial advance along the track
     int* d_laps = nullptr;   // (nAgents) - initial number of laps
     int* d_currentGates = nullptr;    // (nAgents) - initial gate progression
-    float* d_sampPos = nullptr;   // (N, nAgents * dim) - final positions
-    float* d_sampSpeed = nullptr; // (N, nAgents * dim) - final speeds
-    float* d_sampS = nullptr;  // (N, nAgents) - final advance along the track 
-    int* d_sampLaps = nullptr;  // (N, nAgents) - final number of laps
-    int* d_sampGates = nullptr; // (N, nAgents) - final gate progression
-    float* d_newS = nullptr;
-    float* d_newLaps = nullptr;
-    float* d_noise = nullptr;  // (T, N, dim)
+    float* d_belief = nullptr;  // (nModels) - initial belief
+
+    float* d_noise = nullptr;  // (nModels+1, T, N, dim)
+
     float* d_costs = nullptr;  // (N)
-    float* d_nominal = nullptr;  // (T, dim)
-    float* d_actions = nullptr;  // (N, actionDim)
+
+    float* d_nominal = nullptr;  // (nModels+1, T, dim)
     float* d_minCost = nullptr;  // scalar
+    float* d_nu = nullptr;  // scalar (sum of costs: useful for monitoring & live updating inv temp)
+
     float* d_trackPts = nullptr;  // cached on device
+
     void* d_temp_storage = nullptr; // for min-reduce
     size_t temp_storage_bytes = 0;  // for min-reduce
+
     curandState* d_rng = nullptr;
 
-    std::vector<float> h_nominal;   // host mirror (T * dim)
-    float* host_trackPoints;    // original value of EnvironmentConfig.trackPoints
+    // Verification side
+    uint* d_failCount;  // 2 ints (first is numColl, second is numOutside)
+    curandState* d_verif_rng = nullptr;
+
     bool deviceReady = false;
 
     void allocDevice();
     void freeDevice();
+
+    void computeEpsilon();  // compute epsilon based on failCount and verifConfig
 };
 
 // Shared PID control function. Does not add noise, since this is different on CPU and GPU
-HD inline void computePIDAction(
+HD INLINE void computePIDAction(
     int agent,
     const float* pos,
     const float* vel,
     const float* S,
-    const int* currentGates,
     const EnvironmentConfig& envConfig,
     const PIDConfig& pid,
     const float* trackPoints,
     float* outAction)
 {
-    float target[MAX_DIM];
+    float target[MAX_DIM] = {};
 
-    if (pid.racelineIndex >= 0)
-        sampleCenterline(trackPoints + envConfig.nTrackSamples * pid.racelineIndex * envConfig.dim, envConfig.nTrackSamples, envConfig.dim, S[agent] + envConfig.targetDistance, target);
-    else
-    {
-        int nextGate = (currentGates[agent] + 1) % envConfig.nGates;
-        for (int d = 0; d < envConfig.dim; d++)
-            target[d] = envConfig.gateCenters[nextGate * envConfig.dim + d];
-    }
+    sampleCenterline(trackPoints + envConfig.nTrackSamples * pid.racelineIndex * envConfig.dim, envConfig.nTrackSamples, envConfig.dim, S[agent * envConfig.nRacelines + pid.racelineIndex] + envConfig.targetDistance, target);
 
     const float* curPos = pos + agent * envConfig.dim;
     const float* curVel = vel + agent * envConfig.dim;
@@ -144,22 +150,37 @@ HD inline void computePIDAction(
     //     outAction[d] = pid.kp * (target[d] - pos[d]) + pid.kd * (-vel[d]);
 
     // repulsion
-    for (int other = 0; other < envConfig.nAgents; other++)
-    {
-        if (other == agent) continue;
-        float diff[MAX_DIM];
-        float dist2 = 0.0f;
-        for (int d = 0; d < envConfig.dim; d++)
+    if (pid.repulsionDistFact != 0.0f)
+        for (int other = 0; other < envConfig.nAgents; other++)
         {
-            diff[d] = pos[other * envConfig.dim + d] - curPos[d];
-            dist2 += diff[d] * diff[d];
-        }
-        float dist = sqrtf(dist2) + 1e-8f;
-        if (dist < pid.repulsionDistFact * envConfig.minDist)
-        {
-            float scale = pid.repulsionFactor / powf(dist, pid.repulsionPower);
+            if (other == agent)
+                continue;
+
+            float diff[MAX_DIM];
+            float dist2 = 0.0f;
             for (int d = 0; d < envConfig.dim; d++)
-                outAction[d] -= scale * diff[d];
+            {
+                diff[d] = pos[other * envConfig.dim + d] - curPos[d];
+                dist2 += diff[d] * diff[d];
+            }
+            float dist = sqrtf(dist2) + 1e-8f;
+            if (dist < pid.repulsionDistFact * envConfig.minDist)
+            {
+                float scale = pid.repulsionFactor / powf(dist, pid.repulsionPower + 1.0f);
+                for (int d = 0; d < envConfig.dim; d++)
+                    outAction[d] -= scale * diff[d];
+            }
         }
+
+    // normalize
+    float sqAccel = 0.0f;
+    for (int d = 0; d < envConfig.dim; d++)
+        sqAccel += outAction[d] * outAction[d];
+
+    if (sqAccel > envConfig.maxAccel[agent] * envConfig.maxAccel[agent])
+    {
+        float fact = envConfig.maxAccel[agent] / sqrtf(sqAccel);
+        for (int d = 0; d < envConfig.dim; d++)
+            outAction[d] *= fact;
     }
 }

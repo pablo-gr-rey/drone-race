@@ -82,99 +82,6 @@ class CONTROLLER_TYPE(IntEnum):
         raise ValueError("Unknown controller config")
 
 
-# @dataclass
-# class BaseEnvironmentConfig(Generic[AddStateType]):
-#     nAgents: int = 2
-#     dim: int = 2
-#     dt: float = 0.1
-
-#     sendStates: bool = True
-#     nRaceLines: int = 1  # number of race lines (at least 1, centerline; can specify more for PID following a given line)
-#     # they all should be concatenated & specified in trackPoints (which contains nLines arrays of size nSamples * dim), and then the line config in PID specifies the offset (offset=0: following centerline from 0 to nSamples-1; offset=1: following arbitrary raceline from nSamples to 2*nSamples-1, etc)
-#     nGates: int = 0
-
-#     init_pos: list | np.ndarray = field(default_factory=lambda: [])
-#     init_vel: list | np.ndarray = field(default_factory=lambda: [])
-#     add_state: Optional[AddStateType] = None
-
-#     minDist: float = 0.2
-#     posNoiseLevel: float = 0.0
-#     speedNoiseLevel: float = 0.0
-#     actionNoiseLevel: float = 0.0
-
-#     maxSpeed: np.ndarray = field(default_factory=lambda: np.array([]))  # in L_2 norm
-#     maxAccel: np.ndarray = field(default_factory=lambda: np.array([]))  # in L_inf norm
-
-#     def __post_init__(self) -> None:
-#         defaultMaxSpeed: float = 0.5
-#         defaultAccel: float = 1
-
-#         self.posDim = self.nAgents * self.dim
-#         self.velDim = self.nAgents * self.dim
-#         self.stateDim = self.posDim + self.velDim
-#         self.actionDim = self.nAgents * self.dim
-
-#         if self.maxSpeed.shape == (0,):
-#             self.maxSpeed = np.full(self.nAgents, defaultMaxSpeed)
-#         if self.maxAccel.shape == (0,):
-#             self.maxAccel = np.full(self.nAgents, defaultAccel)
-
-#         self.init_pos = np.array(self.init_pos).flatten().astype(np.float32)
-#         self.init_vel = np.array(self.init_vel).flatten().astype(np.float32)
-
-#         # If still empty, default to zeros
-#         if self.init_pos.size == 0:
-#             self.init_pos = np.zeros(self.posDim, dtype=np.float32)
-#         if self.init_vel.size == 0:
-#             self.init_vel = np.zeros(self.velDim, dtype=np.float32)
-
-#         if self.init_pos.size != self.posDim:
-#             raise ValueError(f"Invalid init_pos size: got {self.init_pos.size}, expected {self.posDim}")
-#         if self.init_vel.size != self.velDim:
-#             raise ValueError(f"Invalid init_vel size: got {self.init_vel.size}, expected {self.velDim}")
-
-
-# ConfigType = TypeVar("ConfigType", bound=BaseEnvironmentConfig)
-
-
-# @dataclass
-# class SimpleEnvironmentConfig(BaseEnvironmentConfig):
-#     gateRadius: float = 0.3
-
-#     arenaMinY: float = -5
-#     arenaSide: float = 2
-
-#     def __post_init__(self) -> None:
-#         super().__post_init__()
-#         self.arenaMin = np.array([-self.arenaSide if i != 1 else self.arenaMinY for i in range(self.dim)])
-#         self.arenaMax = np.array([self.arenaSide if i != 1 else 0 for i in range(self.dim)])
-
-
-# @dataclass
-# class TrackEnvironmentConfig(BaseEnvironmentConfig):
-#     centerline: Optional[Callable[[float], np.ndarray]] = None  # function [0,1] -> middle of the track
-#     trackWidth: float = 2.0
-#     nTrackSamples: int = 500  # track is discretized with this number of samples
-#     nWinLaps: int = 1
-
-#     targetDistance: float = 0.1  # simple controllers will try to go to the track point at s + targetDistance
-
-#     trackPoints: Optional[np.ndarray] = None
-
-#     def __post_init__(self) -> None:
-#         super().__post_init__()
-#         if self.centerline is not None and self.trackPoints is None:
-#             # sample centerline
-#             sGrid = np.linspace(0, 1, self.nTrackSamples, endpoint=False)
-#             self.trackPoints = np.array([self.centerline(s) for s in sGrid])
-#             # mm, m = 0.0, np.inf
-#             # for i in range(self.nTrackSamples):
-#             #     d = np.linalg.norm(self.trackPoints[(i + 1) % self.nTrackSamples] - self.trackPoints[i])
-#             #     mm = max(mm, d)
-#             #     m = min(m, d)
-#             # print(f"minimum distance between 2 consecutive points: {m} max: {mm}")
-
-
 @dataclass
 class GateEnvironmentConfig:
     nAgents: int = 2
@@ -213,6 +120,9 @@ class GateEnvironmentConfig:
     arenaMin: np.ndarray = field(default_factory=lambda: np.array([]))
     arenaMax: np.ndarray = field(default_factory=lambda: np.array([]))
 
+    nObstacles: int = 0
+    obstacles: np.ndarray = field(default_factory=lambda: np.array([]))
+
     trackPoints: Optional[np.ndarray] = None
 
     def __post_init__(self) -> None:
@@ -248,6 +158,18 @@ class GateEnvironmentConfig:
         if self.arenaMin.shape == (0,):
             self.arenaMin = np.min(self.gateCenters, axis=0) - np.max(self.gateRadius) * 5
             self.arenaMax = np.max(self.gateCenters, axis=0) + np.max(self.gateRadius) * 5
+
+
+@dataclass
+class VerifConfig:
+    N: int = int(1e6)
+    beta: float = 1e-6
+
+    K: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    def __post_init__(self):
+        if self.K.size == 0:
+            self.K = np.concat([[0], 2 ** np.arange(int(np.log2(self.N)))])
 
 
 @dataclass
@@ -319,29 +241,16 @@ class MPPIConfig(ControllerConfig):
     #     None  # should be the list of modeled getControl() method of opponents
     # )
 
+    minConfidence: float = 0.9
+
+    nModels: int = 1
+    oppKind: CONTROLLER_TYPE = CONTROLLER_TYPE.CONT_DUMMY
     # obviously, should not be MPPIConfig
-    opponentConfig: DummyConfig | PIDConfig = field(default_factory=lambda: DummyConfig())
+    opponentPidConfigs: tuple[PIDConfig, ...] = ()
+    initBelief: np.ndarray = field(default_factory=lambda: np.array([]))
 
+    def __post_init__(self) -> None:
+        if self.initBelief.size == 0:
+            self.initBelief = np.full(self.nModels, 1.0 / self.nModels)
 
-# class Controller(ABC):
-#     def __init__(self, name: str, envConfig: GateEnvironmentConfig):
-#         self.name = name
-#         self.envConfig = envConfig
-#         self.environment: "Optional[GateEnvironment]" = None
-
-#     def setEnvironment(self, env: "GateEnvironment"):
-#         self.environment = env
-
-#     @classmethod
-#     def fromConfig(cls, envConfig: GateEnvironmentConfig, config: ControllerConfig, name: Optional[str] = None) -> "Controller":
-#         from controllers import MPPIController, PIDController
-
-#         if name is None:
-#             name = config.getDefaultName()
-
-#         if isinstance(config, PIDConfig):
-#             return PIDController(envConfig, config, name)
-#         elif isinstance(config, MPPIConfig):
-#             return MPPIController(envConfig, config, name)
-
-#         raise ValueError("Unknown config")
+        super().__post_init__()
