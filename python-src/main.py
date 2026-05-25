@@ -18,6 +18,7 @@ from utils import (
     GateEnvironmentConfig,
     MPPIConfig,
     PIDConfig,
+    VerifConfig,
     circularGateTrack,
 )
 
@@ -520,8 +521,8 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig
         inv_temperature=10,
         samplingNoise=3,
         gateTraversalMargin=0.95,
-        # collDistFactor=1.1,
-        collDistFactor=1.0,
+        collDistFactor=1.1,
+        # collDistFactor=1.0,
         # collDistFactor=1.3,
         finalAdvWeight=200,
         # finalAdvWeight=0,
@@ -660,11 +661,14 @@ def mainGate():
     # cont_configs: list[ControllerConfig] = [mppiconfig, blindpidconfig]
     # cont_configs: list[ControllerConfig] = [mppiconfig] + [pidconfig] * (nAgents - 1)  # type: ignore
 
+    verifConfig = VerifConfig(2**14, 1e-6)
+    print(verifConfig.K)
+
     envConfig.sendStates = True
 
     z = ZMQRecv()
 
-    evt, res = z.runSim(envConfig, cont_configs, render=envConfig.sendStates, oppNames=oppNames)
+    evt, res = z.runSim(envConfig, verifConfig, cont_configs, render=envConfig.sendStates, oppNames=oppNames)
 
     print(f"result: {evt.name} {res}")
 

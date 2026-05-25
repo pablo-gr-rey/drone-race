@@ -3,9 +3,9 @@
 ## Installation
 
 This project requires a Nvidia GPU running Cuda >= 12.4, and allows for Python rendering with matplotlib. Possible usages are:
+- running everything locally if your machine is CUDA-capable
 - running the Python rendering part on your local machine, and running the C++/Cuda backend over SSH on a machine with a strong GPU (see Setting up a remote connection below)
 - running everything over SSH, with only CLI output (or matplotlib through X11 forwarding, but interaction will be very slow)
-- running everything locally if your machine is CUDA-capable
 
 In the first case, you will need to run the installation commands twice (on your machine and over SSH). This will install cuda toolkit on your machine (and Python libraries on the SSH machine) which will not be used; you can remove them in environment.yml if this is an issue.
 

@@ -15,7 +15,7 @@ from matplotlib.transforms import Bbox
 from matplotlib.widgets import Button, Slider, TextBox
 from PIL import Image
 from tqdm import tqdm
-from utils import GateEnvironmentConfig, MPPIConfig
+from utils import GateEnvironmentConfig, MPPIConfig, VerifConfig
 
 
 class EnvironmentRenderer:
@@ -27,6 +27,7 @@ class EnvironmentRenderer:
         self,
         envConfig: GateEnvironmentConfig,
         contNames: list[str],
+        verifConfig: VerifConfig,
         oppNames: list[str],
         mppiConfig: MPPIConfig,
         axis: tuple[int, ...] = (0, 1),
@@ -40,6 +41,7 @@ class EnvironmentRenderer:
     ):
         "interval: refresh rate. frameSkipWaiting: how many frames to skip if emitting states faster than we can display (use -1 to always display last frame). use defaultZoomAgent=-1 to start viewing full track, otherwise start zooming on agent"
         self.envConfig = envConfig
+        self.verifConfig = verifConfig
         self.axis = axis
         self.interval = interval
         self.frameSkipPlayback = frameSkipPlayback
@@ -55,7 +57,7 @@ class EnvironmentRenderer:
         self.nLapsLog: list[np.ndarray] = []
         self.currentGatesLog: list[np.ndarray] = []
 
-        self.beliefLog: list[tuple[int, np.ndarray, list[tuple[int, int, np.ndarray]]]] = []
+        self.beliefLog: list[tuple[int, np.ndarray, np.ndarray, float, list[tuple[int, int, np.ndarray]]]] = []
 
         self.collision = False
         self.winner: Optional[int] = None
@@ -179,6 +181,8 @@ class EnvironmentRenderer:
                 transform=self.ax_status.transAxes,
             )
             self.agent_value_texts.append(t_val)
+
+        self.verif_text = self.ax_status.text(0.0, 0.3, "", fontsize=12, ha="left", va="center")
 
         # MPPI belief
         if self.oppNames:
@@ -348,7 +352,7 @@ class EnvironmentRenderer:
 
         # update MPPI predictions
         if self.beliefLog and self.oppNames:
-            iMppi, belief, preds = self.beliefLog[i]
+            iMppi, belief, failCount, eps, preds = self.beliefLog[i]
             for theta, ((lc_nom, lc_branch, lc_opp), (branchingTime, predTheta, fullPos)) in enumerate(zip(self.lcs_pred, preds)):
                 fullPos = fullPos.reshape((self.mppiConfig.nTimesteps, self.envConfig.nAgents, self.envConfig.dim))
 
@@ -419,7 +423,10 @@ class EnvironmentRenderer:
 
         # update MPPI belief
         if self.beliefLog and self.oppNames:
-            iAgent, belief, preds = self.beliefLog[i]
+            iMppi, belief, failCount, eps, preds = self.beliefLog[i]
+            self.verif_text.set_text(
+                f"Fail: {sum(failCount) / self.verifConfig.N * 100:.2f}% (coll {failCount[0] / self.verifConfig.N * 100:.2f}%, out {failCount[1] / self.verifConfig.N * 100:.2f}%)\nCertified failure rate: {eps:.5f}"
+            )
             for i, (bar, b_val) in enumerate(zip(self.belief_bars, belief)):
                 bar.set_height(b_val)
 
@@ -437,7 +444,7 @@ class EnvironmentRenderer:
         currentS: np.ndarray,
         nLaps: np.ndarray,
         currentGates: np.ndarray,
-        belief: Optional[tuple[int, np.ndarray, list[tuple[int, int, np.ndarray]]]],
+        belief: Optional[tuple[int, np.ndarray, np.ndarray, float, list[tuple[int, int, np.ndarray]]]],
         pendingState: bool = False,
     ) -> None:
         "If pendingState is True, it means that there are other states waiting in the queue (ie. they are computed faster than they are rendered); in this case, only 1 frame out of frameSkipWaiting will be shown"
@@ -462,7 +469,7 @@ class EnvironmentRenderer:
             self.playing
             and not self.isFinished
             and time.perf_counter() - self.lastRenderTime > self.interval / 1000
-            and (self.frameSkipWaiting == -1 or len(self.posLog) % self.frameSkipWaiting == 0)
+            and (not pendingState or self.frameSkipWaiting == -1 or len(self.posLog) % self.frameSkipWaiting == 0)
         ):
             if self.frameSkipWaiting == -1:
                 self.current_index = n - 1

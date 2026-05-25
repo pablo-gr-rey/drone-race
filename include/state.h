@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "cuda_runtime.h"
+#include "curand_kernel.h"
 
 // #include <cmath>
 #include <math.h>
@@ -212,27 +213,6 @@ HD INLINE float fastProjectOnTrack(const float* __restrict__ trackPoints,
     return bestS;
 }
 
-// Boundary distance = distance to closest boundary (negative if pos is outside of arena)
-__device__ INLINE float trackBoundaryDist(const EnvironmentConfig& envConfig, const float* __restrict__ pos)
-{
-    float minDist = INFINITY;
-    for (int d = 0; d < envConfig.dim; d++)
-        minDist = fminf(minDist, fminf(pos[d] - envConfig.arenaMin[d], envConfig.arenaMax[d] - pos[d]));
-
-    for (int iObs = 0; iObs < envConfig.nObstacles; iObs++)
-    {
-        float sqDist = 0.0f;
-        for (int d = 0; d < envConfig.dim; d++)
-        {
-            float dist = fmaxf(0.0f, fmaxf(envConfig.obstacles[iObs * 2 * envConfig.dim + d] - pos[d], pos[d] - envConfig.obstacles[(iObs * 2 + 1) * envConfig.dim + d]));
-            sqDist += dist * dist;
-        }
-        minDist = fminf(minDist, sqrtf(sqDist));
-    }
-
-    return minDist;
-}
-
 // Update belief if oppAction was observed, nomAction is the nominal action for each model (nModels * dim)
 HD INLINE void updateBelief(float* __restrict__ belief, const float* __restrict__ oppAction, const float* __restrict__ nomAction, const PIDConfig* __restrict__ params, int nModels, int dim, float maxPIDaccel)
 {
@@ -290,6 +270,27 @@ HD INLINE int findConfident(const float* __restrict__ belief, int nModels, float
     return -1;
 }
 
+// Boundary distance = distance to closest boundary (<= 0 if outside)
+__device__ INLINE float trackBoundaryDist(const EnvironmentConfig& envConfig, const float* __restrict__ pos)
+{
+    float minDist = INFINITY;
+    for (int d = 0; d < envConfig.dim; d++)
+        minDist = fminf(minDist, fminf(pos[d] - envConfig.arenaMin[d], envConfig.arenaMax[d] - pos[d]));
+
+    for (int iObs = 0; iObs < envConfig.nObstacles; iObs++)
+    {
+        float sqDist = 0.0f;
+        for (int d = 0; d < envConfig.dim; d++)
+        {
+            float dist = fmaxf(0.0f, fmaxf(envConfig.obstacles[iObs * 2 * envConfig.dim + d] - pos[d], pos[d] - envConfig.obstacles[(iObs * 2 + 1) * envConfig.dim + d]));
+            sqDist += dist * dist;
+        }
+        minDist = fminf(minDist, sqrtf(sqDist));
+    }
+
+    return minDist;
+}
+
 HD INLINE bool isOutside(const EnvironmentConfig& envConfig, const float* __restrict__ pos, float margin)   // margin should be e.g. minDist/2 in the actual dynamics and (minDist * factor) / 2 for MPPI
 {
     for (int d = 0; d < envConfig.dim; d++)
@@ -298,15 +299,14 @@ HD INLINE bool isOutside(const EnvironmentConfig& envConfig, const float* __rest
 
     for (int iObs = 0; iObs < envConfig.nObstacles; iObs++)
     {
-        bool out = true;
+        float sqDist = 0.0f;
         for (int d = 0; d < envConfig.dim; d++)
-            if (pos[d] + margin < envConfig.obstacles[iObs * 2 * envConfig.dim + d] || pos[d] - margin > envConfig.obstacles[(iObs * 2 + 1) * envConfig.dim + d])
-            {
-                out = false;
-                break;
-            }
+        {
+            float dist = fmaxf(0.0f, fmaxf(envConfig.obstacles[iObs * 2 * envConfig.dim + d] - pos[d], pos[d] - envConfig.obstacles[(iObs * 2 + 1) * envConfig.dim + d]));
+            sqDist += dist * dist;
+        }
 
-        if (out)
+        if (sqDist <= margin * margin)
             return true;
     }
 
@@ -363,4 +363,22 @@ HD INLINE void updateGates(const EnvironmentConfig& envConfig, const float* __re
             }
         }
     }
+}
+
+__device__ INLINE int sampleModelFromBelief(
+    const float* __restrict__ belief,
+    int nModels,
+    curandState* __restrict__ rng)
+{
+    float u = curand_uniform(rng);   // in (0, 1]
+    float cdf = 0.0f;
+
+    for (int k = 0; k < nModels; k++)
+    {
+        cdf += belief[k];
+        if (u <= cdf)
+            return k;
+    }
+
+    return nModels - 1;
 }

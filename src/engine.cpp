@@ -18,6 +18,7 @@
 SimulationEngine::SimulationEngine(
     const EnvironmentConfig& config,
     std::vector<float> trackPts,
+    const VerifConfig& vConfig,
     const std::vector<ControllerSpec>& specs)
     : rng(42)
 {
@@ -28,6 +29,7 @@ SimulationEngine::SimulationEngine(
 
     trackPoints = trackPts;
     envConfig = config;
+    verifConfig = vConfig;
     // pos = config.initPos;
     // speed = config.initSpeed;
     // currentS = config.initS;
@@ -81,7 +83,7 @@ std::unique_ptr<Controller> SimulationEngine::makeController(const ControllerSpe
                 if (d_trackPoints == nullptr)
                     allocTrack();
 
-                ctrl = std::make_unique<MPPIController>(envConfig, contConfig, d_trackPoints);
+                ctrl = std::make_unique<MPPIController>(envConfig, contConfig, verifConfig, d_trackPoints);
             }
 
             if (!useS)       // only PID should update its S (otherwise, it is useless for MPPI or dummy)
@@ -132,6 +134,10 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
                 // send belief
                 writer.pushInt32(iMppi);
                 writer.pushFloatArray(cont->h_belief);
+
+                // send collision status
+                writer.pushIntArray(cont->failCount);
+                writer.pushFloat(cont->epsilon);
 
                 // build the predicted probabilities
                 // we simulate it for nominal and every theta

@@ -70,6 +70,24 @@ std::vector<float> EnvironmentConfig::unpackHeader(const void* buf, size_t len)
     return trackPoints;
 }
 
+void VerifConfig::unpackHeader(const void* buf, size_t len)
+{
+    Reader reader(buf, len);
+
+    int kind = reader.readInt32();
+    if (kind != MSG_HEADER)
+        throw std::runtime_error(std::format("Expected header message type for environment config (type {}) but got type {} instead", static_cast<int>(MSG_HEADER), kind));
+
+    nVerifSamples = reader.readInt32();
+    beta = reader.readFloat();
+
+    K = reader.readIntArray();
+
+    reader.assertFinished();
+
+    std::cout << "loaded verification N " << nVerifSamples << " beta " << beta << " card of K " << K.size() << " (first value " << K[0] << ")\n";
+}
+
 static PIDConfig unpackPIDConfig(Reader& reader)
 {
     PIDConfig pidconfig;

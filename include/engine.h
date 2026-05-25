@@ -11,7 +11,7 @@
 class SimulationEngine
 {
 public:
-    SimulationEngine(const EnvironmentConfig& cfg, std::vector<float> trackPoints, const std::vector<ControllerSpec>& specs);
+    SimulationEngine(const EnvironmentConfig& cfg, std::vector<float> trackPoints, const VerifConfig& verifConfig, const std::vector<ControllerSpec>& specs);
     ~SimulationEngine();
 
     void sendState(zmq::socket_t& sock, int step);
@@ -24,6 +24,7 @@ public:
     // public config & track data
     EnvironmentConfig envConfig;
     std::vector<float> trackPoints;
+    VerifConfig verifConfig;
 
 private:
     std::normal_distribution<float> nd{ 0.0f, 1.0f };

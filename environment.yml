@@ -9,13 +9,11 @@ dependencies:
   - cppzmq
   - zeromq
   - cuda=13.2
-  # - cuda-cudart-dev
-  # - sysroot_linux-64
+  - boost-cpp
   - gxx_linux-64=15
   - gcc_linux-64=15
   - cmake
   - conda-forge::ncurses
-  # - binutils_linux-64
   - pip:
     - tqdm
     - numpy

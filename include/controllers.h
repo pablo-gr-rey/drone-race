@@ -48,7 +48,7 @@ class MPPIController : public Controller
 {
 public:
     // if belief is not given, assumed uniform; if nominal (size (nModels+1) * T * dim) is not given, assumed 0
-    MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc, float* d_trackPoints, std::optional<std::vector<float>> nominal = std::nullopt);
+    MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc, const VerifConfig& vConfig, float* d_trackPoints, std::optional<std::vector<float>> nominal = std::nullopt);
     ~MPPIController();
     void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng, std::optional<std::vector<float>> pastAction = std::nullopt, std::optional<std::vector<float>> pastPos = std::nullopt, std::optional<std::vector<float>> pastVel = std::nullopt, std::optional<std::vector<float>> pastS = std::nullopt) override;
 
@@ -57,12 +57,18 @@ public:
     std::vector<float> h_nominal;   // host mirror (nModels+1, T, dim)
     std::vector<float> h_belief;    // host belief (nModels)
 
+    std::vector<uint> failCount;    // size 2: nColl, nOutside (only MPPI outside is counted)
+    double epsilon;
+
     float min_nu = 0.005;    // in terms of proportion of nSamples   // TODO: tune this better? (previously: 0.01, 0.05)
     float max_nu = 0.01;
 private:
     EnvironmentConfig envConfig;
+    VerifConfig verifConfig;
 
-    // device memory
+    // Device memory
+
+    // Rollout side
     float* d_pos = nullptr;   // (nAgents, dim) - initial positions
     float* d_speed = nullptr; // (nAgents, dim) - initial speeds
     float* d_S = nullptr;      // (nAgents, nRacelines) - initial advance along the track
@@ -85,10 +91,16 @@ private:
 
     curandState* d_rng = nullptr;
 
+    // Verification side
+    uint* d_failCount;  // 2 ints (first is numColl, second is numOutside)
+    curandState* d_verif_rng = nullptr;
+
     bool deviceReady = false;
 
     void allocDevice();
     void freeDevice();
+
+    void computeEpsilon();  // compute epsilon based on failCount and verifConfig
 };
 
 // Shared PID control function. Does not add noise, since this is different on CPU and GPU

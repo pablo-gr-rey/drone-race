@@ -6,7 +6,7 @@ from typing import Any, Optional
 import numpy as np
 import zmq
 from renderer import EnvironmentRenderer
-from utils import EVENT_TYPE, MSG_TYPE, ControllerConfig, GateEnvironmentConfig, PIDConfig, MPPIConfig
+from utils import EVENT_TYPE, MSG_TYPE, ControllerConfig, GateEnvironmentConfig, PIDConfig, MPPIConfig, VerifConfig
 
 
 class BytePacker:
@@ -129,9 +129,9 @@ def unpackState(
     np.ndarray,
     np.ndarray,
     np.ndarray,
-    Optional[tuple[int, np.ndarray, list[tuple[int, int, np.ndarray]]]],
+    Optional[tuple[int, np.ndarray, np.ndarray, float, list[tuple[int, int, np.ndarray]]]],
 ]:
-    "Return (step, pos, vel, currentS, nLaps, currentGates, Optional[iMppi, belief, list[(branchingTime, predTheta, fullPos)]]) from bytes"
+    "Return (step, pos, vel, currentS, nLaps, currentGates, Optional[iMppi, belief, failCount, eps, list[(branchingTime, predTheta, fullPos)]]) from bytes"
 
     step = unpack.readInt()
     pos = unpack.readArray()
@@ -142,11 +142,11 @@ def unpackState(
 
     mppiInfo = None
     if not unpack.is_finished():
-        iMppi, belief = unpack.readInt(), unpack.readArray()
+        iMppi, belief, failCount, eps = unpack.readInt(), unpack.readArray(), unpack.readArray(), unpack.readFloat()
         preds = []
         while not unpack.is_finished():
             preds.append((unpack.readInt(), unpack.readInt(), unpack.readArray()))
-        mppiInfo = (iMppi, belief, preds)
+        mppiInfo = (iMppi, belief, failCount, eps, preds)
 
     unpack.assert_finished()
 
@@ -166,11 +166,12 @@ class ZMQRecv:
         self.nLapsLog: list[np.ndarray] = []
         self.currentGatesLog: list[np.ndarray] = []
 
-        self.beliefLog: list[tuple[int, np.ndarray, list[tuple[int, int, np.ndarray]]]] = []
+        self.beliefLog: list[tuple[int, np.ndarray, np.ndarray, float, list[tuple[int, int, np.ndarray]]]] = []
 
     def runSim(
         self,
         config: GateEnvironmentConfig,
+        verifConfig: VerifConfig,
         contConfigs: list[ControllerConfig],
         render: bool = True,
         contNames: Optional[list[str]] = None,
@@ -208,6 +209,7 @@ class ZMQRecv:
             renderer = EnvironmentRenderer(
                 config,
                 contNames,
+                verifConfig,
                 oppNames,
                 mppiConfig,
                 interval=0,
@@ -225,6 +227,8 @@ class ZMQRecv:
 
         header = encodeConfig(config, MSG_TYPE.MSG_HEADER).toBytes()
         self.sock.send(header)
+
+        self.sock.send(encodeConfig(verifConfig, MSG_TYPE.MSG_HEADER, log=True).toBytes())
 
         for cont in contConfigs:
             self.sock.send(encodeConfig(cont, MSG_TYPE.MSG_HEADER).toBytes())

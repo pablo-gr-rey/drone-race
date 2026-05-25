@@ -20,7 +20,12 @@ void runEngine(zmq::socket_t& sock)
     EnvironmentConfig envConfig;
     std::vector<float> trackPoints = envConfig.unpackHeader(msg.data(), msg.size());
 
-    std::cout << "Header unpacked, starting simulation\n";
+    res = sock.recv(msg);
+    if (!res)
+        throw std::runtime_error("Failed to receive verif configuration");
+
+    VerifConfig verifConfig;
+    verifConfig.unpackHeader(msg.data(), msg.size());
 
     std::vector<ControllerSpec> specs(envConfig.nAgents);
     for (int i = 0; i < envConfig.nAgents; i++)
@@ -32,7 +37,9 @@ void runEngine(zmq::socket_t& sock)
         specs[i].unpackHeader(msg.data(), msg.size());
     }
 
-    SimulationEngine engine(envConfig, trackPoints, specs);
+    std::cout << "Header unpacked, starting simulation\n";
+
+    SimulationEngine engine(envConfig, trackPoints, verifConfig, specs);
 
     auto begin = std::chrono::steady_clock::now();
 
@@ -51,6 +58,23 @@ int main(int argc, char** argv)
     std::cout << "RUNNING IN RELEASE MODE" << std::endl;
 #endif
     std::cout << "EnvironmentConfig size: " << sizeof(EnvironmentConfig) << " bytes; MPPIConfig size: " << sizeof(MPPIConfig) << " bytes\n";
+
+    int deviceCount;
+    cudaGetDeviceCount(&deviceCount);
+    for (int i = 0; i < deviceCount; i++)
+    {
+        cudaDeviceProp prop;
+        cudaGetDeviceProperties(&prop, i);
+        printf("Device %d: %s\n", i, prop.name);
+        printf("\tMax threads per block:            %d\n", prop.maxThreadsPerBlock);
+        printf("\tMax threads per multiprocessor:   %d\n", prop.maxThreadsPerMultiProcessor);
+        printf("\tNumber of multiprocessors (SM):   %d\n", prop.multiProcessorCount);
+        printf("\tTotal resident threads:           %d\n", prop.multiProcessorCount * prop.maxThreadsPerMultiProcessor);
+        printf("\tTotal global memory:              %lu\n", prop.totalGlobalMem);
+        printf("\tMaximum shared mem. / block:      %lu\n", prop.sharedMemPerBlock);
+        printf("\tRegisters per block:              %d\n", prop.regsPerBlock);
+        printf("\tWarp size:                        %d\n", prop.warpSize);
+    }
 
     std::string zmqAddr = "tcp://*:5555";
     if (argc > 1) zmqAddr = argv[1];

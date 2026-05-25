@@ -102,13 +102,3 @@ void Writer::pushFloatArray(const std::vector<float>& arr)
         data.insert(data.end(), p, p + arr.size() * sizeof(float));
     }
 }
-
-void Writer::pushIntArray(const std::vector<int>& arr)
-{
-    std::vector<float> n(arr.size());
-
-    for (size_t i = 0; i < arr.size(); i++)
-        n[i] = arr[i];
-
-    pushFloatArray(n);
-}

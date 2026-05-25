@@ -77,17 +77,18 @@ __global__ void fullRolloutKernel(
     // TODO: if there are many models, we could skip them if they have small probability
     for (int theta = 0; theta < mc.nModels; theta++)    // theta is the model the opponent is actually following
     {
-        for (int a = 0; a < envConfig.nAgents; ++a)
-            for (int d = 0; d < envConfig.dim; ++d)
+        // copy initial state
+        for (int a = 0; a < envConfig.nAgents; a++)
+        {
+            for (int d = 0; d < envConfig.dim; d++)
             {
                 pos[a * envConfig.dim + d] = initPos[a * envConfig.dim + d];
                 vel[a * envConfig.dim + d] = initVel[a * envConfig.dim + d];
             }
 
-        for (int a = 0; a < envConfig.nAgents; a++)
-        {
-            for (int i = 0; i < envConfig.nRacelines; i++)
-                currentS[a] = initS[a];
+            for (int r = 0; r < envConfig.nRacelines; r++)
+                currentS[a * envConfig.nRacelines + r] = initS[a * envConfig.nRacelines + r];
+
             laps[a] = initLaps[a];
             currentGates[a] = initGates[a];
         }
@@ -200,70 +201,11 @@ __global__ void fullRolloutKernel(
                     vel[a * envConfig.dim + d] += curand_normal(&rng) * envConfig.speedNoiseLevel;
                 }
 
-
             updateGates(envConfig, pos, prevPos, currentS, currentGates, laps, trackPts);
 
-            // 7. Track S / laps / gates update
+            // if agent won or is outside, or if there is a collision, stop rollout
             for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
-            {
-                const float* curPos = pos + iAgent * envConfig.dim;
-
-                // if agent is outside, stop rollout (subsequent samples do not matter)
-                // for (int d = 0; d < envConfig.dim; d++)
-                //     if (curPos[d] < envConfig.arenaMin[d] || curPos[d] > envConfig.arenaMax[d])
-                //         stop = true;
-
-                // TODO: this is duplicated, but for some reason, calling updateGates is super slow? maybe it's the same for computePID?
-
-                // float dist;
-                // float newSa = fastProjectOnTrack(trackPts, nTP, envConfig.dim, curPos, nullptr, dist, S[iAgent]);
-                // S[iAgent] = newSa;
-
-                // int nextGate = (currentGates[iAgent] + 1) % envConfig.nGates;
-                // float num = 0.f, denom = 0.f;
-                // for (int d = 0; d < envConfig.dim; d++)
-                // {
-                //     num += envConfig.gateVectors[nextGate * envConfig.dim + d] * (envConfig.gateCenters[nextGate * envConfig.dim + d] - prevPos[iAgent * envConfig.dim + d]);
-                //     denom += envConfig.gateVectors[nextGate * envConfig.dim + d] * (pos[iAgent * envConfig.dim + d] - prevPos[iAgent * envConfig.dim + d]);
-                // }
-
-                // // direction is inside the gate plan: cannot cross
-                // if (fabsf(denom) < 1e-10f)
-                //     continue;
-
-                // float lambda = num / denom;
-                // // we cross if 0 <= lambda <= 1 and if the projection of the segment (x_t, x_t+1) on the gate plan (ie. (1 - lambda) * x_t + lambda * x_t+1) is at distance <= radius from the center
-                // // if we want to make sure we cross the gate in the right direction, we have to check num >= 0 (<=> denom > 0)
-
-                // if (lambda < 0.f || lambda > 1.f)
-                //     continue;
-
-                // float sqDist = 0.;
-                // for (int d = 0; d < envConfig.dim; d++)
-                // {
-                //     float dx = (1. - lambda) * prevPos[iAgent * envConfig.dim + d] + lambda * pos[iAgent * envConfig.dim + d] - envConfig.gateCenters[nextGate * envConfig.dim + d];
-                //     sqDist += dx * dx;
-                // }
-
-                // float margin = iAgent == controlAgent ? mc.gateTraversalMargin * mc.gateTraversalMargin : 1.0f;
-
-                // if (sqDist <= envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate] * margin)
-                // {
-                //     currentGates[iAgent]++;
-                //     if (currentGates[iAgent] == envConfig.nGates)
-                //     {
-                //         currentGates[iAgent] = 0;
-                //         laps[iAgent]++;
-                //     }
-                // }
-
-                // if agent won, stop rollout
-                if (laps[iAgent] >= envConfig.nWinLaps)
-                    stop = true;
-
-                if (isOutside(envConfig, curPos, envConfig.minDist / 2.0f))
-                    stop = true;
-            }
+                stop = stop || (laps[iAgent] >= envConfig.nWinLaps) || (isOutside(envConfig, pos + iAgent * envConfig.dim, envConfig.minDist / 2.0f));
 
             // is there a collision?
             for (int iAgent1 = 0; iAgent1 < envConfig.nAgents; iAgent1++)
@@ -403,4 +345,219 @@ __global__ void clampNominalKernel(
         for (int d = 0; d < dim; ++d)
             nominal[base + d] *= scale;
     }
+}
+
+__global__ void verifyNominalFailureKernel(
+    int controlAgent,
+    int nVerif,
+    EnvironmentConfig envConfig,
+    MPPIConfig mc,
+    const float* __restrict__ initPos,
+    const float* __restrict__ initVel,
+    const float* __restrict__ initS,
+    const int* __restrict__ initLaps,
+    const int* __restrict__ initGates,
+    const float* __restrict__ initBelief,
+    const float* __restrict__ nominal,     // (nModels+1, T, dim)
+    const float* __restrict__ trackPts,
+    curandState* __restrict__ rngStates,
+    unsigned int* __restrict__ failCount)
+{
+    int s = blockIdx.x * blockDim.x + threadIdx.x;
+    if (s >= nVerif)
+        return;
+
+    curandState rng = rngStates[s];
+
+    // Local rollout state
+    float pos[MAX_AGENTS * MAX_DIM];
+    float vel[MAX_AGENTS * MAX_DIM];
+    float currentS[MAX_AGENTS * MAX_RACELINES];
+    float prevPos[MAX_AGENTS * MAX_DIM];
+    int laps[MAX_AGENTS];
+    int currentGates[MAX_AGENTS];
+
+    float belief[MAX_MODELS];
+    float nomPidAction[MAX_MODELS * MAX_DIM];
+    float actions[MAX_AGENTS * MAX_DIM];
+
+    // Copy initial state
+    for (int a = 0; a < envConfig.nAgents; a++)
+    {
+        for (int d = 0; d < envConfig.dim; d++)
+        {
+            pos[a * envConfig.dim + d] = initPos[a * envConfig.dim + d];
+            vel[a * envConfig.dim + d] = initVel[a * envConfig.dim + d];
+        }
+
+        for (int r = 0; r < envConfig.nRacelines; r++)
+            currentS[a * envConfig.nRacelines + r] = initS[a * envConfig.nRacelines + r];
+
+        laps[a] = initLaps[a];
+        currentGates[a] = initGates[a];
+    }
+
+    for (int k = 0; k < mc.nModels; k++)
+        belief[k] = initBelief[k];
+
+    // Sample actual opponent model according to initial belief
+    int theta = sampleModelFromBelief(initBelief, mc.nModels, &rng);
+
+    int predTheta = findConfident(belief, mc.nModels, mc.minConfidence);
+    int branchingTime = 0;
+
+    int failed = 0;     // 1 if collision, 2 if outside
+
+    // Dynamics rollout
+    for (int t = 0; t < mc.nTimesteps && !failed; t++)
+    {
+        // Save previous positions for gate update
+        for (int i = 0; i < envConfig.nAgents * envConfig.dim; i++)
+            prevPos[i] = pos[i];
+
+        // Build actions
+        for (int a = 0; a < envConfig.nAgents; a++)
+        {
+            if (a == controlAgent)
+            {
+                int localT = t - branchingTime;
+                int startInd = ((predTheta + 1) * mc.nTimesteps + localT) * envConfig.dim;
+
+                for (int d = 0; d < envConfig.dim; d++)
+                    actions[a * envConfig.dim + d] = nominal[startInd + d];
+            }
+            else
+            {
+                // predicted nominal PID actions for all models
+                for (int thetaT = 0; thetaT < mc.nModels; thetaT++)
+                    computePIDAction(a, pos, vel, currentS, envConfig, mc.oppPid[thetaT], trackPts, nomPidAction + thetaT * envConfig.dim);
+
+                // actual opponent action = nominal PID + PID model noise
+                for (int d = 0; d < envConfig.dim; d++)
+                    actions[a * envConfig.dim + d] = nomPidAction[theta * envConfig.dim + d] + mc.oppPid[theta].actionNoise * curand_normal(&rng);
+            }
+        }
+
+        // Clamp accelerations and add environment action noise
+        for (int a = 0; a < envConfig.nAgents; a++)
+        {
+            float sqNorm = 0.0f;
+            for (int d = 0; d < envConfig.dim; d++)
+            {
+                float v = actions[a * envConfig.dim + d];
+                sqNorm += v * v;
+            }
+
+            float factor = 1.0f;
+            float maxSq = envConfig.maxAccel[a] * envConfig.maxAccel[a];
+            if (sqNorm > maxSq)
+                factor = envConfig.maxAccel[a] / sqrtf(sqNorm);
+
+            for (int d = 0; d < envConfig.dim; d++)
+            {
+                float& v = actions[a * envConfig.dim + d];
+                v *= factor;
+                v += envConfig.actionNoiseLevel * curand_normal(&rng);
+            }
+        }
+
+        // Integrate position
+        for (int a = 0; a < envConfig.nAgents; a++)
+            for (int d = 0; d < envConfig.dim; d++)
+                pos[a * envConfig.dim + d] += envConfig.dt * vel[a * envConfig.dim + d];
+
+        // Integrate velocity
+        for (int a = 0; a < envConfig.nAgents; a++)
+            for (int d = 0; d < envConfig.dim; d++)
+                vel[a * envConfig.dim + d] += envConfig.dt * actions[a * envConfig.dim + d];
+
+        // Speed cap
+        for (int a = 0; a < envConfig.nAgents; a++)
+        {
+            float spd = agentSpeed(vel, a, envConfig.dim);
+            if (spd > envConfig.maxSpeed[a])
+            {
+                float sc = envConfig.maxSpeed[a] / spd;
+                for (int d = 0; d < envConfig.dim; d++)
+                    vel[a * envConfig.dim + d] *= sc;
+            }
+        }
+
+        // State noise
+        for (int a = 0; a < envConfig.nAgents; a++)
+            for (int d = 0; d < envConfig.dim; d++)
+            {
+                pos[a * envConfig.dim + d] += envConfig.posNoiseLevel * curand_normal(&rng);
+                vel[a * envConfig.dim + d] += envConfig.speedNoiseLevel * curand_normal(&rng);
+            }
+
+        // Update gates / laps / S
+        updateGates(envConfig, pos, prevPos, currentS, currentGates, laps, trackPts);
+
+        // Update belief from observed opponent action
+        int oppAgent = 1 - controlAgent;
+        updateBelief(
+            belief,
+            actions + oppAgent * envConfig.dim,
+            nomPidAction,
+            mc.oppPid,
+            mc.nModels,
+            envConfig.dim,
+            envConfig.maxAccel[oppAgent]);
+
+        if (predTheta == -1)
+        {
+            int conf = findConfident(belief, mc.nModels, mc.minConfidence);
+            if (conf != -1)
+            {
+                predTheta = conf;
+                branchingTime = t + 1;
+            }
+        }
+
+        // Failure checks
+
+        // 1. MPPI goes outside
+        if (isOutside(envConfig, pos + controlAgent * envConfig.dim, envConfig.minDist / 2.0f))
+        {
+            failed = 2;
+            break;
+        }
+
+        // 2. Collision
+        for (int a1 = 0; a1 < envConfig.nAgents && !failed; a1++)
+            for (int a2 = a1 + 1; a2 < envConfig.nAgents; a2++)
+            {
+                float dist2 = 0.0f;
+                for (int d = 0; d < envConfig.dim; d++)
+                {
+                    float dx = pos[a1 * envConfig.dim + d] - pos[a2 * envConfig.dim + d];
+                    dist2 += dx * dx;
+                }
+
+                if (dist2 < envConfig.minDist * envConfig.minDist)
+                {
+                    failed = 1;
+                    break;
+                }
+            }
+
+        // If MPPI wins, end rollout (but it does not count as a failure)
+
+        if (isOutside(envConfig, pos + (1 - controlAgent) * envConfig.dim, envConfig.minDist / 2.0f))
+            break;
+
+        bool shouldBreak = false;
+        for (int a = 0; a < envConfig.nAgents; a++)
+            if (laps[a] >= envConfig.nWinLaps)
+                shouldBreak = true;
+
+        if (shouldBreak)
+            break;
+    }
+
+    if (failed)
+        atomicAdd(failCount + failed - 1, 1u);
+
+    rngStates[s] = rng;
 }

@@ -91,6 +91,16 @@ struct EnvironmentConfig
     std::vector<float> unpackHeader(const void* buf, size_t len);   // returns trackPoints
 };
 
+struct VerifConfig
+{
+    int nVerifSamples;
+    float beta;
+
+    std::vector<int> K;     // assumed to be sorted
+
+    void unpackHeader(const void* buf, size_t len);
+};
+
 // dummy controller parameters
 struct DummyConfig {};
 

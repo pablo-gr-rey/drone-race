@@ -51,3 +51,20 @@ __global__ void clampNominalKernel(
     int nModels,
     int T,
     int dim);
+
+// Sample opponent models & dyamics ; if failed, atomicAdd 1 to failCount
+__global__ void verifyNominalFailureKernel(
+    int controlAgent,
+    int nVerif,
+    EnvironmentConfig envConfig,
+    MPPIConfig mc,
+    const float* __restrict__ initPos,
+    const float* __restrict__ initVel,
+    const float* __restrict__ initS,
+    const int* __restrict__ initLaps,
+    const int* __restrict__ initGates,
+    const float* __restrict__ initBelief,
+    const float* __restrict__ nominal,     // (nModels+1, T, dim)
+    const float* __restrict__ trackPts,
+    curandState* __restrict__ rngStates,
+    unsigned int* __restrict__ failCount);
