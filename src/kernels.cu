@@ -51,6 +51,8 @@ __global__ void fullRolloutKernel(
     const float* __restrict__ nominal,
     const float* __restrict__ noise,
     float* __restrict__ totalCosts,
+    int* __restrict__ branchesUsed,
+    int* __restrict__ branchesTime,
     curandState* __restrict__ rngStates,
     const float* __restrict__ trackPts)
 {
@@ -73,6 +75,14 @@ __global__ void fullRolloutKernel(
     totalCosts[s] = 0.0f;
     curandState rng = rngStates[s];
 
+    // initialize values
+    for (int theta = 0; theta < mc.nModels; theta++)
+    {
+        totalCosts[(theta + 1) * mc.nSamples + s] = INFINITY;
+        branchesUsed[theta * mc.nSamples + s] = -1;
+        branchesTime[theta * mc.nSamples + s] = mc.nTimesteps;
+    }
+
     // find out if we are already committed
     // if so, we only consider that plan (switch to normal MPPI); otherwise, cost at the end could incur slight perturbations for the other branches
 
@@ -81,7 +91,6 @@ __global__ void fullRolloutKernel(
 
     int initPredTheta = findConfident(belief, mc.nModels, mc.minConfidence);
 
-    // TODO: if there are many models, we could skip them if they have small probability
     for (int theta = 0; theta < mc.nModels; theta++)    // theta is the model the opponent is actually following
     {
         if (initPredTheta != -1 && theta != initPredTheta)
@@ -211,7 +220,7 @@ __global__ void fullRolloutKernel(
                     vel[a * envConfig.dim + d] += curand_normal(&rng) * envConfig.speedNoiseLevel;
                 }
 
-            updateGates(envConfig, pos, prevPos, currentS, currentGates, laps, trackPts);
+            updateGates(envConfig, pos, prevPos, currentS, currentGates, laps, trackPts, controlAgent, mc.gateTraversalMargin);
 
             // if agent won or is outside, or if there is a collision, stop rollout
             for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
@@ -249,28 +258,77 @@ __global__ void fullRolloutKernel(
 
         // actual cost is dependent on the probability that the opponent is actually following theta, ie. initBelief[theta], unless we are already committed
         if (initPredTheta == -1)
+        {
+            if (predTheta == -1)
+                branchesTime[theta * mc.nSamples + s] = mc.nTimesteps;
+            else
+                branchesTime[theta * mc.nSamples + s] = branchingTime;
+
             totalCosts[s] += initBelief[theta] * cost;
+        }
         else
+        {
+            branchesTime[theta * mc.nSamples + s] = 0;
             totalCosts[s] = cost;
+        }
+
+        branchesUsed[theta * mc.nSamples + s] = predTheta;
+        totalCosts[(theta + 1) * mc.nSamples + s] = cost;
     }
 
     rngStates[s] = rng;
 }
 
-// cuda reduce min
-void minReduceCUB(const float* __restrict__ d_costs,
-    float* __restrict__ d_minCost,
-    int N,
-    void* __restrict__ d_temp_storage,
-    size_t temp_storage_bytes)
+// mask costs as explained in controller.h
+__global__ void buildMaskedCostsKernel(
+    const float* __restrict__ costs,       // (nModels+1, N)
+    const int* __restrict__ branchUsed,    // (nModels, N)
+    const int* __restrict__ branchTime,    // (nModels, N)
+    const float* __restrict__ belief,      // (nModels)
+    float* __restrict__ maskedCosts,       // ((nModels+1) * T, N)
+    int nModels, int N, int T)
 {
-    CUDA_CHECK(cub::DeviceReduce::Min(
-        d_temp_storage,
-        temp_storage_bytes,
-        d_costs,
-        d_minCost,
-        N
-    ));
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = (nModels + 1) * T * N;
+    if (idx >= total)
+        return;
+
+    int s = idx % N;
+    int tmp = idx / N;
+    int tLocal = tmp % T;
+    int branchIdx = tmp / T;   // 0 = generic, k+1 = specialized k
+
+    bool eligible = false;
+
+
+    if (branchIdx == 0)
+    {
+        float coeff = 0.0f;
+        for (int theta = 0; theta < nModels; theta++)
+        {
+            int tb = branchTime[theta * N + s];
+            if (tLocal < tb)
+                coeff += belief[theta];
+        }
+        eligible = (coeff > 0.0f);
+    }
+    else
+    {
+        int k = branchIdx - 1;
+        int bu = branchUsed[k * N + s];
+        int tb = branchTime[k * N + s];
+        eligible = (bu == k && tb < T && tb + tLocal < T);
+    }
+
+    maskedCosts[idx] = eligible ? costs[branchIdx * N + s] : INFINITY;
+}
+
+// cuda reduce min
+void minReduceCUB(const float* __restrict__ d_in, float* __restrict__ d_out, int N, int nRows, void* __restrict__ d_temp_storage, size_t temp_storage_bytes)
+{
+    // since temporary storage size only depends on N (the size of the array to reduce), we can reuse it just fine
+    for (int r = 0; r < nRows; r++)
+        CUDA_CHECK(cub::DeviceReduce::Min(d_temp_storage, temp_storage_bytes, d_in + r * N, d_out + r, N));
 }
 
 // weighted average
@@ -330,6 +388,100 @@ __global__ void weightedAverageKernel(
     }
 }
 
+// we want to add the contribution of nominal + each branch based on its actual contribution to the sample
+// for example, if a given branch is never taken in a sample (belief does not get skewed enough), then the noise on that branch should not count towards the corresponding minimal
+// likewise, generic noise at time t should only be considered with a coefficient proportional to how much this noise actually influenced the cost (ie. sum of belief[theta] for theta whose branching time is > t)
+__global__ void weightedAverageKernelUnified(
+    const float* __restrict__ costs,       // (nModels+1, N)
+    const float* __restrict__ minCosts,    // (nModels+1)
+    const float* __restrict__ noise,       // (nModels+1, T, N, dim)
+    const int* __restrict__ branchUsed,    // (nModels, N)
+    const int* __restrict__ branchTime,    // (nModels, N)
+    const float* __restrict__ belief,      // (nModels)
+    float* __restrict__ nominal,           // (nModels+1, T, dim)
+    float invTemp,
+    int nModels, int N, int T, int dim,
+    float* __restrict__ nu)                // nModels: sum of weights for nominal[0], spec[theta, 0]
+{
+    int btd = blockIdx.x;
+    if (btd >= (nModels + 1) * T * dim)
+        return;
+
+    int d = btd % dim;
+    btd /= dim;
+    int tLocal = btd % T;
+    int branchIdx = btd / T;   // 0 = generic, k+1 = specialized branch k
+
+    extern __shared__ float sh[];
+    float* s_num = sh;
+    float* s_den = sh + blockDim.x;
+
+    float num = 0.0f;
+    float den = 0.0f;
+
+    float minC = minCosts[branchIdx * T + tLocal];
+
+    for (int s = threadIdx.x; s < N; s += blockDim.x)
+    {
+        float coeff = 0.0f;
+
+        if (branchIdx == 0)
+        {
+            // Generic branch at absolute time tLocal: used in each true-model rollout theta if tLocal < branchTime[theta, s]
+            for (int theta = 0; theta < nModels; theta++)
+            {
+                int tb = branchTime[theta * N + s];
+                if (tLocal < tb)
+                    coeff += belief[theta];
+            }
+        }
+        else
+        {
+            int k = branchIdx - 1;
+
+            int bu = branchUsed[k * N + s];
+            int tb = branchTime[k * N + s];
+
+            // Specialized branch k at local time tLocal: used only if rollout under true model k actually branched to k, and local time is still within horizon
+            if (bu == k && tb + tLocal < T)
+                coeff = 1.0f;
+        }
+
+        if (coeff > 0.0f)
+        {
+            float cost = costs[branchIdx * N + s];
+            float w = expf(-(cost - minC) / invTemp);
+            float eps = noise[((branchIdx * T + tLocal) * N + s) * dim + d];
+
+            num += w * coeff * eps;
+            den += w * coeff;
+        }
+    }
+
+    s_num[threadIdx.x] = num;
+    s_den[threadIdx.x] = den;
+    __syncthreads();
+
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1)
+    {
+        if (threadIdx.x < stride)
+        {
+            s_num[threadIdx.x] += s_num[threadIdx.x + stride];
+            s_den[threadIdx.x] += s_den[threadIdx.x + stride];
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0)
+    {
+        if (s_den[0] > 1e-30f)
+            nominal[(branchIdx * T + tLocal) * dim + d] += s_num[0] / s_den[0];
+
+        if (threadIdx.x == 0 && tLocal == 0 && d == 0)
+            nu[branchIdx] = s_den[0];
+    }
+}
+
 // clamp nominals
 __global__ void clampNominalKernel(
     float* nominal,
@@ -365,6 +517,7 @@ __global__ void verifyNominalFailureKernel(
     int nVerif,
     EnvironmentConfig envConfig,
     MPPIConfig mc,
+    int nTimesteps,
     const float* __restrict__ initPos,
     const float* __restrict__ initVel,
     const float* __restrict__ initS,
@@ -422,7 +575,7 @@ __global__ void verifyNominalFailureKernel(
     int failed = 0;     // 1 if collision, 2 if outside
 
     // Dynamics rollout
-    for (int t = 0; t < mc.nTimesteps && !failed; t++)
+    for (int t = 0; t < nTimesteps && !failed; t++)
     {
         // Save previous positions for gate update
         for (int i = 0; i < envConfig.nAgents * envConfig.dim; i++)

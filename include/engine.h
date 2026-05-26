@@ -11,7 +11,7 @@
 class SimulationEngine
 {
 public:
-    SimulationEngine(const EnvironmentConfig& cfg, std::vector<float> trackPoints, const VerifConfig& verifConfig, const std::vector<ControllerSpec>& specs);
+    SimulationEngine(const EnvironmentConfig& cfg, std::vector<float> trackPoints, const VerifConfig& verifConfig, const std::vector<ControllerSpec>& specs, int seed);
     ~SimulationEngine();
 
     void sendState(zmq::socket_t& sock, int step);
@@ -30,6 +30,7 @@ private:
     std::normal_distribution<float> nd{ 0.0f, 1.0f };
 
     float* d_trackPoints;   // shared across all MPPI controllers
+    int seed;
 
     // state
     std::vector<float> pos;   // (nAgents * dim) positions (x1 y1 .. x2 y2 ..)

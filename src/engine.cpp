@@ -19,13 +19,15 @@ SimulationEngine::SimulationEngine(
     const EnvironmentConfig& config,
     std::vector<float> trackPts,
     const VerifConfig& vConfig,
-    const std::vector<ControllerSpec>& specs)
-    : rng(42)
+    const std::vector<ControllerSpec>& specs,
+    int s)
+    : rng(s)
 {
     hasCollision = false;
     anyWinner = -1;
     anyOutside = -1;
     d_trackPoints = nullptr;
+    seed = s;
 
     trackPoints = trackPts;
     envConfig = config;
@@ -83,7 +85,7 @@ std::unique_ptr<Controller> SimulationEngine::makeController(const ControllerSpe
                 if (d_trackPoints == nullptr)
                     allocTrack();
 
-                ctrl = std::make_unique<MPPIController>(envConfig, contConfig, verifConfig, d_trackPoints);
+                ctrl = std::make_unique<MPPIController>(envConfig, contConfig, verifConfig, d_trackPoints, seed);
             }
 
             if (!useS)       // only PID should update its S (otherwise, it is useless for MPPI or dummy)
@@ -191,6 +193,8 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
                             // copy everything and break (i.e. stop simulation)
                             for (int tt = t + 1; tt < mppiConfig.nTimesteps; tt++)
                                 std::copy(pos.begin(), pos.end(), fullPos.begin() + tt * envConfig.nAgents * envConfig.dim);
+
+                            std::cout << "STOPPING SIMULATION at step " << t << " collision " << checkCollision() << " outside " << checkOutside() << " winner " << checkWinner() << std::endl;
 
                             break;
                         }

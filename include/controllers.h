@@ -48,7 +48,7 @@ class MPPIController : public Controller
 {
 public:
     // if belief is not given, assumed uniform; if nominal (size (nModels+1) * T * dim) is not given, assumed 0
-    MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc, const VerifConfig& vConfig, float* d_trackPoints, std::optional<std::vector<float>> nominal = std::nullopt);
+    MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc, const VerifConfig& vConfig, float* d_trackPoints, int s, std::optional<std::vector<float>> nominal = std::nullopt);
     ~MPPIController();
     void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng, std::optional<std::vector<float>> pastAction = std::nullopt, std::optional<std::vector<float>> pastPos = std::nullopt, std::optional<std::vector<float>> pastVel = std::nullopt, std::optional<std::vector<float>> pastS = std::nullopt) override;
 
@@ -60,11 +60,13 @@ public:
     std::vector<uint> failCount;    // size 2: nColl, nOutside (only MPPI outside is counted)
     double epsilon;
 
-    float min_nu = 0.005;    // in terms of proportion of nSamples   // TODO: tune this better? (previously: 0.01, 0.05)
-    float max_nu = 0.01;
+    float min_nu = 0.0005;    // in terms of proportion of nSamples   // TODO: tune this better?
+    float max_nu = 0.001;
 private:
     EnvironmentConfig envConfig;
     VerifConfig verifConfig;
+
+    int seed;
 
     // Device memory
 
@@ -78,11 +80,14 @@ private:
 
     float* d_noise = nullptr;  // (nModels+1, T, N, dim)
 
-    float* d_costs = nullptr;  // (N)
+    float* d_costs = nullptr;  // (nModels+1, N)  d_costs[0, s] = averaged cost of sample s; d_costs[theta+1, s] = cost of sample s if opp is following theta
+    int* d_branchUsed = nullptr;    // (nModels, N) d_branchUsed[theta, s] = -1 if MPPI did not switch, value of model it switched to otherwise (usually theta, but not necessarily)
+    int* d_branchTime = nullptr;    // (nModels, N) d_branchTime[theta, s] = branching time (or T if no branching)
 
     float* d_nominal = nullptr;  // (nModels+1, T, dim)
-    float* d_minCost = nullptr;  // scalar
-    float* d_nu = nullptr;  // scalar (sum of costs: useful for monitoring & live updating inv temp)
+    float* d_maskedCosts = nullptr;  // (nModels+1, T, nSamples) equal to d_costs for given branch/timestep/sample if it should actually count (coeff = 1.0 in weightedAverageKernel) or +INF otherwise (to do a meaningful min cost reduction)
+    float* d_minCosts = nullptr;  // (nModels+1, T) (min cost for nominal + each branch at each timestep)
+    float* d_nu = nullptr;  // (nModels+1) (sum of weights for nominal + each branch: useful for monitoring & live updating inv temp)
 
     float* d_trackPts = nullptr;  // cached on device
 
@@ -166,7 +171,7 @@ HD INLINE void computePIDAction(
             float dist = sqrtf(dist2) + 1e-8f;
             if (dist < pid.repulsionDistFact * envConfig.minDist)
             {
-                float scale = pid.repulsionFactor / powf(dist, pid.repulsionPower + 1.0f);
+                float scale = pid.repulsionFactor / powf(dist / envConfig.minDist, pid.repulsionPower + 1.0f);
                 for (int d = 0; d < envConfig.dim; d++)
                     outAction[d] -= scale * diff[d];
             }

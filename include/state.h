@@ -217,7 +217,7 @@ HD INLINE float fastProjectOnTrack(const float* __restrict__ trackPoints,
 HD INLINE void updateBelief(float* __restrict__ belief, const float* __restrict__ oppAction, const float* __restrict__ nomAction, const PIDConfig* __restrict__ params, int nModels, int dim, float maxPIDaccel)
 {
     float sum = 0.0f;
-    const float sigmaEnv = 0.0f;    // account for clamping + various imperfections
+    const float sigmaEnv = 0.2f;    // account for clamping + various imperfections
 
     // opponent is following a normal distribution around nomAction, with given stddev
     for (int theta = 0; theta < nModels; theta++)
@@ -238,7 +238,7 @@ HD INLINE void updateBelief(float* __restrict__ belief, const float* __restrict_
             sqDist += dx * dx;
         }
 
-        float sigma = sigmaEnv + params[theta].actionNoise;     // actually, it should be sqrt(sigmaEnv**2 + actionNoise**2), but it is heuristic anyway...
+        float sigma = sqrtf(sigmaEnv * sigmaEnv + params[theta].actionNoise * params[theta].actionNoise);
         // d-dimensional normal law with diagonal sigma matrix (sigma^2, ...)
 
         // TODO: prob better to use other pow since dimension is integer & known (maybe even more efficient if dimension is known at compile time)
@@ -313,7 +313,8 @@ HD INLINE bool isOutside(const EnvironmentConfig& envConfig, const float* __rest
     return false;
 }
 
-HD INLINE void updateGates(const EnvironmentConfig& envConfig, const float* __restrict__ pos, const float* __restrict__ prevPos, float* __restrict__ currentS, int* __restrict__ currentGates, int* __restrict__ nLaps, const float* __restrict__ trackPoints)
+// if agent == marginAgent, use additional margin (we restrict to passing within gateRadius * margin of the gate center)
+HD INLINE void updateGates(const EnvironmentConfig& envConfig, const float* __restrict__ pos, const float* __restrict__ prevPos, float* __restrict__ currentS, int* __restrict__ currentGates, int* __restrict__ nLaps, const float* __restrict__ trackPoints, int marginAgent = -1, float margin = 0.f)
 {
     for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
     {
@@ -353,7 +354,11 @@ HD INLINE void updateGates(const EnvironmentConfig& envConfig, const float* __re
             sqDist += dx * dx;
         }
 
-        if (sqDist <= envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate])
+        float rad = envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate];
+        if (iAgent == marginAgent)
+            rad *= margin * margin;
+
+        if (sqDist <= rad)
         {
             currentGates[iAgent]++;
             if (currentGates[iAgent] == envConfig.nGates)
@@ -365,12 +370,9 @@ HD INLINE void updateGates(const EnvironmentConfig& envConfig, const float* __re
     }
 }
 
-__device__ INLINE int sampleModelFromBelief(
-    const float* __restrict__ belief,
-    int nModels,
-    curandState* __restrict__ rng)
+__device__ INLINE int sampleModelFromBelief(const float* __restrict__ belief, int nModels, curandState* __restrict__ rng)
 {
-    float u = curand_uniform(rng);   // in (0, 1]
+    float u = curand_uniform(rng);
     float cdf = 0.0f;
 
     for (int k = 0; k < nModels; k++)

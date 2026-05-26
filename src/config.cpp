@@ -2,7 +2,7 @@
 #include <iostream>
 #include <format>
 
-std::vector<float> EnvironmentConfig::unpackHeader(const void* buf, size_t len)
+std::pair<int, std::vector<float>> EnvironmentConfig::unpackHeader(const void* buf, size_t len)
 {
     Reader reader(buf, len);
 
@@ -58,6 +58,8 @@ std::vector<float> EnvironmentConfig::unpackHeader(const void* buf, size_t len)
         throw std::runtime_error(std::format("Received config for {} obstacles but MAX_OBSTACLES is set to {}. Edit this constant and recompile", nObstacles, MAX_OBSTACLES));
     reader.readFloatArray(obstacles);
 
+    int seed = reader.readInt32();
+
     std::vector<float> trackPoints = reader.readFloatArray();
 
     reader.assertFinished();
@@ -67,7 +69,7 @@ std::vector<float> EnvironmentConfig::unpackHeader(const void* buf, size_t len)
         std::cout << gateVectors[i] << (i % dim ? " " : ";  ");
     std::cout << "\n";
 
-    return trackPoints;
+    return { seed, trackPoints };
 }
 
 void VerifConfig::unpackHeader(const void* buf, size_t len)
@@ -80,6 +82,7 @@ void VerifConfig::unpackHeader(const void* buf, size_t len)
 
     nVerifSamples = reader.readInt32();
     beta = reader.readFloat();
+    horizon = reader.readInt32();
 
     K = reader.readIntArray();
 

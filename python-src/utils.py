@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from enum import IntEnum
+import random
 from typing import TYPE_CHECKING, Optional
 
 import numpy as np
@@ -123,6 +124,8 @@ class GateEnvironmentConfig:
     nObstacles: int = 0
     obstacles: np.ndarray = field(default_factory=lambda: np.array([]))
 
+    seed: int = 42  # if -1, then it will be set to a random value
+
     trackPoints: Optional[np.ndarray] = None
 
     def __post_init__(self) -> None:
@@ -159,11 +162,15 @@ class GateEnvironmentConfig:
             self.arenaMin = np.min(self.gateCenters, axis=0) - np.max(self.gateRadius) * 5
             self.arenaMax = np.max(self.gateCenters, axis=0) + np.max(self.gateRadius) * 5
 
+        if self.seed == -1:
+            self.seed = random.randrange(2**31)
+
 
 @dataclass
 class VerifConfig:
     N: int = int(1e6)
     beta: float = 1e-6
+    horizon: int = 40
 
     K: np.ndarray = field(default_factory=lambda: np.array([]))
 

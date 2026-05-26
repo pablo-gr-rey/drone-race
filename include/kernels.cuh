@@ -24,10 +24,20 @@ __global__ void fullRolloutKernel(
     const float* __restrict__ nominal,
     const float* __restrict__ noise,
     float* __restrict__ totalCosts,
+    int* __restrict__ branchUsed,
+    int* __restrict__ branchTime,
     curandState* __restrict__ rngStates,
     const float* __restrict__ trackPts);
 
-void minReduceCUB(const float* __restrict__ d_costs, float* __restrict__ d_minCost, int N, void* __restrict__ d_temp_storage, size_t temp_storage_bytes);
+__global__ void buildMaskedCostsKernel(
+    const float* __restrict__ costs,       // (nModels+1, N)
+    const int* __restrict__ branchUsed,    // (nModels, N)
+    const int* __restrict__ branchTime,    // (nModels, N)
+    const float* __restrict__ belief,      // (nModels)
+    float* __restrict__ maskedCosts,       // ((nModels+1) * T, N)
+    int nModels, int N, int T);
+
+void minReduceCUB(const float* __restrict__ d_in, float* __restrict__ d_out, int N, int nRows, void* __restrict__ d_temp_storage, size_t temp_storage_bytes);
 
 // Weighted average of noise
 // One block per (timestep * dim) entry.
@@ -44,6 +54,19 @@ __global__ void weightedAverageKernel(
     int    dim,
     float* __restrict__ nu);
 
+__global__ void weightedAverageKernelUnified(
+    const float* __restrict__ costs,       // (nModels+1, N)
+    const float* __restrict__ minCosts,    // (nModels+1)
+    const float* __restrict__ noise,       // (nModels+1, T, N, dim)
+    const int* __restrict__ branchUsed,    // (nModels, N)
+    const int* __restrict__ branchTime,    // (nModels, N)
+    const float* __restrict__ belief,      // (nModels)
+    float* __restrict__ nominal,           // (nModels+1, T, dim)
+    float invTemp,
+    int nModels, int N, int T, int dim,
+    float* __restrict__ nu                  // (nModels+1)
+);
+
 // Clamp nominal actions to maxAccel (avoids them drifting to high-magnitude areas from which it's difficult to recover)
 __global__ void clampNominalKernel(
     float* nominal,
@@ -58,6 +81,7 @@ __global__ void verifyNominalFailureKernel(
     int nVerif,
     EnvironmentConfig envConfig,
     MPPIConfig mc,
+    int nTimesteps,
     const float* __restrict__ initPos,
     const float* __restrict__ initVel,
     const float* __restrict__ initS,

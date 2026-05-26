@@ -17,7 +17,7 @@
 #include <format>
 
 // Construction
-MPPIController::MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc, const VerifConfig& vC, float* d_trackPoints, std::optional<std::vector<float>> nominal)
+MPPIController::MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc, const VerifConfig& vC, float* d_trackPoints, int s, std::optional<std::vector<float>> nominal)
 {
     std::cout << "MPPI INIT" << std::endl;
     name = "MPPI";
@@ -25,6 +25,7 @@ MPPIController::MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc,
     mppiConfig = mc;
     verifConfig = vC;
     d_trackPts = d_trackPoints;
+    seed = s;
 
     h_belief.assign(mc.initBelief, mc.initBelief + mc.nModels);
 
@@ -68,14 +69,17 @@ void MPPIController::allocDevice()
     CUDA_CHECK(cudaMalloc(&d_noise, (nModels + 1) * T * N * dim * sizeof(float)));
 
     // Costs
-    CUDA_CHECK(cudaMalloc(&d_costs, N * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_costs, (nModels + 1) * N * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_branchUsed, nModels * N * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_branchTime, nModels * N * sizeof(int)));
 
     // Nominal action: (nModels+1, T, dim)
     CUDA_CHECK(cudaMalloc(&d_nominal, (nModels + 1) * T * dim * sizeof(float)));
 
     // Scalar for min reduction
-    CUDA_CHECK(cudaMalloc(&d_minCost, sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_nu, sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_minCosts, (nModels + 1) * T * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_maskedCosts, (nModels + 1) * T * N * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_nu, (nModels + 1) * sizeof(float)));
 
     // Per-sample RNG states
     CUDA_CHECK(cudaMalloc(&d_rng, N * sizeof(curandState)));
@@ -89,10 +93,10 @@ void MPPIController::allocDevice()
     // Initialise RNG
     int blk = 256;
     int grd = (N + blk - 1) / blk;
-    initRNGKernel << <grd, blk >> > (d_rng, 12345ULL, N);
+    initRNGKernel << <grd, blk >> > (d_rng, seed, N);
 
     int grdVerif = (verifConfig.nVerifSamples + blk - 1) / blk;
-    initRNGKernel << <grdVerif, blk >> > (d_verif_rng, 12346ULL, verifConfig.nVerifSamples);       // not the same seed as above! (should be independant)
+    initRNGKernel << <grdVerif, blk >> > (d_verif_rng, seed + 1, verifConfig.nVerifSamples);       // not the same seed as above! (should be independant)
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
@@ -144,7 +148,8 @@ void MPPIController::freeDevice()
     safe_free(d_noise);
     safe_free(d_costs);
     safe_free(d_nominal);
-    safe_free(d_minCost);
+    safe_free(d_minCosts);
+    safe_free(d_maskedCosts);
     safe_free(d_nu);
     safe_free(d_rng);
     safe_free(d_temp_storage);
@@ -191,15 +196,20 @@ void MPPIController::getControl(int agent,
     if (pastAction)
     {
         // compute nominal actions
-        std::vector<float> nomPidAction(mppiConfig.nModels * envConfig.dim);
+        std::vector<float> nomPidAction(mppiConfig.nModels * dim);
 
         for (int thetaT = 0; thetaT < mppiConfig.nModels; thetaT++)
         {
             // std::cout << "computing PID action for model " << thetaT << std::endl;
-            computePIDAction(1 - agent, pastPos->data(), pastVel->data(), pastS->data(), envConfig, mppiConfig.oppPid[thetaT], engine->trackPoints.data(), nomPidAction.data() + thetaT * envConfig.dim);
+            computePIDAction(1 - agent, pastPos->data(), pastVel->data(), pastS->data(), envConfig, mppiConfig.oppPid[thetaT], engine->trackPoints.data(), nomPidAction.data() + thetaT * dim);
         }
 
-        updateBelief(h_belief.data(), pastAction->data() + (1 - agent) * envConfig.dim, nomPidAction.data(), mppiConfig.oppPid, mppiConfig.nModels, envConfig.dim, envConfig.maxAccel[1 - agent]);
+        updateBelief(h_belief.data(), pastAction->data() + (1 - agent) * dim, nomPidAction.data(), mppiConfig.oppPid, mppiConfig.nModels, dim, envConfig.maxAccel[1 - agent]);
+
+        float sqSum = 0.0f;
+        for (int d = 0; d < dim; d++)
+            sqSum += (nomPidAction[d] - nomPidAction[dim + d]) * (nomPidAction[d] - nomPidAction[dim + d]);
+        std::cout << "Norm of difference between afraid and bold nominal: " << sqrt(sqSum) << std::endl;
     }
 
     std::cout << "MPPI belief: ";
@@ -208,16 +218,17 @@ void MPPIController::getControl(int agent,
     std::cout << "\n";
 
     // 1. upload current state
-    CUDA_CHECK(cudaMemcpy(d_pos, pos, (size_t) envConfig.nAgents * envConfig.dim * sizeof(float), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_speed, speed, (size_t) envConfig.nAgents * envConfig.dim * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_pos, pos, (size_t) envConfig.nAgents * dim * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_speed, speed, (size_t) envConfig.nAgents * dim * sizeof(float), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_S, S, envConfig.nAgents * envConfig.nRacelines * sizeof(float), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_laps, laps, envConfig.nAgents * sizeof(int), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_currentGates, currentGates, envConfig.nAgents * sizeof(int), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_belief, h_belief.data(), nModels * sizeof(float), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemset(d_failCount, 0, 2 * sizeof(uint)));
+    CUDA_CHECK(cudaMemset(d_nu, 0, (nModels + 1) * sizeof(float)));
 
-    float initMin = FLT_MAX;
-    CUDA_CHECK(cudaMemcpy(d_minCost, &initMin, sizeof(float), cudaMemcpyHostToDevice));
+    // float initMin = FLT_MAX;
+    // CUDA_CHECK(cudaMemcpy(d_minCosts, &initMin, sizeof(float), cudaMemcpyHostToDevice));     // now this is already done by buildMaskedCostsKernel
 
     // 2. generate all noise at once: (T, N, dim)
     generateNoiseKernel << <grd, blk >> > (
@@ -241,7 +252,9 @@ void MPPIController::getControl(int agent,
         d_pos, d_speed, d_S, d_laps, d_currentGates, d_belief,        // initial state (broadcast by reads)
         d_nominal,                      // (T, dim)
         d_noise,                        // (T, N, dim)
-        d_costs,                        // (N,) output: total cost per sample
+        d_costs,
+        d_branchUsed,
+        d_branchTime,
         d_rng,
         d_trackPts);
 
@@ -250,12 +263,39 @@ void MPPIController::getControl(int agent,
     CUDA_CHECK(cudaDeviceSynchronize());
 #endif
 
-    // 4. find minimum cost (parallel reduction)
+    // 4. compute masked costs & find minimum costs (parallel reduction)
 
     // int rGrid = (N + blk * 2 - 1) / (blk * 2);
     // minReduceKernel << <rGrid, blk, blk * sizeof(float) >> > (
-    //     d_costs, d_minCost, N);
-    minReduceCUB(d_costs, d_minCost, N, d_temp_storage, temp_storage_bytes);
+    //     d_costs, d_minCosts, N);
+    // minReduceCUB(d_costs, d_minCosts, N, nModels, d_temp_storage, temp_storage_bytes);
+
+    int maskTotal = (nModels + 1) * T * N;
+    int maskGrd = (maskTotal + blk - 1) / blk;
+
+    buildMaskedCostsKernel << <maskGrd, blk >> > (
+        d_costs,         // (nModels+1, N)
+        d_branchUsed,    // (nModels, N)
+        d_branchTime,    // (nModels, N)
+        d_belief,        // (nModels)
+        d_maskedCosts,   // ((nModels+1) * T, N)
+        nModels, N, T
+        );
+
+#ifdef DEBUG
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+
+    // 4.5 reduce mins over each (branch, time) row
+    minReduceCUB(
+        d_maskedCosts,
+        d_minCosts,
+        N,
+        (nModels + 1) * T,
+        d_temp_storage,
+        temp_storage_bytes
+    );
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
@@ -264,10 +304,15 @@ void MPPIController::getControl(int agent,
     // 5. Weighted average of noise -> update nominal action
     //    One block per (timestep * dim) entry.
     int wGrid = (nModels + 1) * T * dim;
-    weightedAverageKernel << <wGrid, blk, 2 * blk * sizeof(float) >> > (
-        d_costs, d_noise, d_nominal,
-        d_minCost, mppiConfig.invTemperature,
-        nModels, N, T, dim, d_nu);
+    // weightedAverageKernel << <wGrid, blk, 2 * blk * sizeof(float) >> > (
+    //     d_costs, d_noise, d_nominal,
+    //     d_minCosts, mppiConfig.invTemperature,
+    //     nModels, N, T, dim, d_nu);
+    weightedAverageKernelUnified << <wGrid, blk, 2 * blk * sizeof(float) >> > (
+        d_costs, d_minCosts, d_noise, d_branchUsed, d_branchTime,
+        d_belief, d_nominal, mppiConfig.invTemperature,
+        nModels, N, T, dim, d_nu
+        );
 
 
 #ifdef DEBUG
@@ -293,7 +338,7 @@ void MPPIController::getControl(int agent,
     // 5.75 Get guarantees on our nominal action
     int verifGrd = (verifConfig.nVerifSamples + blk - 1) / blk;
     verifyNominalFailureKernel << <verifGrd, blk >> > (
-        agent, verifConfig.nVerifSamples, envConfig, mppiConfig,
+        agent, verifConfig.nVerifSamples, envConfig, mppiConfig, verifConfig.horizon,
         d_pos, d_speed, d_S, d_laps, d_currentGates, d_belief,
         d_nominal, d_trackPts, d_verif_rng, d_failCount
         );
@@ -307,9 +352,9 @@ void MPPIController::getControl(int agent,
     // TODO: we don't need to copy everything, we could just copy the interesting action and do the shift on GPU if we are not interested in MPPI predictions (could be argument to engine)
     CUDA_CHECK(cudaMemcpy(h_nominal.data(), d_nominal, h_nominal.size() * sizeof(float), cudaMemcpyDeviceToHost));
 
-    float hostMin, nu;
-    CUDA_CHECK(cudaMemcpy(&hostMin, d_minCost, sizeof(float), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(&nu, d_nu, sizeof(float), cudaMemcpyDeviceToHost));
+    std::vector<float> hostMin((nModels + 1) * T), nu(nModels + 1);
+    CUDA_CHECK(cudaMemcpy(hostMin.data(), d_minCosts, (nModels + 1) * T * sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(nu.data(), d_nu, (nModels + 1) * sizeof(float), cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaMemcpy(failCount.data(), d_failCount, 2 * sizeof(uint), cudaMemcpyDeviceToHost));
 
     computeEpsilon();
@@ -328,17 +373,20 @@ void MPPIController::getControl(int agent,
         std::cout << outAction[d] << " ";
     std::cout << std::endl;
 
-    std::cout << "Minimum cost: " << hostMin << std::endl;
-    std::cout << "Sum of computed sample costs w_k (nu): " << nu << "\n";
-    if (nu > max_nu * (float) N)
+    float usedNu = nu[predTheta + 1];
+    std::cout << "Minimum cost (for submitted action): " << hostMin[(predTheta + 1) * T] << std::endl;
+    std::cout << "Sum of computed sample costs w_k (nu) (for submitted action): " << usedNu << "\n";
+    if (usedNu > max_nu * (float) N)
     {
         std::cout << "\tdecreasing inverse temperature from " << mppiConfig.invTemperature << " to ";
+        // mppiConfig.invTemperature *= usedNu > 2 * max_nu * (float) N ? 0.5f : 0.9f;
         mppiConfig.invTemperature *= 0.9f;
         std::cout << mppiConfig.invTemperature << "\n";
     }
-    else if (nu < min_nu * (float) N)
+    else if (usedNu < min_nu * (float) N)
     {
         std::cout << "\tincreasing inverse temperature from " << mppiConfig.invTemperature << " to ";
+        // mppiConfig.invTemperature *= usedNu < 0.5f * min_nu * (float) N ? 2.0f : 1.2f;
         mppiConfig.invTemperature *= 1.2f;
         std::cout << mppiConfig.invTemperature << "\n";
     }

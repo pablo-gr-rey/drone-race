@@ -516,11 +516,11 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig
     pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=1, actionNoise=2)
 
     mppiconfig = MPPIConfig(
-        nSamples=2**14,
+        nSamples=2**15,
         nTimesteps=60,
         inv_temperature=10,
         samplingNoise=3,
-        gateTraversalMargin=0.95,
+        gateTraversalMargin=0.9,  # restrict 5% on each side
         collDistFactor=1.1,
         # collDistFactor=1.0,
         # collDistFactor=1.3,
@@ -584,7 +584,7 @@ def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig
         gateCenters=gateCenters,
         gateVectors=gateVectors,
         gateRadius=gateRadius,
-        minDist=1.8,
+        minDist=1.9,
         arenaMin=np.array([-0.1 * length, -fullHeight]),
         arenaMax=np.array([1.1 * length, fullHeight]),
         nObstacles=2,
@@ -603,18 +603,20 @@ def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig
     config.initnLaps = np.zeros(nAgents)
     config.initGates = np.array([1, 1])
 
-    pid0 = PIDConfig(kp=5, kd=20, repulsionFactor=120, racelineIndex=0, actionNoise=2, repulsionDistFactor=2)
-    pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=0, racelineIndex=0, actionNoise=2, repulsionDistFactor=2)
+    pid0 = PIDConfig(
+        kp=5, kd=20, repulsionFactor=120, racelineIndex=0, actionNoise=1, repulsionDistFactor=2.5, repulsionPower=1.5
+    )
+    pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=0, racelineIndex=0, actionNoise=1, repulsionDistFactor=2.5)
 
     mppiconfig = MPPIConfig(
-        nSamples=100000,
+        nSamples=2**18,
         nTimesteps=60,
         inv_temperature=10,
         samplingNoise=3,
         gateTraversalMargin=0.95,
         collDistFactor=1.1,
         # collDistFactor=1.3,
-        finalAdvWeight=200,
+        finalAdvWeight=50000,
         # finalAdvWeight=0,
         # finalSpeedWeight=50,
         finalSpeedWeight=0,
@@ -628,8 +630,8 @@ def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig
         boundaryThresholdFactor=2,
         oppOutsideCost=0,
         # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
-        outsideCost=1000000,
-        collisionCost=1000000,
+        outsideCost=1e6,
+        collisionCost=1e6,
         winCost=100000,
         minConfidence=0.95,
         oppKind=CONTROLLER_TYPE.CONT_PID,
@@ -649,8 +651,8 @@ def mainGate():
 
     # dummyconfig = DummyConfig()
 
-    cont_configs: list[ControllerConfig] = [pid0, mppiconfig]
-    # cont_configs: list[ControllerConfig] = [pid1, mppiconfig]
+    # cont_configs: list[ControllerConfig] = [pid0, mppiconfig]
+    cont_configs: list[ControllerConfig] = [pid1, mppiconfig]
 
     # cont_configs: list[ControllerConfig] = [mppiconfig, pid0]
     # cont_configs: list[ControllerConfig] = [mppiconfig, pid1]
@@ -661,7 +663,7 @@ def mainGate():
     # cont_configs: list[ControllerConfig] = [mppiconfig, blindpidconfig]
     # cont_configs: list[ControllerConfig] = [mppiconfig] + [pidconfig] * (nAgents - 1)  # type: ignore
 
-    verifConfig = VerifConfig(2**14, 1e-6)
+    verifConfig = VerifConfig(N=2**14, beta=1e-6)
     print(verifConfig.K)
 
     envConfig.sendStates = True

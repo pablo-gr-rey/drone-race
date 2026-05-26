@@ -88,13 +88,14 @@ struct EnvironmentConfig
     EnvironmentConfig()
     {}
 
-    std::vector<float> unpackHeader(const void* buf, size_t len);   // returns trackPoints
+    std::pair<int, std::vector<float>> unpackHeader(const void* buf, size_t len);   // returns (seed, trackPoints)
 };
 
 struct VerifConfig
 {
     int nVerifSamples;
     float beta;
+    int horizon;
 
     std::vector<int> K;     // assumed to be sorted
 
