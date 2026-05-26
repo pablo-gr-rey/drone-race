@@ -8,10 +8,10 @@ dependencies:
   - pip
   - cppzmq
   - zeromq
-  - cuda=13.2
+  - cuda=12.9
   - boost-cpp
-  - gxx_linux-64=15
-  - gcc_linux-64=15
+  - gxx_linux-64=13
+  - gcc_linux-64=13
   - cmake
   - conda-forge::ncurses
   - pip:
