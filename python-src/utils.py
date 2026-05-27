@@ -261,3 +261,49 @@ class MPPIConfig(ControllerConfig):
             self.initBelief = np.full(self.nModels, 1.0 / self.nModels)
 
         super().__post_init__()
+
+
+@dataclass
+class MPPIStatePredInfo:
+    branchTime: int
+    predTheta: int
+    fullPos: np.ndarray
+    stopReason: EVENT_TYPE
+    stopTime: int
+    stopAgent: int
+
+
+@dataclass
+class MPPIStateInfo:
+    iCont: int
+    belief: np.ndarray
+    failCount: np.ndarray
+    epsilon: float
+
+    nModels: int
+    preds: list[MPPIStatePredInfo] = field(metadata={"len": "nModels"})
+
+
+@dataclass
+class FullStateInfo:
+    step: int
+    pos: np.ndarray
+    speed: np.ndarray
+    currentS: np.ndarray
+    nLaps: np.ndarray
+    currentGates: np.ndarray
+
+    nMppiCont: int
+    mppiInfo: list[MPPIStateInfo] = field(metadata={"len": "nMppiCont"})
+
+    #     int,
+
+
+#     np.ndarray,
+#     np.ndarray,
+#     np.ndarray,
+#     np.ndarray,
+#     np.ndarray,
+#     Optional[tuple[int, np.ndarray, np.ndarray, float, list[tuple[int, int, np.ndarray]]]],
+# ]:
+#     "Return (step, pos, vel, currentS, nLaps, currentGates, Optional[iMppi, belief, failCount, eps, list[(branchingTime, predTheta, fullPos, )]]) from bytes"

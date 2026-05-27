@@ -16,7 +16,7 @@ from matplotlib.transforms import Bbox
 from matplotlib.widgets import Button, Slider, TextBox
 from PIL import Image
 from tqdm import tqdm
-from utils import GateEnvironmentConfig, MPPIConfig, VerifConfig
+from utils import EVENT_TYPE, FullStateInfo, GateEnvironmentConfig, MPPIConfig, VerifConfig
 
 
 class EnvironmentRenderer:
@@ -51,14 +51,7 @@ class EnvironmentRenderer:
         self.mppiConfig = mppiConfig
         self.renderTrails = renderTrails
 
-        self.posLog: list[np.ndarray] = []
-        self.velLog: list[np.ndarray] = []
-
-        self.sLog: list[np.ndarray] = []
-        self.nLapsLog: list[np.ndarray] = []
-        self.currentGatesLog: list[np.ndarray] = []
-
-        self.beliefLog: list[tuple[int, np.ndarray, np.ndarray, float, list[tuple[int, int, np.ndarray]]]] = []
+        self.stateLog: list[FullStateInfo] = []
 
         self.collision = False
         self.winner: Optional[int] = None
@@ -125,7 +118,7 @@ class EnvironmentRenderer:
                 (
                     self.ax.plot([], color=self.pred_colors[0], marker=None, linewidth=4, alpha=0.8)[0],
                     self.ax.plot([], color=self.pred_colors[iPred + 1], marker=None, linewidth=4, alpha=0.8)[0],
-                    self.ax.plot([], color=self.pred_colors[iPred + 1], marker=None, linewidth=4, alpha=0.8, linestyle="-.")[0],
+                    self.ax.plot([], color=self.pred_colors[iPred + 1], marker=None, linewidth=3, alpha=0.8, linestyle="-.")[0],
                 )
             )
 
@@ -140,6 +133,13 @@ class EnvironmentRenderer:
             circ = Circle((px, py), radius=self.envConfig.minDist / 2, fill=True, color=color, linestyle="--", alpha=0.3)
             self.circles.append(circ)
             self.ax.add_patch(circ)
+
+        # crash marker (initially empty)
+        maxCollMarkers = self.nAgents * len(self.oppNames)
+        self.collMarkers = [
+            self.ax.plot([], [], marker="*", markersize=20, color="yellow", markeredgecolor="red", markeredgewidth=1, zorder=5)[0]
+            for i in range(maxCollMarkers)
+        ]
 
         bmin, bmax = self.envConfig.arenaMin, self.envConfig.arenaMax
         self.ax.set_xlim(xmin=bmin[self.axis[0]], xmax=bmax[self.axis[0]])  # type: ignore
@@ -222,7 +222,7 @@ class EnvironmentRenderer:
                 label.set_color(color)
 
         # UI: slider, play, save GIF, textbox and zoom
-        max_idx = max(1, len(self.posLog) - 1)
+        max_idx = max(1, len(self.stateLog) - 1)
         self.slider = Slider(self.fig.add_subplot(gs_ui[0]), "Time", 0, max_idx, valinit=0, valstep=1)
 
         self.pause_button = Button(self.fig.add_subplot(gs_ui[2]), "Pause")
@@ -325,17 +325,17 @@ class EnvironmentRenderer:
         return agent * self.envConfig.dim + coord
 
     def getPos(self, frame_index: int, agent: int) -> tuple[float, float]:
-        if len(self.posLog) == 0:
+        if len(self.stateLog) == 0:
             return 0.0, 0.0
-        idx = min(frame_index, len(self.posLog) - 1)
-        s = self.posLog[idx]
+        idx = min(frame_index, len(self.stateLog) - 1)
+        s = self.stateLog[idx].pos
         return (
             float(s[self.coordIndex(agent, self.axis[0])]),
             float(s[self.coordIndex(agent, self.axis[1])]),
         )
 
     def updateDisplay(self, i: int, forceZoom: bool = False) -> None:
-        n = len(self.posLog)
+        n = len(self.stateLog)
         if n == 0:
             return
         i = max(0, min(i, n - 1))
@@ -351,23 +351,47 @@ class EnvironmentRenderer:
                 if i > 1:
                     lc.set_array(np.linspace(0, 1, i))
 
+        collMarkers = iter(self.collMarkers)
+
         # update MPPI predictions
-        if self.beliefLog and self.oppNames:
-            iMppi, belief, failCount, eps, preds = self.beliefLog[i]
-            for theta, ((lc_nom, lc_branch, lc_opp), (branchingTime, predTheta, fullPos)) in enumerate(zip(self.lcs_pred, preds)):
-                fullPos = fullPos.reshape((self.mppiConfig.nTimesteps, self.envConfig.nAgents, self.envConfig.dim))
+        for mppiState in self.stateLog[i].mppiInfo:
+            if len(mppiState.preds) != len(self.oppNames):
+                print(
+                    f"WARNING: len(mppiState.preds) = {len(mppiState.preds)} is different from len(self.oppNames) = {len(self.oppNames)}"
+                )
+                continue
 
-                if predTheta == -1:
-                    branchingTime = self.mppiConfig.nTimesteps
+            for theta, ((lc_nom, lc_branch, lc_opp), pred) in enumerate(zip(self.lcs_pred, mppiState.preds)):
+                fullPos = pred.fullPos.reshape((self.mppiConfig.nTimesteps, self.envConfig.nAgents, self.envConfig.dim))
 
-                lc_nom.set_data(fullPos[:branchingTime, iMppi, 0], fullPos[:branchingTime, iMppi, 1])
-                if branchingTime != 0 or predTheta == theta:
-                    # if we branch at time 0, only show the corresponding plot (otherwise, it might get confuding)
-                    lc_branch.set_data(fullPos[branchingTime:, iMppi, 0], fullPos[branchingTime:, iMppi, 1])
-                    lc_opp.set_data(fullPos[:, 1 - iMppi, 0], fullPos[:, 1 - iMppi, 1])
+                if pred.predTheta == -1:
+                    pred.branchTime = self.mppiConfig.nTimesteps
+
+                lc_nom.set_data(
+                    fullPos[: pred.branchTime, mppiState.iCont, self.axis[0]],
+                    fullPos[: pred.branchTime, mppiState.iCont, self.axis[1]],
+                )
+                if pred.branchTime != 0 or pred.predTheta == theta:
+                    # if we branch at time 0, only show the corresponding plot (otherwise, it might get confusing)
+                    lc_branch.set_data(
+                        fullPos[pred.branchTime :, mppiState.iCont, self.axis[0]],
+                        fullPos[pred.branchTime :, mppiState.iCont, self.axis[1]],
+                    )
+                    lc_opp.set_data(fullPos[:, 1 - mppiState.iCont, self.axis[0]], fullPos[:, 1 - mppiState.iCont, self.axis[1]])
+
+                    if pred.stopReason == EVENT_TYPE.EVT_COLLISION or pred.stopReason == EVENT_TYPE.EVT_OUTSIDE:
+                        marker = next(collMarkers)
+                        marker.set_data(
+                            [fullPos[pred.stopTime, pred.stopAgent, self.axis[0]]],
+                            [fullPos[pred.stopTime, pred.stopAgent, self.axis[1]]],
+                        )
                 else:
                     lc_branch.set_data([], [])
                     lc_opp.set_data([], [])
+
+        # hide remaining coll markers
+        for marker in collMarkers:
+            marker.set_data([], [])
 
         # update points and circles
         for idx, pt in enumerate(self.points):
@@ -414,7 +438,7 @@ class EnvironmentRenderer:
             self.status_text.set_color("orange")
 
         for iAgent in range(self.nAgents):
-            vel, laps, gates = self.velLog[i], self.nLapsLog[i], self.currentGatesLog[i]
+            vel, laps, gates = self.stateLog[i].speed, self.stateLog[i].nLaps, self.stateLog[i].currentGates
 
             speed = np.linalg.norm(vel[iAgent * self.envConfig.dim : (iAgent + 1) * self.envConfig.dim])
 
@@ -422,13 +446,21 @@ class EnvironmentRenderer:
                 f"Lap {int(laps[iAgent])}/{self.envConfig.nWinLaps} Gate {int(gates[iAgent])}/{self.envConfig.nGates}\nSpeed {speed:.2f}"
             )
 
-        # update MPPI belief
-        if self.beliefLog and self.oppNames:
-            iMppi, belief, failCount, eps, preds = self.beliefLog[i]
+        # update MPPI belief (TODO: so far, this only shows 1 belief)
+        for mppiState in self.stateLog[i].mppiInfo:
+            if len(mppiState.belief) != len(self.oppNames):
+                print(
+                    f"WARNING: len(mppiState.belief) = {len(mppiState.belief)} is different from len(self.oppNames) = {len(self.oppNames)}"
+                )
+                continue
+
+            failCount, eps = mppiState.failCount, mppiState.epsilon
+
             self.verif_text.set_text(
                 f"Fail: {sum(failCount) / self.verifConfig.N * 100:.2f}% (coll {failCount[0] / self.verifConfig.N * 100:.2f}%, out {failCount[1] / self.verifConfig.N * 100:.2f}%)\nCertified failure rate: {eps:.5f}"
             )
-            for i, (bar, b_val) in enumerate(zip(self.belief_bars, belief)):
+
+            for i, (bar, b_val) in enumerate(zip(self.belief_bars, mppiState.belief)):
                 bar.set_height(b_val)
 
                 color = "#2ecc71" if b_val >= self.mppiConfig.minConfidence else "#3498db"
@@ -440,26 +472,14 @@ class EnvironmentRenderer:
 
     def onNewState(
         self,
-        pos: np.ndarray,
-        vel: np.ndarray,
-        currentS: np.ndarray,
-        nLaps: np.ndarray,
-        currentGates: np.ndarray,
-        belief: Optional[tuple[int, np.ndarray, np.ndarray, float, list[tuple[int, int, np.ndarray]]]],
+        state: FullStateInfo,
         pendingState: bool = False,
     ) -> None:
         "If pendingState is True, it means that there are other states waiting in the queue (ie. they are computed faster than they are rendered); in this case, only 1 frame out of frameSkipWaiting will be shown"
-        self.posLog.append(pos)
-        self.velLog.append(vel)
-        self.sLog.append(currentS)
-        self.nLapsLog.append(nLaps)
-        self.currentGatesLog.append(currentGates)
-
-        if belief is not None:
-            self.beliefLog.append(belief)
+        self.stateLog.append(state)
 
         # Called by the environment when a new frame is available
-        n = len(self.posLog)
+        n = len(self.stateLog)
         max_idx = max(n - 1, 1)
         # update slider range
         self.slider.valmax = max_idx  # type: ignore
@@ -470,7 +490,7 @@ class EnvironmentRenderer:
             self.playing
             and not self.isFinished
             and time.perf_counter() - self.lastRenderTime > self.interval / 1000
-            and (not pendingState or self.frameSkipWaiting == -1 or len(self.posLog) % self.frameSkipWaiting == 0)
+            and (not pendingState or self.frameSkipWaiting == -1 or len(self.stateLog) % self.frameSkipWaiting == 0)
         ):
             if self.frameSkipWaiting == -1:
                 self.current_index = n - 1
@@ -483,7 +503,7 @@ class EnvironmentRenderer:
             # print(f"render time: {(self.lastRenderTime - prev) * 1000} ms")
 
         # if not playing, add small delay to keep UI responsive
-        if not self.playing and len(self.posLog) % 10 == 0:
+        if not self.playing and len(self.stateLog) % 10 == 0:
             self.show()
             # plt.pause(self.interval / 1000)
 
@@ -497,7 +517,7 @@ class EnvironmentRenderer:
 
     def finish(self, tooglePlay: bool = True, jumpToLast: bool = False):
         if jumpToLast:
-            self.current_index = len(self.posLog) - 1
+            self.current_index = len(self.stateLog) - 1
 
         self.updateDisplay(self.current_index)
 
@@ -514,12 +534,12 @@ class EnvironmentRenderer:
         if self.slider_is_updating:
             return
         i = int(val)
-        self.current_index = min(len(self.posLog), i)
+        self.current_index = min(len(self.stateLog), i)
         self.updateDisplay(i)
         self.show()
 
     def timerTick(self) -> None:
-        n = len(self.posLog)
+        n = len(self.stateLog)
         if self.current_index >= n - 1 and self.isFinished:
             # stop at the end of available frames
             self.tooglePlay(None)
@@ -540,7 +560,7 @@ class EnvironmentRenderer:
 
         if self.playing:
             # if at end, restart
-            if self.current_index >= max(0, len(self.posLog) - 1):
+            if self.current_index >= max(0, len(self.stateLog) - 1):
                 self.current_index = 0
                 self.updateDisplay(0)
             if not isFirst and self.isFinished:
@@ -553,7 +573,7 @@ class EnvironmentRenderer:
             self.current_index = max(0, self.current_index - 1)
             self.updateDisplay(self.current_index)
         elif event.key == "right" and not self.playing:
-            self.current_index = min(len(self.posLog) - 1, self.current_index + 1)
+            self.current_index = min(len(self.stateLog) - 1, self.current_index + 1)
             self.updateDisplay(self.current_index)
 
     def askSavePath(self, event: Any) -> None:
@@ -587,7 +607,7 @@ class EnvironmentRenderer:
         duration = 40
 
         imgs: list[Image.Image] = []
-        n = len(self.posLog)
+        n = len(self.stateLog)
         for i in tqdm(range(n), desc=f"Capturing frames for {name}", unit="frame"):
             self.updateDisplay(i)
             self.fig.canvas.draw()

@@ -472,6 +472,7 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig
         arenaMax=np.array([1.1 * length, 2 * height * heightFactor]),
         nObstacles=1,
         obstacles=np.array([length * (0.5 - obsSize / 2), -height, length * (0.5 + obsSize / 2), height]),
+        seed=42,
     )
 
     assert config.trackPoints is not None  # it is built automatically in GateEnvironmentConfig
@@ -522,7 +523,6 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig
         samplingNoise=3,
         gateTraversalMargin=0.9,  # restrict 5% on each side
         collDistFactor=1.1,
-        # collDistFactor=1.0,
         # collDistFactor=1.3,
         finalAdvWeight=200,
         # finalAdvWeight=0,

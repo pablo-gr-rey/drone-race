@@ -2,11 +2,12 @@ import dataclasses
 import struct
 import types
 from typing import Any, Optional
+import typing
 
 import numpy as np
 import zmq
 from renderer import EnvironmentRenderer
-from utils import EVENT_TYPE, MSG_TYPE, ControllerConfig, GateEnvironmentConfig, PIDConfig, MPPIConfig, VerifConfig
+from utils import EVENT_TYPE, MSG_TYPE, ControllerConfig, FullStateInfo, GateEnvironmentConfig, PIDConfig, MPPIConfig, VerifConfig
 
 
 class BytePacker:
@@ -98,8 +99,44 @@ class ByteUnpacker:
         arr = np.frombuffer(raw, dtype=np.float32, count=n)
         return arr.copy() if copy else arr
 
+    def readAny[T](self, t: type[T]) -> T:
+        if t is float:
+            return self.readFloat()  # type: ignore
+        elif issubclass(t, int):  # also handles enums
+            return t(self.readInt())
+        elif t is np.ndarray:
+            return self.readArray()  # type: ignore
+        elif dataclasses.is_dataclass(t):
+            return self.readConfig(t)
+
+        raise ValueError(f"Unsupported reading type {t}")
+
     def is_finished(self):
         return self.offset == len(self.buf)
+
+    def readConfig[ConfigClass](self, cl: type[ConfigClass]) -> ConfigClass:
+        attrs: dict[str, Any] = {}
+        if not dataclasses.is_dataclass(cl):
+            raise ValueError("Can only unpack dataclass type in readConfig")
+
+        for field in dataclasses.fields(cl):
+            if typing.get_origin(field.type) is list:
+                if "len" not in field.metadata:
+                    raise ValueError(f"Missing len information in metadata for field {field.name} of type list")
+                if field.metadata["len"] not in attrs:
+                    raise ValueError(
+                        f"Len metadata for field {field.name} is declared as  {field.metadata['len']} but it was not found in already defined class attributes"
+                    )
+
+                length = int(attrs[field.metadata["len"]])
+                elem_type = typing.get_args(field.type)[0]
+
+                attrs[field.name] = [self.readAny(elem_type) for i in range(length)]
+
+            else:
+                attrs[field.name] = self.readAny(field.type)  # type: ignore
+
+        return cl(**attrs)
 
     def assert_finished(self):
         if self.offset != len(self.buf):
@@ -122,35 +159,29 @@ def encodeConfig(config: Any, msg_type: Optional[int] = None, warn=True, log=Fal
 
 def unpackState(
     unpack: ByteUnpacker,
-) -> tuple[
-    int,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    Optional[tuple[int, np.ndarray, np.ndarray, float, list[tuple[int, int, np.ndarray]]]],
-]:
-    "Return (step, pos, vel, currentS, nLaps, currentGates, Optional[iMppi, belief, failCount, eps, list[(branchingTime, predTheta, fullPos)]]) from bytes"
+) -> FullStateInfo:
+    "Return (step, pos, vel, currentS, nLaps, currentGates, Optional[iMppi, belief, failCount, eps, list[(branchingTime, predTheta, fullPos, )]]) from bytes"
 
-    step = unpack.readInt()
-    pos = unpack.readArray()
-    vel = unpack.readArray()
-    currentS = unpack.readArray()
-    nLaps = unpack.readArray()
-    currentGates = unpack.readArray()
+    # step = unpack.readInt()
+    # pos = unpack.readArray()
+    # vel = unpack.readArray()
+    # currentS = unpack.readArray()
+    # nLaps = unpack.readArray()
+    # currentGates = unpack.readArray()
 
-    mppiInfo = None
-    if not unpack.is_finished():
-        iMppi, belief, failCount, eps = unpack.readInt(), unpack.readArray(), unpack.readArray(), unpack.readFloat()
-        preds = []
-        while not unpack.is_finished():
-            preds.append((unpack.readInt(), unpack.readInt(), unpack.readArray()))
-        mppiInfo = (iMppi, belief, failCount, eps, preds)
+    # mppiInfo = None
+    # if not unpack.is_finished():
+    #     iMppi, belief, failCount, eps = unpack.readInt(), unpack.readArray(), unpack.readArray(), unpack.readFloat()
+    #     preds = []
+    #     while not unpack.is_finished():
+    #         preds.append((unpack.readInt(), unpack.readInt(), unpack.readArray()))
+    #     mppiInfo = (iMppi, belief, failCount, eps, preds)
 
+    stateInfo = unpack.readConfig(FullStateInfo)
     unpack.assert_finished()
 
-    return step, pos, vel, currentS, nLaps, currentGates, mppiInfo
+    return stateInfo
+    # return step, pos, vel, currentS, nLaps, currentGates, mppiInfo
 
 
 class ZMQRecv:
@@ -159,14 +190,7 @@ class ZMQRecv:
         self.sock = self.ctx.socket(zmq.PAIR)
         self.sock.connect(addr)
 
-        self.posLog: list[np.ndarray] = []
-        self.velLog: list[np.ndarray] = []
-
-        self.sLog: list[np.ndarray] = []
-        self.nLapsLog: list[np.ndarray] = []
-        self.currentGatesLog: list[np.ndarray] = []
-
-        self.beliefLog: list[tuple[int, np.ndarray, np.ndarray, float, list[tuple[int, int, np.ndarray]]]] = []
+        self.stateLog: list[FullStateInfo] = []
 
     def runSim(
         self,
@@ -245,40 +269,34 @@ class ZMQRecv:
                 print("Received unexpected header message from C++")
 
             elif msg_type == MSG_TYPE.MSG_STATE:
-                step, pos, vel, newS, newLaps, newGates, belief = unpackState(unpack)
+                state = unpackState(unpack)
+                # step, pos, vel, newS, newLaps, newGates, belief = unpackState(unpack)
 
-                # print(f"received step {step}")
+                # print(f"received step {state.step}")
 
-                if step != len(self.posLog):
-                    print(f"expected step number {len(self.posLog)} but received step {step}")
+                if state.step != len(self.stateLog):
+                    print(f"expected step number {len(self.stateLog)} but received step {state.step}")
 
-                if step == 0:
+                if state.step == 0:
                     # we confirm that the first state is equal to the initial state we sent (to detect early potential transmission bugs)
                     if (
-                        not np.all(np.isclose(pos, config.init_pos))
-                        or not np.all(np.isclose(vel, config.init_vel))
-                        # or not np.all(np.isclose(newS, config.initS))     # for non-PID agents, engine sets S to -1
-                        or not np.all(np.isclose(newLaps, config.initnLaps))
-                        or not np.all(np.isclose(newGates, config.initGates))
+                        not np.all(np.isclose(state.pos, config.init_pos))
+                        or not np.all(np.isclose(state.speed, config.init_vel))
+                        # or not np.all(np.isclose(state.currentS, config.initS))     # for non-PID agents, engine sets S to -1
+                        or not np.all(np.isclose(state.nLaps, config.initnLaps))
+                        or not np.all(np.isclose(state.currentGates, config.initGates))
                     ):
-                        print(pos, vel, newS, newLaps, newGates)
+                        print(state.pos, state.speed, state.currentS, state.nLaps, state.currentGates)
                         print(config.init_pos, config.init_vel, config.initS, config.initnLaps, config.initGates)
                         raise ValueError("First state sent back by C++ backend did not match expected first state")
 
-                self.posLog.append(pos)
-                self.velLog.append(vel)
-                self.sLog.append(newS)
-                self.nLapsLog.append(newLaps)
-                self.currentGatesLog.append(newGates)
-
-                if belief is not None:
-                    self.beliefLog.append(belief)
+                self.stateLog.append(state)
 
                 if renderer is not None:
                     # find out if there are waiting states (ie. if they are computed faster than rendered)
                     events = self.sock.getsockopt(zmq.EVENTS)
                     hasPending = events & zmq.POLLIN  # type: ignore
-                    renderer.onNewState(pos, vel, newS, newLaps, newGates, belief, pendingState=bool(hasPending))
+                    renderer.onNewState(state, pendingState=bool(hasPending))
 
             elif msg_type == MSG_TYPE.MSG_EVENT:
                 evt_type, agent_id = unpack.readInt(), unpack.readInt()
@@ -300,7 +318,7 @@ class ZMQRecv:
 
             elif msg_type == MSG_TYPE.MSG_DONE:
                 unpack.assert_finished()
-                print(f"Simulation done. Total steps: {len(self.posLog)}")
+                print(f"Simulation done. Total steps: {len(self.stateLog)}")
                 if renderer is not None:
                     renderer.finish(tooglePlay=False, jumpToLast=False)
 

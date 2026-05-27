@@ -27,6 +27,8 @@ public:
     VerifConfig verifConfig;
 
 private:
+    int nMppiCont = 0;  // count of MPPI controllers (used to send states)
+
     std::normal_distribution<float> nd{ 0.0f, 1.0f };
 
     float* d_trackPoints;   // shared across all MPPI controllers
@@ -57,7 +59,7 @@ private:
     void dynStep(const std::vector<float>& actions);
 
     // checks
-    bool checkCollision() const;
+    std::optional<std::pair<int, int>> checkCollision() const;
     int  checkOutside()   const;  // -1 = none
     int  checkWinner()    const;  // -1 = none
 };

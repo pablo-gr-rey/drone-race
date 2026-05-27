@@ -45,6 +45,8 @@ SimulationEngine::SimulationEngine(
     nLaps.assign(config.initLaps, config.initLaps + config.nAgents);
     currentGates.assign(config.initGates, config.initGates + config.nAgents);
 
+    nMppiCont = 0;
+
     for (int i = 0; i < envConfig.nAgents; i++)
     {
         std::unique_ptr<Controller> ctrl = makeController(specs[i], i);
@@ -86,6 +88,7 @@ std::unique_ptr<Controller> SimulationEngine::makeController(const ControllerSpe
                     allocTrack();
 
                 ctrl = std::make_unique<MPPIController>(envConfig, contConfig, verifConfig, d_trackPoints, seed);
+                nMppiCont++;
             }
 
             if (!useS)       // only PID should update its S (otherwise, it is useless for MPPI or dummy)
@@ -128,6 +131,8 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
         writer.pushIntArray(nLaps);
         writer.pushIntArray(currentGates);
 
+        writer.pushInt32(nMppiCont);
+
         // send MPPI info
         for (int iMppi = 0; iMppi < envConfig.nAgents; iMppi++)
             if (MPPIController* cont = dynamic_cast<MPPIController*>(controllers[iMppi].get()))
@@ -140,6 +145,8 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
                 // send collision status
                 writer.pushIntArray(cont->failCount);
                 writer.pushFloat(cont->epsilon);
+
+                writer.pushInt32(cont->mppiConfig.nModels);
 
                 // build the predicted probabilities
                 // we simulate it for nominal and every theta
@@ -156,6 +163,10 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
 
                 for (int theta = 0; theta < mppiConfig.nModels; theta++)
                 {
+                    int stopTime = -1;
+                    EventType stopReason = EVT_TRUNCATED;
+                    int stopAgent = -1;
+
                     std::vector<float> belief = cont->h_belief;
                     int predTheta = findConfident(belief.data(), mppiConfig.nModels, mppiConfig.minConfidence);
                     int branchingTime = 0;
@@ -188,13 +199,32 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
                         if (predTheta == -1 && (predTheta = findConfident(belief.data(), mppiConfig.nModels, mppiConfig.minConfidence)) != -1)
                             branchingTime = t + 1;
 
-                        if (checkCollision() || checkOutside() != -1 || checkWinner() != -1)      // should we allow outside??
+                        std::optional<std::pair<int, int>> coll = checkCollision();
+                        int out = checkOutside(), win = checkWinner();
+                        if (coll || out != -1 || win != -1)      // should we allow outside for display??
                         {
                             // copy everything and break (i.e. stop simulation)
                             for (int tt = t + 1; tt < mppiConfig.nTimesteps; tt++)
                                 std::copy(pos.begin(), pos.end(), fullPos.begin() + tt * envConfig.nAgents * envConfig.dim);
 
-                            std::cout << "STOPPING SIMULATION at step " << t << " collision " << checkCollision() << " outside " << checkOutside() << " winner " << checkWinner() << std::endl;
+                            std::cout << "STOPPING SIMULATION at step " << t << " collision " << (bool) coll << " outside " << out << " winner " << win << std::endl;
+
+                            stopTime = t;
+                            if (coll)
+                            {
+                                stopReason = EVT_COLLISION;
+                                stopAgent = coll->first;
+                            }
+                            else if (win != -1)
+                            {
+                                stopReason = EVT_WINNER;
+                                stopAgent = win;
+                            }
+                            else
+                            {
+                                stopReason = EVT_OUTSIDE;
+                                stopAgent = out;
+                            }
 
                             break;
                         }
@@ -212,10 +242,13 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
                         std::cout << v << " ";
                     std::cout << "\n";
 
-                    // send branching time, last predTheta, and full pos
+                    // send branching time, last predTheta, and full pos then stopReason, stopTime, and stopAgent
                     writer.pushInt32(branchingTime);
                     writer.pushInt32(predTheta);
                     writer.pushFloatArray(fullPos);
+                    writer.pushInt32(stopReason);
+                    writer.pushInt32(stopTime);
+                    writer.pushInt32(stopAgent);
                 }
 
                 sock.send(zmq::buffer(writer.data));
@@ -388,7 +421,7 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
         }
 
         // termination checks
-        hasCollision = checkCollision();
+        hasCollision = (bool) checkCollision();
         anyOutside = checkOutside();
         anyWinner = checkWinner();
 
@@ -421,13 +454,13 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
         std::cout << "Simulation truncated (maxSteps reached)\n";
 }
 
-bool SimulationEngine::checkCollision() const
+std::optional<std::pair<int, int>> SimulationEngine::checkCollision() const
 {
     for (int a = 0; a < envConfig.nAgents; a++)
         for (int b = a + 1; b < envConfig.nAgents; b++)
             if (agentDist(pos.data(), a, b, envConfig.dim) < envConfig.minDist)
-                return true;
-    return false;
+                return { { a, b } };
+    return {};
 }
 
 int SimulationEngine::checkOutside() const
