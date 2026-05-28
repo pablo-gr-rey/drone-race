@@ -52,8 +52,8 @@ private:
 
     std::mt19937 rng;
 
-    // build actual controller from spec, and updates currentS (-1.0f if controller is dummy or MPPI, since it won't use S)
-    std::unique_ptr<Controller> makeController(const ControllerSpec& sp, int i);
+    // build actual controller from spec, return it + true iff controller is MPPI
+    std::pair<std::unique_ptr<Controller>, bool> makeController(const ControllerSpec& sp);
     void allocTrack();
 
     void dynStep(const std::vector<float>& actions);

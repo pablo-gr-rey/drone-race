@@ -46,13 +46,26 @@ SimulationEngine::SimulationEngine(
     currentGates.assign(config.initGates, config.initGates + config.nAgents);
 
     nMppiCont = 0;
+    int lastMppiIndex = -1;
 
     for (int i = 0; i < envConfig.nAgents; i++)
     {
-        std::unique_ptr<Controller> ctrl = makeController(specs[i], i);
+        auto [ctrl, isMPPI] = makeController(specs[i]);
         controllerNames.push_back(ctrl->name);
         controllers.push_back(std::move(ctrl));
+
+        if (isMPPI)
+        {
+            lastMppiIndex = i;
+            nMppiCont++;
+        }
     }
+
+    // if there is exactly one MPPI controller, then we can skip updating its S
+    // (otherwise, all PID needs their S, and if someone else is MPPI, it needs to predict us using our S)
+    if (nMppiCont == 1)
+        for (int iRaceline = 0; iRaceline < envConfig.nRacelines; iRaceline++)
+            currentS[lastMppiIndex * envConfig.nRacelines + iRaceline] = -1.0f;
 }
 
 SimulationEngine::~SimulationEngine()
@@ -65,36 +78,28 @@ SimulationEngine::~SimulationEngine()
     }
 }
 
-std::unique_ptr<Controller> SimulationEngine::makeController(const ControllerSpec& sp, int iCont)
+std::pair<std::unique_ptr<Controller>, bool> SimulationEngine::makeController(const ControllerSpec& sp)
 {
     std::unique_ptr<Controller> ctrl;
+
+    bool isMPPI = false;
 
     std::visit([&](auto&& contConfig)
         {
             using T = std::decay_t<decltype(contConfig)>;
 
-            bool useS = false;
-
             if constexpr (std::is_same_v<T, DummyConfig>)
                 ctrl = std::make_unique<DummyController>(envConfig);
             else if constexpr (std::is_same_v<T, PIDConfig>)
-            {
                 ctrl = std::make_unique<PIDController>(envConfig, contConfig);
-                useS = true;
-            }
             else if constexpr (std::is_same_v<T, MPPIConfig>)
             {
                 if (d_trackPoints == nullptr)
                     allocTrack();
 
                 ctrl = std::make_unique<MPPIController>(envConfig, contConfig, verifConfig, d_trackPoints, seed);
-                nMppiCont++;
+                isMPPI = true;
             }
-
-            if (!useS)       // only PID should update its S (otherwise, it is useless for MPPI or dummy)
-                for (int iRaceline = 0; iRaceline < envConfig.nRacelines; iRaceline++)
-                    currentS[iCont * envConfig.nRacelines + iRaceline] = -1.0f;
-
         }, sp.config);
 
     if (!ctrl)
@@ -102,7 +107,7 @@ std::unique_ptr<Controller> SimulationEngine::makeController(const ControllerSpe
 
     ctrl->name = sp.name;
     ctrl->engine = this;
-    return ctrl;
+    return { std::move(ctrl), isMPPI };
 }
 
 void SimulationEngine::allocTrack()
@@ -251,8 +256,9 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
                     writer.pushInt32(stopAgent);
                 }
 
-                sock.send(zmq::buffer(writer.data));
             }
+
+        sock.send(zmq::buffer(writer.data));
     }
 }
 

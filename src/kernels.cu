@@ -122,6 +122,8 @@ __global__ void fullRolloutKernel(
         // hopefully, this will be -1 or theta, but we can't be sure of it so we have to take into account the possibility that we mispredict (since the actual MPPI controller will not know whether it has mispredicted)
         int branchingTime = 0;      // unused if we have not branched (and set at branching time), we can use 0 in both cases
 
+        float decay = 1.0f;
+
         // ── Main rollout loop ────────────────────────────────────────────
         for (int t = 0; t < mc.nTimesteps && !stop; t++)
         {
@@ -129,10 +131,10 @@ __global__ void fullRolloutKernel(
             for (int i = 0; i < envConfig.nAgents * envConfig.dim; i++)
                 prevPos[i] = pos[i];
 
-            // 1. Build actions
             float actions[MAX_AGENTS * MAX_DIM];
             for (int a = 0; a < envConfig.nAgents; a++)
             {
+                // 1. Build actions
                 if (a == controlAgent)
                 {
                     // nominal actions has shape (nModels+1, nTimesteps, dim) with first part = before branching time, then for theta_0, theta_1, etc
@@ -169,11 +171,8 @@ __global__ void fullRolloutKernel(
                         break;
                     }
                     }
-            }
 
-            // 2. Clamp + action noise
-            for (int a = 0; a < envConfig.nAgents; a++)
-            {
+                // 2. Clamp + action noise
                 float sqNorm = 0.0f;
                 for (int d = 0; d < envConfig.dim; d++)
                     sqNorm += actions[a * envConfig.dim + d] * actions[a * envConfig.dim + d];
@@ -188,21 +187,16 @@ __global__ void fullRolloutKernel(
                     v *= factor;
                     v += curand_normal(&rng) * envConfig.actionNoiseLevel;
                 }
-            }
 
-            // 3. Integrate position
-            for (int a = 0; a < envConfig.nAgents; a++)
+                // 3. Integrate position
                 for (int d = 0; d < envConfig.dim; d++)
                     pos[a * envConfig.dim + d] += envConfig.dt * vel[a * envConfig.dim + d];
 
-            // 4. Integrate velocity
-            for (int a = 0; a < envConfig.nAgents; a++)
+                // 4. Integrate velocity
                 for (int d = 0; d < envConfig.dim; d++)
                     vel[a * envConfig.dim + d] += envConfig.dt * actions[a * envConfig.dim + d];
 
-            // 5. Cap speed
-            for (int a = 0; a < envConfig.nAgents; a++)
-            {
+                // 5. Cap speed
                 float spd = agentSpeed(vel, a, envConfig.dim);
                 if (spd > envConfig.maxSpeed[a])
                 {
@@ -210,15 +204,14 @@ __global__ void fullRolloutKernel(
                     for (int d = 0; d < envConfig.dim; d++)
                         vel[a * envConfig.dim + d] = vel[a * envConfig.dim + d] * sc;
                 }
-            }
 
-            // 6. State noise
-            for (int a = 0; a < envConfig.nAgents; a++)
+                // 6. State noise
                 for (int d = 0; d < envConfig.dim; d++)
                 {
                     pos[a * envConfig.dim + d] += curand_normal(&rng) * envConfig.posNoiseLevel;
                     vel[a * envConfig.dim + d] += curand_normal(&rng) * envConfig.speedNoiseLevel;
                 }
+            }
 
             updateGates(envConfig, pos, prevPos, currentS, currentGates, laps, trackPts, controlAgent, mc.gateTraversalMargin);
 
@@ -244,7 +237,8 @@ __global__ void fullRolloutKernel(
                 }
 
             // 8. Running cost
-            cost += stateCost(controlAgent, pos, vel, laps, currentGates, t, envConfig, mc);
+            cost += stateCost(controlAgent, pos, vel, laps, currentGates, t, envConfig, mc) * decay;
+            decay *= 0.9f;
 
             // 9. Update belief & potential branching time
             updateBelief(belief, actions + (1 - controlAgent) * envConfig.dim, nomPidAction, mc.oppPid, mc.nModels, envConfig.dim, envConfig.maxAccel[1 - controlAgent]);
@@ -253,7 +247,7 @@ __global__ void fullRolloutKernel(
                 branchingTime = t + 1;
         }
 
-        // ── Terminal cost ────────────────────────────────────────────────
+        // Terminal cost
         cost += finalCost(controlAgent, pos, vel, laps, currentGates, envConfig, mc);
 
         // actual cost is dependent on the probability that the opponent is actually following theta, ie. initBelief[theta], unless we are already committed

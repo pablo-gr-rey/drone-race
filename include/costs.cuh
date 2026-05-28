@@ -15,8 +15,6 @@ __device__ INLINE float stateCost(
     float cost = 0.0f;
     const float* curPos = pos + agent * envConfig.dim;
 
-    float decay = powf(0.95f, (float) timestep);
-
     for (int other = 0; other < envConfig.nAgents; other++)
     {
         if (other == agent)
@@ -56,7 +54,7 @@ __device__ INLINE float stateCost(
     if (laps[agent] >= (float) envConfig.nWinLaps)
         cost -= mppiConfig.winCost;
 
-    return cost * decay;
+    return cost;
 }
 
 // ── Terminal cost ────────────────────────────────────────────────────

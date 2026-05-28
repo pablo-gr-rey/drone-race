@@ -120,6 +120,7 @@ class ByteUnpacker:
             raise ValueError("Can only unpack dataclass type in readConfig")
 
         for field in dataclasses.fields(cl):
+            # print(f"Reading field {field.name}...", end="", flush=True)
             if typing.get_origin(field.type) is list:
                 if "len" not in field.metadata:
                     raise ValueError(f"Missing len information in metadata for field {field.name} of type list")
@@ -135,6 +136,8 @@ class ByteUnpacker:
 
             else:
                 attrs[field.name] = self.readAny(field.type)  # type: ignore
+
+            # print(f" value {attrs[field.name]}")
 
         return cl(**attrs)
 
@@ -199,15 +202,17 @@ class ZMQRecv:
         contConfigs: list[ControllerConfig],
         render: bool = True,
         contNames: Optional[list[str]] = None,
-        oppNames: Optional[list[str]] = None,
+        oppNames: Optional[list[str] | list[list[str]]] = None,
     ) -> tuple[EVENT_TYPE, int]:
         if render:
             # only display the racelines which are actually used
             used = [False] * config.nRaceLines
+            nMppi = 0
             for cfg in contConfigs:
                 if isinstance(cfg, PIDConfig):
                     used[cfg.racelineIndex] = True
                 elif isinstance(cfg, MPPIConfig):
+                    nMppi += 1
                     for opp in cfg.opponentPidConfigs:
                         used[opp.racelineIndex] = True
 
@@ -223,19 +228,24 @@ class ZMQRecv:
 
             if contNames is None:
                 contNames = [cfg.getDefaultName() for cfg in contConfigs]
+
+            completedOppNames: list[list[str]] = []
+
             if oppNames is None:
-                oppNames = []
                 for cont in contConfigs:
                     if isinstance(cont, MPPIConfig):
-                        oppNames = [f"Model {i}" for i in range(cont.nModels)]
-                        mppiConfig = cont
+                        completedOppNames.append([f"Model {i}" for i in range(cont.nModels)])
+            elif oppNames and isinstance(oppNames[0], str):
+                completedOppNames = [oppNames for i in range(nMppi)]  # type: ignore
+            else:
+                completedOppNames = oppNames  # type: ignore
 
             renderer = EnvironmentRenderer(
                 config,
+                contConfigs,
                 contNames,
                 verifConfig,
-                oppNames,
-                mppiConfig,
+                completedOppNames,
                 interval=0,
                 frameSkipWaiting=2,
                 frameSkipPlayback=2,
