@@ -84,11 +84,11 @@ void VerifConfig::unpackHeader(const void* buf, size_t len)
     beta = reader.readFloat();
     horizon = reader.readInt32();
 
-    K = reader.readIntArray();
+    maxEps = reader.readFloat();
 
     reader.assertFinished();
 
-    std::cout << "loaded verification N " << nVerifSamples << " beta " << beta << " card of K " << K.size() << " (first value " << K[0] << ")\n";
+    std::cout << "loaded verification N " << nVerifSamples << " beta " << beta << " horizon " << horizon << " maxEps " << maxEps << "\n";
 }
 
 static PIDConfig unpackPIDConfig(Reader& reader)

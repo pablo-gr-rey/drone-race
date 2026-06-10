@@ -102,7 +102,7 @@ class ByteUnpacker:
     def readAny[T](self, t: type[T]) -> T:
         if t is float:
             return self.readFloat()  # type: ignore
-        elif issubclass(t, int):  # also handles enums
+        elif issubclass(t, int):  # also handles bool and enums
             return t(self.readInt())
         elif t is np.ndarray:
             return self.readArray()  # type: ignore
@@ -163,28 +163,10 @@ def encodeConfig(config: Any, msg_type: Optional[int] = None, warn=True, log=Fal
 def unpackState(
     unpack: ByteUnpacker,
 ) -> FullStateInfo:
-    "Return (step, pos, vel, currentS, nLaps, currentGates, Optional[iMppi, belief, failCount, eps, list[(branchingTime, predTheta, fullPos, )]]) from bytes"
-
-    # step = unpack.readInt()
-    # pos = unpack.readArray()
-    # vel = unpack.readArray()
-    # currentS = unpack.readArray()
-    # nLaps = unpack.readArray()
-    # currentGates = unpack.readArray()
-
-    # mppiInfo = None
-    # if not unpack.is_finished():
-    #     iMppi, belief, failCount, eps = unpack.readInt(), unpack.readArray(), unpack.readArray(), unpack.readFloat()
-    #     preds = []
-    #     while not unpack.is_finished():
-    #         preds.append((unpack.readInt(), unpack.readInt(), unpack.readArray()))
-    #     mppiInfo = (iMppi, belief, failCount, eps, preds)
-
     stateInfo = unpack.readConfig(FullStateInfo)
     unpack.assert_finished()
 
     return stateInfo
-    # return step, pos, vel, currentS, nLaps, currentGates, mppiInfo
 
 
 class ZMQRecv:

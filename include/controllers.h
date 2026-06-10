@@ -57,8 +57,13 @@ public:
     std::vector<float> h_nominal;   // host mirror (nModels+1, T, dim)
     std::vector<float> h_belief;    // host belief (nModels)
 
-    std::vector<uint> failCount;    // size 2: nColl, nOutside (only MPPI outside is counted)
-    double epsilon;
+    std::vector<uint> failCountOld;    // size 2: nColl, nOutside (previous nominal, only MPPI outside is counted)
+    std::vector<uint> failCountNew;    // size 2: nColl, nOutside (candidate new nominal, only MPPI outside is counted)
+    std::vector<uint> failCount;       // size 2: nColl, nOutside (final nominal, only MPPI outside is counted)
+    double epsilonPartial;              // epsilon obtained by verification at current iteration
+    double epsilon;                     // epsilonPartial + verifConfig.horizon * verifConfig.maxEps
+    double certifiedLoss;               // certified max loss if we use new plan instead of previous
+    bool useNewPlan;
 
     float min_nu = 0.0005;    // in terms of proportion of nSamples   // TODO: tune this better?
     float max_nu = 0.001;
@@ -85,6 +90,7 @@ private:
     int* d_branchTime = nullptr;    // (nModels, N) d_branchTime[theta, s] = branching time (or T if no branching)
 
     float* d_nominal = nullptr;  // (nModels+1, T, dim)
+    float* d_prevnominal = nullptr;     // (nModels+1, T, dim)
     float* d_maskedCosts = nullptr;  // (nModels+1, T, nSamples) equal to d_costs for given branch/timestep/sample if it should actually count (coeff = 1.0 in weightedAverageKernel) or +INF otherwise (to do a meaningful min cost reduction)
     float* d_minCosts = nullptr;  // (nModels+1, T) (min cost for nominal + each branch at each timestep)
     float* d_nu = nullptr;  // (nModels+1) (sum of weights for nominal + each branch: useful for monitoring & live updating inv temp)
@@ -97,7 +103,8 @@ private:
     curandState* d_rng = nullptr;
 
     // Verification side
-    uint* d_failCount;  // 2 ints (first is numColl, second is numOutside)
+    uint* d_failCountNew;  // 2 ints (first is numColl, second is numOutside)
+    uint* d_failCountOld;  // 2 ints
     curandState* d_verif_rng = nullptr;
 
     bool deviceReady = false;
@@ -106,6 +113,7 @@ private:
     void freeDevice();
 
     void computeEpsilon();  // compute epsilon based on failCount and verifConfig
+    void computeCertifiedLoss();      // compute loss of new plan over old plan
 };
 
 // Shared PID control function. Does not add noise, since this is different on CPU and GPU

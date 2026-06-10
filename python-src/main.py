@@ -667,8 +667,7 @@ def mainGate():
     # cont_configs = [mppiconfig, blindpidconfig]
     # cont_configs = [mppiconfig] + [pidconfig] * (nAgents - 1)  # type: ignore
 
-    verifConfig = VerifConfig(N=2**14, beta=1e-6)
-    print(verifConfig.K)
+    verifConfig = VerifConfig(N=2**17, beta=1e-6, horizon=40, maxEps=0.001)
 
     envConfig.sendStates = True
 

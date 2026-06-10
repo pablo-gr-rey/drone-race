@@ -172,11 +172,7 @@ class VerifConfig:
     beta: float = 1e-6
     horizon: int = 40
 
-    K: np.ndarray = field(default_factory=lambda: np.array([]))
-
-    def __post_init__(self):
-        if self.K.size == 0:
-            self.K = np.concat([[0], 2 ** np.arange(int(np.log2(self.N)))])
+    maxEps: float = 0.01
 
 
 @dataclass
@@ -278,7 +274,11 @@ class MPPIStateInfo:
     iCont: int
     belief: np.ndarray
     failCount: np.ndarray
+
     epsilon: float
+    epsilonPartial: float
+    useNewPlan: bool
+    certifiedLoss: float
 
     nModels: int
     preds: list[MPPIStatePredInfo] = field(metadata={"len": "nModels"})

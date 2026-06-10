@@ -73,6 +73,9 @@ class EnvironmentRenderer:
         if isinstance(display_raceline, bool):
             display_raceline = [display_raceline] * envConfig.nRaceLines
 
+        plt.rcParams["keymap.back"].remove("left")
+        plt.rcParams["keymap.forward"].remove("right")
+
         plt.ion()
         plt.show()
 
@@ -131,17 +134,30 @@ class EnvironmentRenderer:
             self.ax.add_collection(lc)  # type: ignore
 
         # line collections for MPPI predictions
-        # length: nMPPI * nModels, with items being (nominalMPPItraj, branchedTraj, PIDtraj)
-        self.lcs_pred: list[list[tuple[Line2D, Line2D, Line2D]]] = [[] for i in range(self.numMPPI)]
+        # length: nMPPI * nModels, with items being (nominalMPPItraj, branchedTraj, PIDtraj). each line 2D has 2 components, 1st strong and 2nd light (to show before & after verification)
+        self.lcs_pred: list[list[tuple[tuple[Line2D, Line2D], tuple[Line2D, Line2D], tuple[Line2D, Line2D]]]] = [
+            [] for i in range(self.numMPPI)
+        ]
         for iMPPI in range(self.numMPPI):
             for iPred in range(len(oppNames[iMPPI])):
                 self.lcs_pred[iMPPI].append(
                     (
-                        self.ax.plot([], color=self.pred_colors[0], marker=None, linewidth=4, alpha=0.8)[0],
-                        self.ax.plot([], color=self.pred_colors[iPred + 1], marker=None, linewidth=4, alpha=0.8)[0],
-                        self.ax.plot([], color=self.pred_colors[iPred + 1], marker=None, linewidth=3, alpha=0.8, linestyle="-.")[
-                            0
-                        ],
+                        (
+                            self.ax.plot([], color=self.pred_colors[0], marker=None, linewidth=4, alpha=0.8)[0],
+                            self.ax.plot([], color=self.pred_colors[0], marker=None, linewidth=2, alpha=0.4)[0],
+                        ),
+                        (
+                            self.ax.plot([], color=self.pred_colors[iPred + 1], marker=None, linewidth=4, alpha=0.8)[0],
+                            self.ax.plot([], color=self.pred_colors[iPred + 1], marker=None, linewidth=2, alpha=0.4)[0],
+                        ),
+                        (
+                            self.ax.plot(
+                                [], color=self.pred_colors[iPred + 1], marker=None, linewidth=3, alpha=0.8, linestyle="-."
+                            )[0],
+                            self.ax.plot(
+                                [], color=self.pred_colors[iPred + 1], marker=None, linewidth=2, alpha=0.4, linestyle="-."
+                            )[0],
+                        ),
                     )
                 )
 
@@ -160,7 +176,9 @@ class EnvironmentRenderer:
         # crash marker (initially empty)
         maxCollMarkers = self.nAgents * len(self.oppNames)
         self.collMarkers = [
-            self.ax.plot([], [], marker="*", markersize=20, color="yellow", markeredgecolor="red", markeredgewidth=1, zorder=5)[0]
+            self.ax.plot(
+                [], [], marker="*", markersize=20, color="yellow", markeredgecolor="red", markeredgewidth=1, zorder=5, alpha=0.8
+            )[0]
             for i in range(maxCollMarkers)
         ]
 
@@ -412,17 +430,32 @@ class EnvironmentRenderer:
                 if pred.predTheta == -1:
                     pred.branchTime = mppiConfig.nTimesteps
 
-                lc_nom.set_data(
-                    fullPos[: pred.branchTime, mppiState.iCont, self.axis[0]],
-                    fullPos[: pred.branchTime, mppiState.iCont, self.axis[1]],
-                )
+                vHor = self.verifConfig.horizon
+
+                def set_data(lineStrong: Line2D, lineLight: Line2D, arr: np.ndarray | None, basis: int) -> None:
+                    if arr is not None:
+                        ind = max(vHor - basis, 0)
+                        lineStrong.set_data(arr[:ind, self.axis[0]], arr[:ind, self.axis[1]])
+                        lineLight.set_data(arr[max(ind - 1, 0) :, self.axis[0]], arr[max(ind - 1, 0) :, self.axis[1]])
+                    else:
+                        lineStrong.set_data([], [])
+                        lineLight.set_data([], [])
+
+                # lc_nom.set_data(
+                #     fullPos[: pred.branchTime, mppiState.iCont, self.axis[0]],
+                #     fullPos[: pred.branchTime, mppiState.iCont, self.axis[1]],
+                # )
+                set_data(*lc_nom, fullPos[: pred.branchTime, mppiState.iCont, :], 0)
+
                 if pred.branchTime != 0 or pred.predTheta == theta:
                     # if we branch at time 0, only show the corresponding plot (otherwise, it might get confusing)
-                    lc_branch.set_data(
-                        fullPos[pred.branchTime :, mppiState.iCont, self.axis[0]],
-                        fullPos[pred.branchTime :, mppiState.iCont, self.axis[1]],
-                    )
-                    lc_opp.set_data(fullPos[:, 1 - mppiState.iCont, self.axis[0]], fullPos[:, 1 - mppiState.iCont, self.axis[1]])
+                    # lc_branch.set_data(
+                    #     fullPos[pred.branchTime :, mppiState.iCont, self.axis[0]],
+                    #     fullPos[pred.branchTime :, mppiState.iCont, self.axis[1]],
+                    # )
+                    # lc_opp.set_data(fullPos[:, 1 - mppiState.iCont, self.axis[0]], fullPos[:, 1 - mppiState.iCont, self.axis[1]])
+                    set_data(*lc_branch, fullPos[pred.branchTime :, mppiState.iCont, :], pred.branchTime)
+                    set_data(*lc_opp, fullPos[:, 1 - mppiState.iCont, :], 0)
 
                     if pred.stopReason == EVENT_TYPE.EVT_COLLISION or pred.stopReason == EVENT_TYPE.EVT_OUTSIDE:
                         marker = next(collMarkers)
@@ -430,9 +463,17 @@ class EnvironmentRenderer:
                             [fullPos[pred.stopTime, pred.stopAgent, self.axis[0]]],
                             [fullPos[pred.stopTime, pred.stopAgent, self.axis[1]]],
                         )
+                        if (
+                            pred.stopTime < self.verifConfig.horizon - 1
+                        ):  # the prediction timescale is shifted by one (since it starts from the already actuated state)
+                            marker.set_alpha(0.8)
+                        else:
+                            marker.set_alpha(0.4)
                 else:
-                    lc_branch.set_data([], [])
-                    lc_opp.set_data([], [])
+                    # lc_branch.set_data([], [])
+                    # lc_opp.set_data([], [])
+                    set_data(*lc_branch, None, 0)
+                    set_data(*lc_opp, None, 0)
 
         # hide remaining coll markers
         for marker in collMarkers:
@@ -509,7 +550,13 @@ class EnvironmentRenderer:
             failCount, eps = mppiState.failCount, mppiState.epsilon
 
             self.verif_texts[iMPPI].set_text(
-                f"Fail: {sum(failCount) / self.verifConfig.N * 100:.2f}% (coll {failCount[0] / self.verifConfig.N * 100:.2f}%, out {failCount[1] / self.verifConfig.N * 100:.2f}%)\nCertified failure rate: {eps:.5f}"
+                f"Fail: {sum(failCount) / self.verifConfig.N * 100:.2f}% (coll {failCount[0] / self.verifConfig.N * 100:.2f}%, out {failCount[1] / self.verifConfig.N * 100:.2f}%)\n"
+                + (f"Failure rate: {eps:.5f} (partial {mppiState.epsilonPartial:.5f})\n" if i > 0 else "Failure rate: --\n")
+                + (
+                    f"Use new plan: {'YES' if mppiState.useNewPlan else 'NO'} (loss: {mppiState.certifiedLoss:.5f})"
+                    if i > 0
+                    else "Use new plan: --\n"
+                )
             )
 
             for i, (bar, b_val) in enumerate(zip(self.belief_bars[iMPPI], mppiState.belief)):

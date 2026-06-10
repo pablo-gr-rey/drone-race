@@ -150,10 +150,13 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
                 // send collision status
                 writer.pushIntArray(cont->failCount);
                 writer.pushFloat(cont->epsilon);
+                writer.pushFloat(cont->epsilonPartial);
+                writer.pushInt32((int) cont->useNewPlan);
+                writer.pushFloat(cont->certifiedLoss);
 
                 writer.pushInt32(cont->mppiConfig.nModels);
 
-                // build the predicted probabilities
+                // build the predicted trajectories
                 // we simulate it for nominal and every theta
 
                 // we keep copies of the initial state, since they are modified by dynStep

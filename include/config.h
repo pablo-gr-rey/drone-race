@@ -96,8 +96,7 @@ struct VerifConfig
     int nVerifSamples;
     float beta;
     int horizon;
-
-    std::vector<int> K;     // assumed to be sorted
+    float maxEps;
 
     void unpackHeader(const void* buf, size_t len);
 };

@@ -4,6 +4,8 @@
 #include "cuda_runtime.h"
 #include "curand_kernel.h"
 
+#include <boost/math/distributions/beta.hpp>
+
 // #include <cmath>
 #include <math.h>
 
@@ -33,7 +35,7 @@ HD INLINE float agentSpeed(const float* __restrict__ speed, int agent, int dim)
 }
 
 // Advance = currentGate + nGates * laps + scale * (1 - normalizedDistToGate) (it is much better to pass through a gate than to just be close to it) (this is a rough measure, it doesn't include speed for example) (expect pos to be of size d, ie. pos[0] should be position of actual agent)
-// `pos` points to the agent's contiguous position array of length `dim`.
+// 'pos' points to the agent's contiguous position array of length 'dim'
 HD INLINE float getAdvance(const int* laps, const int* currentGates, int agent, int nGates, const float* __restrict__ pos, const float* __restrict__ gateCenters, int dim)
 {
     float sqGateDist = 0.0f;    // sq dist between pos and next gate
@@ -383,4 +385,24 @@ __device__ INLINE int sampleModelFromBelief(const float* __restrict__ belief, in
     }
 
     return nModels - 1;
+}
+
+// return lower-bound on p such that P(Binom(n, p) = k) >= alpha
+inline double clopperPearsonLowerBound(uint k, uint n, double alpha)
+{
+    if (k == 0)
+        return 0.0;
+
+    boost::math::beta_distribution<double> dist(k, n - k + 1);
+    return boost::math::quantile(dist, alpha);
+}
+
+// return upper-bound on p such that P(Binom(n, p) = k) >= alpha
+inline double clopperPearsonUpperBound(uint k, uint n, double alpha)
+{
+    if (k == n)
+        return 1.0;
+
+    boost::math::beta_distribution<double> dist(k + 1, n - k);
+    return boost::math::quantile(dist, 1.0 - alpha);
 }

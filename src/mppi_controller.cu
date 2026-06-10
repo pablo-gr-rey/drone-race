@@ -38,7 +38,7 @@ MPPIController::MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc,
     else
         h_nominal.assign((mc.nModels + 1) * mc.nTimesteps * envConfig.dim, 0.);
 
-    failCount = { 0u, 0u };
+    failCountNew = failCountOld = failCount = { 0u, 0u };
 }
 
 MPPIController::~MPPIController()
@@ -75,6 +75,9 @@ void MPPIController::allocDevice()
 
     // Nominal action: (nModels+1, T, dim)
     CUDA_CHECK(cudaMalloc(&d_nominal, (nModels + 1) * T * dim * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_nominal, 0, (nModels + 1) * T * dim * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_prevnominal, (nModels + 1) * T * dim * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_prevnominal, 0, (nModels + 1) * T * dim * sizeof(float)));
 
     // Scalar for min reduction
     CUDA_CHECK(cudaMalloc(&d_minCosts, (nModels + 1) * T * sizeof(float)));
@@ -86,7 +89,8 @@ void MPPIController::allocDevice()
     CUDA_CHECK(cudaMemset(d_rng, 0, N * sizeof(curandState)));  // otherwise, memory is flagged as unitialized even though initRng does get called
 
     // Verification state
-    CUDA_CHECK(cudaMalloc(&d_failCount, 2 * sizeof(uint)));
+    CUDA_CHECK(cudaMalloc(&d_failCountOld, 2 * sizeof(uint)));
+    CUDA_CHECK(cudaMalloc(&d_failCountNew, 2 * sizeof(uint)));
     CUDA_CHECK(cudaMalloc(&d_verif_rng, verifConfig.nVerifSamples * sizeof(curandState)));
     CUDA_CHECK(cudaMemset(d_verif_rng, 0, verifConfig.nVerifSamples * sizeof(curandState)));
 
@@ -148,13 +152,15 @@ void MPPIController::freeDevice()
     safe_free(d_noise);
     safe_free(d_costs);
     safe_free(d_nominal);
+    safe_free(d_prevnominal);
     safe_free(d_minCosts);
     safe_free(d_maskedCosts);
     safe_free(d_nu);
     safe_free(d_rng);
     safe_free(d_temp_storage);
 
-    safe_free(d_failCount);
+    safe_free(d_failCountOld);
+    safe_free(d_failCountNew);
     safe_free(d_verif_rng);
 
     temp_storage_bytes = 0;
@@ -224,7 +230,8 @@ void MPPIController::getControl(int agent,
     CUDA_CHECK(cudaMemcpy(d_laps, laps, envConfig.nAgents * sizeof(int), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_currentGates, currentGates, envConfig.nAgents * sizeof(int), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_belief, h_belief.data(), nModels * sizeof(float), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemset(d_failCount, 0, 2 * sizeof(uint)));
+    CUDA_CHECK(cudaMemset(d_failCountOld, 0, 2 * sizeof(uint)));
+    CUDA_CHECK(cudaMemset(d_failCountNew, 0, 2 * sizeof(uint)));
     CUDA_CHECK(cudaMemset(d_nu, 0, (nModels + 1) * sizeof(float)));
 
     // float initMin = FLT_MAX;
@@ -336,12 +343,46 @@ void MPPIController::getControl(int agent,
 #endif
 
     // 5.75 Get guarantees on our nominal action
+
+    // TODO: check if we can get better guarantees with P(crash_old & not crash_new) (in this case, careful about rng)
+
     int verifGrd = (verifConfig.nVerifSamples + blk - 1) / blk;
+
     verifyNominalFailureKernel << <verifGrd, blk >> > (
         agent, verifConfig.nVerifSamples, envConfig, mppiConfig, verifConfig.horizon,
         d_pos, d_speed, d_S, d_laps, d_currentGates, d_belief,
-        d_nominal, d_trackPts, d_verif_rng, d_failCount
+        d_nominal, d_trackPts, d_verif_rng, d_failCountNew
         );
+    CUDA_CHECK(cudaMemcpy(failCountNew.data(), d_failCountNew, 2 * sizeof(uint), cudaMemcpyDeviceToHost));
+
+    verifyNominalFailureKernel << <verifGrd, blk >> > (
+        agent, verifConfig.nVerifSamples, envConfig, mppiConfig, verifConfig.horizon,
+        d_pos, d_speed, d_S, d_laps, d_currentGates, d_belief,
+        d_prevnominal, d_trackPts, d_verif_rng, d_failCountOld
+        );
+    CUDA_CHECK(cudaMemcpy(failCountOld.data(), d_failCountOld, 2 * sizeof(uint), cudaMemcpyDeviceToHost));
+
+    computeCertifiedLoss();
+    useNewPlan = certifiedLoss < verifConfig.maxEps;
+
+    // from step 48 onwards, we keep our old plan
+    // if (pos[agent * dim] >= 10.3)
+    //     useNewPlan = false;
+
+    if (useNewPlan)
+        std::cout << "USING NEW PLAN\n";
+    else
+        std::cout << "USING PREVIOUS PLAN\n";
+
+    // TODO: if we switch to count failures of crash(new) & !crash(old), then we have to do another kernel launch
+    if (useNewPlan)
+        failCount = failCountNew;
+    else
+        failCount = failCountOld;
+
+    computeEpsilon();
+
+    // TODO: use corresponding nominal and shift it accordingly
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
@@ -350,14 +391,15 @@ void MPPIController::getControl(int agent,
 
     // 6. Download updated nominal action sequence, min cost, sum of cost and number of failures for display
     // TODO: we don't need to copy everything, we could just copy the interesting action and do the shift on GPU if we are not interested in MPPI predictions (could be argument to engine)
-    CUDA_CHECK(cudaMemcpy(h_nominal.data(), d_nominal, h_nominal.size() * sizeof(float), cudaMemcpyDeviceToHost));
+
+    if (useNewPlan)
+        CUDA_CHECK(cudaMemcpy(h_nominal.data(), d_nominal, h_nominal.size() * sizeof(float), cudaMemcpyDeviceToHost));
+    else
+        CUDA_CHECK(cudaMemcpy(h_nominal.data(), d_prevnominal, h_nominal.size() * sizeof(float), cudaMemcpyDeviceToHost));
 
     std::vector<float> hostMin((nModels + 1) * T), nu(nModels + 1);
     CUDA_CHECK(cudaMemcpy(hostMin.data(), d_minCosts, (nModels + 1) * T * sizeof(float), cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaMemcpy(nu.data(), d_nu, (nModels + 1) * sizeof(float), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(failCount.data(), d_failCount, 2 * sizeof(uint), cudaMemcpyDeviceToHost));
-
-    computeEpsilon();
 
     int predTheta = findConfident(h_belief.data(), mppiConfig.nModels, mppiConfig.minConfidence);
     // if predTheta == -1, submit nominal general action; otherwise, submit nominal action corresponding to this hypothesis
@@ -391,7 +433,7 @@ void MPPIController::getControl(int agent,
         std::cout << mppiConfig.invTemperature << "\n";
     }
 
-    std::cout << "Verification samples: failed " << failCount[0] + failCount[1] << " out of " << verifConfig.nVerifSamples << " (collision: " << failCount[0] << "; outside: " << failCount[1] << ")" << std::endl;
+    std::cout << "Verification samples: failed " << failCountNew[0] + failCountNew[1] << " out of " << verifConfig.nVerifSamples << " (collision: " << failCountNew[0] << "; outside: " << failCountNew[1] << ")" << std::endl;
 
     // 7. Shift nominal action sequence left by one timestep (warm-start for next call)
     for (int t = 0; t < T - 1; t++)
@@ -413,6 +455,7 @@ void MPPIController::getControl(int agent,
 
     // Upload shifted nominal back to device for next call
     CUDA_CHECK(cudaMemcpy(d_nominal, h_nominal.data(), h_nominal.size() * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_prevnominal, d_nominal, h_nominal.size() * sizeof(float), cudaMemcpyDeviceToDevice));
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
