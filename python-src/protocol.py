@@ -233,6 +233,7 @@ class ZMQRecv:
                 frameSkipPlayback=2,
                 defaultZoomAgent=-1,
                 display_raceline=used,
+                # display_raceline=False,
                 renderTrails=False,
             )
         else:

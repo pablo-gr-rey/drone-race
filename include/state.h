@@ -66,8 +66,8 @@ HD INLINE void sampleCenterline(const float* __restrict__ trackPoints, int nSamp
 }
 
 // Project position onto sampled track
-// Returns best s in [0,1]; writes distance into bestDist.
-// closestOut may be nullptr.
+// Returns best s in [0,1]; writes distance into bestDist
+// closestOut may be nullptr
 HD INLINE float projectOnTrack(const float* __restrict__ trackPoints,
     int nSamples, int dim,
     const float* __restrict__ pos,
@@ -111,6 +111,7 @@ HD INLINE float sqDistToSample(const float* __restrict__ trackPoints, int iTrack
 HD INLINE int findMinAlongDirection(const float* __restrict__ trackPoints, int nSamples, int iTrack, int dim, const float* __restrict__ pos, int delta, float baseSqDist, float& bestDist)
 {
     // greedy search + margin (should work if the track is not too weird)
+    // TODO: maybe fixed window size is better (and more compiler friendly)
     const int margin = 10;
 
     int bestI = iTrack;

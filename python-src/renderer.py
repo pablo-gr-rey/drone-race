@@ -360,7 +360,7 @@ class EnvironmentRenderer:
             for i in range(self.envConfig.nRaceLines):
                 if display_raceline is None or display_raceline[i]:
                     pts = self.envConfig.trackPoints[i * self.envConfig.nTrackSamples : (i + 1) * self.envConfig.nTrackSamples, :]
-                    self.ax.plot(pts[:, 0], pts[:, 1], "g--", alpha=0.5)
+                    self.ax.plot(pts[:, 0], pts[:, 1], color="grey", linestyle="--", alpha=0.3)
 
         # draw obstacles
         for omin, omax in self.envConfig.obstacles.reshape(self.envConfig.nObstacles, 2, self.envConfig.dim):
@@ -467,8 +467,10 @@ class EnvironmentRenderer:
                             pred.stopTime < self.verifConfig.horizon - 1
                         ):  # the prediction timescale is shifted by one (since it starts from the already actuated state)
                             marker.set_alpha(0.8)
+                            marker.set_markersize(20)
                         else:
                             marker.set_alpha(0.4)
+                            marker.set_markersize(10)
                 else:
                     # lc_branch.set_data([], [])
                     # lc_opp.set_data([], [])
