@@ -58,7 +58,6 @@ __host__ INLINE float sampleNormal(HostRNG& rng)
     return (*rng.nd)(*rng.rng);
 }
 
-
 // Euclidean distance between two agents (positions only)
 HD INLINE float agentDist(const float* __restrict__ pos, int a, int b)
 {

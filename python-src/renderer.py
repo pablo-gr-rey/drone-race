@@ -2,9 +2,8 @@ import io
 import os
 import time
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, Optional
 
-from matplotlib.container import BarContainer
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import patches
@@ -17,7 +16,7 @@ from matplotlib.transforms import Bbox
 from matplotlib.widgets import Button, Slider, TextBox
 from PIL import Image
 from tqdm import tqdm
-from utils import EVENT_TYPE, ControllerConfig, FullStateInfo, GateEnvironmentConfig, MPPIConfig, VerifConfig
+from utils import EVENT_TYPE, FullStateInfo, GateEnvironmentConfig, MPPIConfig, VerifConfig
 
 
 class EnvironmentRenderer:
@@ -28,10 +27,10 @@ class EnvironmentRenderer:
     def __init__(
         self,
         envConfig: GateEnvironmentConfig,
-        contConfigs: list[ControllerConfig],
+        mppiConfig: MPPIConfig,
         contNames: list[str],
         verifConfig: VerifConfig,
-        oppNames: list[list[str]],  # one list[str] per each MPPI (in order of the controller configs)
+        oppNames: list[str],
         axis: tuple[int, ...] = (0, 1),
         interval: int = 30,
         autoplay: bool = True,
@@ -48,16 +47,13 @@ class EnvironmentRenderer:
         self.interval = interval
         self.frameSkipPlayback = frameSkipPlayback
         self.frameSkipWaiting = frameSkipWaiting
+        self.iMppi = self.envConfig.iMppi
 
-        self.contConfigs = contConfigs
-        self.mppiIndices: list[int] = []  # mppIndices[i] = controller index of the i-th MPPI controller
-        for i, cont in enumerate(contConfigs):
-            if isinstance(cont, MPPIConfig):
-                self.mppiIndices.append(i)
-        self.numMPPI = len(self.mppiIndices)
+        self.mppiConfig = mppiConfig
+        print(oppNames, mppiConfig.nModels)
 
-        if len(oppNames) != len(self.mppiIndices):
-            raise ValueError("Expect a single list[str] or a list[list[str]] of length number of MPPI configs for oppNames")
+        if len(oppNames) != mppiConfig.nModels:
+            raise ValueError("Wrong length for oppNames")
         self.oppNames = oppNames
         print(oppNames)
 
@@ -68,7 +64,6 @@ class EnvironmentRenderer:
         self.collision = False
         self.winner: Optional[int] = None
         self.outside: Optional[int] = None
-        self.mppiIndices
 
         if isinstance(display_raceline, bool):
             display_raceline = [display_raceline] * envConfig.nRaceLines
@@ -97,19 +92,13 @@ class EnvironmentRenderer:
 
         self.ax = self.fig.add_subplot(gs[0, 0])  # track ax
 
-        gs_status = gs[0, 1].subgridspec(2, 1, height_ratios=[1, 3], hspace=0.1)
+        gs_status = gs[0, 1].subgridspec(3, 1, height_ratios=[1, 1, 3], hspace=0.1)
 
         self.ax_status = self.fig.add_subplot(gs_status[0])  # for text status
         self.ax_status.axis("off")
 
-        self.axs_belief: list[plt.Axes] = []  # type: ignore
-        self.axs_failcount: list[plt.Axes] = []  # type: ignore
-
-        if self.mppiIndices:
-            for g in gs_status[1].subgridspec(self.numMPPI, 1, wspace=0.1):
-                subg = g.subgridspec(2, 1, height_ratios=[1, 4], wspace=0.05, hspace=0.0)
-                self.axs_failcount.append(self.fig.add_subplot(subg[0]))
-                self.axs_belief.append(self.fig.add_subplot(subg[1]))
+        self.ax_failcount = self.fig.add_subplot(gs_status[1])
+        self.ax_belief = self.fig.add_subplot(gs_status[2])
 
         # slider, empty space, play/pause, save gif, gif name, zoom, +/-, focus
         gs_ui = gs[1, :].subgridspec(1, 8, width_ratios=[7, 1, 1, 1, 1, 1, 0.4, 1], wspace=0.1)
@@ -134,32 +123,30 @@ class EnvironmentRenderer:
             self.ax.add_collection(lc)  # type: ignore
 
         # line collections for MPPI predictions
-        # length: nMPPI * nModels, with items being (nominalMPPItraj, branchedTraj, PIDtraj). each line 2D has 2 components, 1st strong and 2nd light (to show before & after verification)
-        self.lcs_pred: list[list[tuple[tuple[Line2D, Line2D], tuple[Line2D, Line2D], tuple[Line2D, Line2D]]]] = [
-            [] for i in range(self.numMPPI)
-        ]
-        for iMPPI in range(self.numMPPI):
-            for iPred in range(len(oppNames[iMPPI])):
-                self.lcs_pred[iMPPI].append(
+        # length: nModels, with items being (nominalMPPItraj, branchedTraj, PIDtraj). each line 2D has 2 components, 1st strong and 2nd light (to show before & after verification)
+        self.lcs_pred: list[tuple[tuple[Line2D, Line2D], tuple[Line2D, Line2D], tuple[Line2D, Line2D]]] = []
+
+        for iPred in range(len(oppNames)):
+            self.lcs_pred.append(
+                (
                     (
-                        (
-                            self.ax.plot([], color=self.pred_colors[0], marker=None, linewidth=4, alpha=0.8)[0],
-                            self.ax.plot([], color=self.pred_colors[0], marker=None, linewidth=2, alpha=0.4)[0],
-                        ),
-                        (
-                            self.ax.plot([], color=self.pred_colors[iPred + 1], marker=None, linewidth=4, alpha=0.8)[0],
-                            self.ax.plot([], color=self.pred_colors[iPred + 1], marker=None, linewidth=2, alpha=0.4)[0],
-                        ),
-                        (
-                            self.ax.plot(
-                                [], color=self.pred_colors[iPred + 1], marker=None, linewidth=3, alpha=0.8, linestyle="-."
-                            )[0],
-                            self.ax.plot(
-                                [], color=self.pred_colors[iPred + 1], marker=None, linewidth=2, alpha=0.4, linestyle="-."
-                            )[0],
-                        ),
-                    )
+                        self.ax.plot([], color=self.pred_colors[0], marker=None, linewidth=4, alpha=0.8)[0],
+                        self.ax.plot([], color=self.pred_colors[0], marker=None, linewidth=2, alpha=0.4)[0],
+                    ),
+                    (
+                        self.ax.plot([], color=self.pred_colors[iPred + 1], marker=None, linewidth=4, alpha=0.8)[0],
+                        self.ax.plot([], color=self.pred_colors[iPred + 1], marker=None, linewidth=2, alpha=0.4)[0],
+                    ),
+                    (
+                        self.ax.plot([], color=self.pred_colors[iPred + 1], marker=None, linewidth=3, alpha=0.8, linestyle="-.")[
+                            0
+                        ],
+                        self.ax.plot([], color=self.pred_colors[iPred + 1], marker=None, linewidth=2, alpha=0.4, linestyle="-.")[
+                            0
+                        ],
+                    ),
                 )
+            )
 
         # points and collision circles
         self.points: list[Any] = []
@@ -224,58 +211,50 @@ class EnvironmentRenderer:
             self.agent_value_texts.append(t_val)
 
         # MPPI belief
-        self.belief_bars: list[BarContainer] = []
-        self.belief_texts: list[list[Text]] = []
-        self.verif_texts: list[Text] = []
-        for iMPPI, (ax_belief, ax_failcount) in enumerate(zip(self.axs_belief, self.axs_failcount)):
-            x_pos = np.arange(len(oppNames[iMPPI]))
+        self.belief_texts: list[Text] = []
 
-            title = "Model Beliefs & Fail Count"
-            if self.numMPPI > 1:
-                title += f" (agent {self.mppiIndices[iMPPI] + 1})"
+        x_pos = np.arange(len(oppNames))
 
-            ax_failcount.text(0.5, 1, title, fontsize=12, ha="center", va="top", fontweight="bold")
-            self.verif_texts.append(ax_failcount.text(0.5, 0.1, "", fontsize=12, ha="center", va="bottom"))
-            ax_failcount.axis("off")
+        title = "Model Beliefs & Fail Count"
 
-            self.belief_bars.append(
-                ax_belief.bar(x_pos, np.zeros(len(oppNames[iMPPI])), color="#3498db", edgecolor="black", alpha=0.8)
+        self.ax_failcount.text(0.5, 1, title, fontsize=12, ha="center", va="top", fontweight="bold")
+        self.verif_text = self.ax_failcount.text(0.5, 0.1, "", fontsize=12, ha="center", va="bottom")
+        self.ax_failcount.axis("off")
+
+        self.belief_bar = self.ax_belief.bar(x_pos, np.zeros(len(oppNames)), color="#3498db", edgecolor="black", alpha=0.8)
+
+        # threshold line
+        self.ax_belief.axhline(
+            y=mppiConfig.minConfidence,
+            color="#e74c3c",
+            linestyle="--",
+            linewidth=1.5,
+        )
+
+        # texte for the initial values (initially empty)
+        for i in range(len(oppNames)):
+            t = self.ax_belief.text(
+                i, 0.02, "", ha="center", va="bottom", fontsize=8, fontweight="bold", color=self.pred_colors[1 + i]
             )
+            self.belief_texts.append(t)
 
-            # threshold line
-            ax_belief.axhline(
-                y=cast(MPPIConfig, self.contConfigs[self.mppiIndices[iMPPI]]).minConfidence,
-                color="#e74c3c",
-                linestyle="--",
-                linewidth=1.5,
-            )
+        self.ax_belief.set_xticks(x_pos)
+        self.ax_belief.set_xticklabels(oppNames, fontsize=9, rotation=45)
 
-            # texte for the initial values (initially empty)
-            belief_texts = []
-            for i in range(len(oppNames[iMPPI])):
-                t = ax_belief.text(
-                    i, 0.02, "", ha="center", va="bottom", fontsize=8, fontweight="bold", color=self.pred_colors[1 + i]
-                )
-                belief_texts.append(t)
-            self.belief_texts.append(belief_texts)
+        # self.ax_belief.set_xlim(0, 1)
+        self.ax_belief.set_ylim(0, 1.05)
+        self.ax_belief.set_ylabel("Probability", fontsize=8)
+        self.ax_belief.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
 
-            ax_belief.set_xticks(x_pos)
-            ax_belief.set_xticklabels(oppNames[iMPPI], fontsize=9, rotation=45)
+        self.ax_belief.spines["top"].set_visible(False)
+        self.ax_belief.spines["right"].set_visible(False)
+        self.ax_belief.grid(axis="y", linestyle=":", alpha=0.4)
 
-            # ax_belief.set_xlim(0, 1)
-            ax_belief.set_ylim(0, 1.05)
-            ax_belief.set_ylabel("Probability", fontsize=8)
-            ax_belief.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
-
-            ax_belief.spines["top"].set_visible(False)
-            ax_belief.spines["right"].set_visible(False)
-            ax_belief.grid(axis="y", linestyle=":", alpha=0.4)
-
-            # we need to draw to get back the labels
-            self.fig.canvas.draw_idle()
-            x_labels = ax_belief.get_xticklabels()
-            for label, color in zip(x_labels, self.pred_colors[1:]):
-                label.set_color(color)
+        # we need to draw to get back the labels
+        self.fig.canvas.draw_idle()
+        x_labels = self.ax_belief.get_xticklabels()
+        for label, color in zip(x_labels, self.pred_colors[1:]):
+            label.set_color(color)
 
         # UI: slider, play, save GIF, textbox and zoom
         max_idx = max(1, len(self.stateLog) - 1)
@@ -410,72 +389,55 @@ class EnvironmentRenderer:
         collMarkers = iter(self.collMarkers)
 
         # update MPPI predictions
-        for mppiState in self.stateLog[i].mppiInfo:
-            if mppiState.iCont not in self.mppiIndices:
-                print(f"WARNING: backend sent MPPI state info for controller {mppiState.iCont}, which is not a MPPI controller")
-                continue
+        mppiState = self.stateLog[i].mppiInfo
 
-            iMPPI = self.mppiIndices.index(mppiState.iCont)
-            mppiConfig = cast(MPPIConfig, self.contConfigs[mppiState.iCont])
+        if len(mppiState.preds) != len(self.oppNames):
+            print(
+                f"WARNING: len(mppiState.preds) = {len(mppiState.preds)} is different from len(self.oppNames) = {len(self.oppNames)}"
+            )
+            return
 
-            if len(mppiState.preds) != len(self.oppNames[iMPPI]):
-                print(
-                    f"WARNING: len(mppiState.preds) = {len(mppiState.preds)} is different from len(self.oppNames[iMPPI]) = {len(self.oppNames[iMPPI])}"
-                )
-                continue
+        for theta, ((lc_nom, lc_branch, lc_opp), pred) in enumerate(zip(self.lcs_pred, mppiState.preds)):
+            fullPos = pred.fullPos.reshape((self.mppiConfig.nTimesteps, self.envConfig.nAgents, self.envConfig.dim))
 
-            for theta, ((lc_nom, lc_branch, lc_opp), pred) in enumerate(zip(self.lcs_pred[iMPPI], mppiState.preds)):
-                fullPos = pred.fullPos.reshape((mppiConfig.nTimesteps, self.envConfig.nAgents, self.envConfig.dim))
+            if pred.predTheta == -1:
+                pred.branchTime = self.mppiConfig.nTimesteps
 
-                if pred.predTheta == -1:
-                    pred.branchTime = mppiConfig.nTimesteps
+            vHor = self.verifConfig.horizon
 
-                vHor = self.verifConfig.horizon
-
-                def set_data(lineStrong: Line2D, lineLight: Line2D, arr: np.ndarray | None, basis: int) -> None:
-                    if arr is not None:
-                        ind = max(vHor - basis, 0)
-                        lineStrong.set_data(arr[:ind, self.axis[0]], arr[:ind, self.axis[1]])
-                        lineLight.set_data(arr[max(ind - 1, 0) :, self.axis[0]], arr[max(ind - 1, 0) :, self.axis[1]])
-                    else:
-                        lineStrong.set_data([], [])
-                        lineLight.set_data([], [])
-
-                # lc_nom.set_data(
-                #     fullPos[: pred.branchTime, mppiState.iCont, self.axis[0]],
-                #     fullPos[: pred.branchTime, mppiState.iCont, self.axis[1]],
-                # )
-                set_data(*lc_nom, fullPos[: pred.branchTime, mppiState.iCont, :], 0)
-
-                if pred.branchTime != 0 or pred.predTheta == theta:
-                    # if we branch at time 0, only show the corresponding plot (otherwise, it might get confusing)
-                    # lc_branch.set_data(
-                    #     fullPos[pred.branchTime :, mppiState.iCont, self.axis[0]],
-                    #     fullPos[pred.branchTime :, mppiState.iCont, self.axis[1]],
-                    # )
-                    # lc_opp.set_data(fullPos[:, 1 - mppiState.iCont, self.axis[0]], fullPos[:, 1 - mppiState.iCont, self.axis[1]])
-                    set_data(*lc_branch, fullPos[pred.branchTime :, mppiState.iCont, :], pred.branchTime)
-                    set_data(*lc_opp, fullPos[:, 1 - mppiState.iCont, :], 0)
-
-                    if pred.stopReason == EVENT_TYPE.EVT_COLLISION or pred.stopReason == EVENT_TYPE.EVT_OUTSIDE:
-                        marker = next(collMarkers)
-                        marker.set_data(
-                            [fullPos[pred.stopTime, pred.stopAgent, self.axis[0]]],
-                            [fullPos[pred.stopTime, pred.stopAgent, self.axis[1]]],
-                        )
-                        if (
-                            pred.stopTime < self.verifConfig.horizon - 1
-                        ):  # the prediction timescale is shifted by one (since it starts from the already actuated state)
-                            marker.set_alpha(0.8)
-                            marker.set_markersize(20)
-                        else:
-                            marker.set_alpha(0.4)
-                            marker.set_markersize(10)
+            def set_data(lineStrong: Line2D, lineLight: Line2D, arr: np.ndarray | None, basis: int) -> None:
+                if arr is not None:
+                    ind = max(vHor - basis, 0)
+                    lineStrong.set_data(arr[:ind, self.axis[0]], arr[:ind, self.axis[1]])
+                    lineLight.set_data(arr[max(ind - 1, 0) :, self.axis[0]], arr[max(ind - 1, 0) :, self.axis[1]])
                 else:
-                    # lc_branch.set_data([], [])
-                    # lc_opp.set_data([], [])
-                    set_data(*lc_branch, None, 0)
-                    set_data(*lc_opp, None, 0)
+                    lineStrong.set_data([], [])
+                    lineLight.set_data([], [])
+
+            set_data(*lc_nom, fullPos[: pred.branchTime, self.iMppi, :], 0)
+
+            if pred.branchTime != 0 or pred.predTheta == theta:
+                # if we branch at time 0, only show the corresponding plot (otherwise, it might get confusing)
+                set_data(*lc_branch, fullPos[pred.branchTime :, self.iMppi, :], pred.branchTime)
+                set_data(*lc_opp, fullPos[:, 1 - self.iMppi, :], 0)
+
+                if pred.stopReason == EVENT_TYPE.EVT_COLLISION or pred.stopReason == EVENT_TYPE.EVT_OUTSIDE:
+                    marker = next(collMarkers)
+                    marker.set_data(
+                        [fullPos[pred.stopTime, pred.stopAgent, self.axis[0]]],
+                        [fullPos[pred.stopTime, pred.stopAgent, self.axis[1]]],
+                    )
+                    if (
+                        pred.stopTime < self.verifConfig.horizon - 1
+                    ):  # the prediction timescale is shifted by one (since it starts from the already actuated state)
+                        marker.set_alpha(0.8)
+                        marker.set_markersize(20)
+                    else:
+                        marker.set_alpha(0.4)
+                        marker.set_markersize(10)
+            else:
+                set_data(*lc_branch, None, 0)
+                set_data(*lc_opp, None, 0)
 
         # hide remaining coll markers
         for marker in collMarkers:
@@ -534,42 +496,35 @@ class EnvironmentRenderer:
                 f"Lap {int(laps[iAgent])}/{self.envConfig.nWinLaps} Gate {int(gates[iAgent])}/{self.envConfig.nGates}\nSpeed {speed:.2f}"
             )
 
-        # update MPPI belief (TODO: so far, this only shows 1 belief)
-        for mppiState in self.stateLog[i].mppiInfo:
-            if mppiState.iCont not in self.mppiIndices:
-                print(f"WARNING: backend sent MPPI state info for controller {mppiState.iCont}, which is not a MPPI controller")
-                continue
+        # update MPPI belief
+        mppiState = self.stateLog[i].mppiInfo
 
-            iMPPI = self.mppiIndices.index(mppiState.iCont)
-            mppiConfig = cast(MPPIConfig, self.contConfigs[mppiState.iCont])
-
-            if len(mppiState.preds) != len(self.oppNames[iMPPI]):
-                print(
-                    f"WARNING: len(mppiState.preds) = {len(mppiState.preds)} is different from len(self.oppNames[iMPPI]) = {len(self.oppNames[iMPPI])}"
-                )
-                continue
-
-            failCount, eps = mppiState.failCount, mppiState.epsilon
-
-            self.verif_texts[iMPPI].set_text(
-                f"Fail: {sum(failCount) / self.verifConfig.N * 100:.2f}% (coll {failCount[0] / self.verifConfig.N * 100:.2f}%, out {failCount[1] / self.verifConfig.N * 100:.2f}%)\n"
-                + (f"Failure rate: {eps:.5f} (partial {mppiState.epsilonPartial:.5f})\n" if i > 0 else "Failure rate: --\n")
-                + (
-                    f"Use new plan: {'YES' if mppiState.useNewPlan else 'NO'} (loss: {mppiState.certifiedLoss:.5f})"
-                    if i > 0
-                    else "Use new plan: --\n"
-                )
+        if len(mppiState.preds) != len(self.oppNames):
+            print(
+                f"WARNING: len(mppiState.preds) = {len(mppiState.preds)} is different from len(self.oppNames) = {len(self.oppNames)}"
             )
+            return
 
-            for i, (bar, b_val) in enumerate(zip(self.belief_bars[iMPPI], mppiState.belief)):
-                bar.set_height(b_val)
+        failCount, eps = mppiState.failCount, mppiState.epsilon
 
-                color = "#2ecc71" if b_val >= mppiConfig.minConfidence else "#3498db"
-                bar.set_facecolor(color)
+        self.verif_text.set_text(
+            f"Fail: {sum(failCount) / self.verifConfig.N * 100:.2f}% (coll {failCount[0] / self.verifConfig.N * 100:.2f}%, out {failCount[1] / self.verifConfig.N * 100:.2f}%)\n"
+            + (f"Failure rate: {eps:.5f} (partial {mppiState.epsilonPartial:.5f})\n" if i > 0 else "Failure rate: --\n")
+            + (
+                f"Use new plan: {'YES' if mppiState.useNewPlan else 'NO'} (loss: {mppiState.certifiedLoss:.5f})"
+                if i > 0
+                else "Use new plan: --\n"
+            )
+        )
 
-                # Mise à jour du texte de valeur
-                self.belief_texts[iMPPI][i].set_text(f"{b_val:.2f}")
-                self.belief_texts[iMPPI][i].set_y(b_val + 0.01)
+        for i, (bar, b_val) in enumerate(zip(self.belief_bar, mppiState.belief)):
+            bar.set_height(b_val)
+
+            color = "#2ecc71" if b_val >= self.mppiConfig.minConfidence else "#3498db"
+            bar.set_facecolor(color)
+
+            self.belief_texts[i].set_text(f"{b_val:.2f}")
+            self.belief_texts[i].set_y(b_val + 0.01)
 
     def onNewState(
         self,
@@ -713,7 +668,7 @@ class EnvironmentRenderer:
             self.updateDisplay(i)
             self.fig.canvas.draw()
 
-            axes_to_capture = [self.ax, self.ax_status] + self.axs_belief + self.axs_failcount
+            axes_to_capture = [self.ax, self.ax_status, self.ax_belief, self.ax_failcount]
             bboxes = [a.get_window_extent().transformed(self.fig.dpi_scale_trans.inverted()) for a in axes_to_capture]
             full_bbox = Bbox.union(bboxes).padded(0.5)
 

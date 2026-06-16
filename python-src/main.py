@@ -13,8 +13,6 @@ from typing import Any
 import numpy as np
 from protocol import ZMQRecv
 from utils import (
-    CONTROLLER_TYPE,
-    ControllerConfig,
     GateEnvironmentConfig,
     MPPIConfig,
     PIDConfig,
@@ -349,6 +347,11 @@ def standardGateEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PID
 
     gateCenters, gateVectors, gateRadius = circularGateTrack(nGates, trackRadius, 1, None if dim == 2 else 0.0)
 
+    pidafraid = PIDConfig(
+        kp=5, kd=20, repulsionFactor=30, repulsionDistFactor=3, racelineIndex=1, actionNoise=2, repulsionPower=2.0
+    )
+    pidbold = PIDConfig(kp=5, kd=20, repulsionFactor=0, repulsionDistFactor=3, racelineIndex=1, actionNoise=2, repulsionPower=2.0)
+
     config = GateEnvironmentConfig(
         nAgents=nAgents,
         dim=dim,
@@ -363,6 +366,7 @@ def standardGateEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PID
         gateVectors=gateVectors,
         gateRadius=gateRadius,
         minDist=1.5,
+        opponentPidConfigs=(pidafraid, pidbold),
     )
 
     assert config.trackPoints is not None  # it is built automatically in GateEnvironmentConfig
@@ -390,11 +394,6 @@ def standardGateEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PID
         ]
     )
 
-    pidafraid = PIDConfig(
-        kp=5, kd=20, repulsionFactor=30, repulsionDistFactor=3, racelineIndex=1, actionNoise=2, repulsionPower=2.0
-    )
-    pidbold = PIDConfig(kp=5, kd=20, repulsionFactor=0, repulsionDistFactor=3, racelineIndex=1, actionNoise=2, repulsionPower=2.0)
-
     mppiconfig = MPPIConfig(
         nSamples=10000,
         nTimesteps=60,
@@ -421,9 +420,7 @@ def standardGateEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PID
         collisionCost=1000000,
         winCost=100000,
         minConfidence=0.95,
-        oppKind=CONTROLLER_TYPE.CONT_PID,
         nModels=2,
-        opponentPidConfigs=(pidafraid, pidbold),
         initBelief=np.array([0.5, 0.5]),
         # initBelief=np.array([1, 0]),
     )
@@ -453,6 +450,10 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig
         np.array([1, 1]),
     )
 
+    repulsion = 30 if afraid else 0
+    pid0 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=0, actionNoise=2)
+    pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=1, actionNoise=2)
+
     config = GateEnvironmentConfig(
         nAgents=nAgents,
         dim=dim,
@@ -473,6 +474,7 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig
         nObstacles=1,
         obstacles=np.array([length * (0.5 - obsSize / 2), -height, length * (0.5 + obsSize / 2), height]),
         seed=42,
+        opponentPidConfigs=(pid0, pid1),
     )
 
     assert config.trackPoints is not None  # it is built automatically in GateEnvironmentConfig
@@ -512,12 +514,9 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig
     # if afraid:
     #     config.init_pos = np.array([10.0, 4.0, 0.1, 0.0])
 
-    repulsion = 30 if afraid else 0
-    pid0 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=0, actionNoise=2)
-    pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=1, actionNoise=2)
-
     mppiconfig = MPPIConfig(
         nSamples=2**15,
+        # nSamples=1,
         nTimesteps=60,
         inv_temperature=10,
         samplingNoise=3,
@@ -542,9 +541,7 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig
         collisionCost=1e6,
         winCost=1e10,
         minConfidence=0.95,
-        oppKind=CONTROLLER_TYPE.CONT_PID,
         nModels=2,
-        opponentPidConfigs=(pid0, pid1),
         initBelief=np.array([0.5, 0.5]),
         # initBelief=np.array([0.7, 0.3]),
     )
@@ -571,6 +568,11 @@ def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig
         np.array([1, 1]),
     )
 
+    pid0 = PIDConfig(
+        kp=5, kd=20, repulsionFactor=120, racelineIndex=0, actionNoise=1, repulsionDistFactor=2.5, repulsionPower=1.5
+    )
+    pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=0, racelineIndex=0, actionNoise=1, repulsionDistFactor=2.5)
+
     config = GateEnvironmentConfig(
         nAgents=nAgents,
         dim=dim,
@@ -594,6 +596,7 @@ def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig
                 [-0.2 * length, -1.1 * fullHeight, 1.2 * length, -corridor],
             ]
         ),
+        opponentPidConfigs=(pid0, pid1),
     )
 
     config.trackPoints = np.column_stack([np.linspace(0, length * 1.2, nTrackSamples), np.zeros(nTrackSamples)])
@@ -602,11 +605,6 @@ def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig
     config.initS = np.repeat(startS, 2)
     config.initnLaps = np.zeros(nAgents)
     config.initGates = np.array([1, 1])
-
-    pid0 = PIDConfig(
-        kp=5, kd=20, repulsionFactor=120, racelineIndex=0, actionNoise=1, repulsionDistFactor=2.5, repulsionPower=1.5
-    )
-    pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=0, racelineIndex=0, actionNoise=1, repulsionDistFactor=2.5)
 
     mppiconfig = MPPIConfig(
         nSamples=2**18,
@@ -634,9 +632,7 @@ def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig
         collisionCost=1e6,
         winCost=100000,
         minConfidence=0.95,
-        oppKind=CONTROLLER_TYPE.CONT_PID,
         nModels=2,
-        opponentPidConfigs=(pid0, pid1),
         initBelief=np.array([0.5, 0.5]),
         # initBelief=np.array([0, 1]),
     )
@@ -649,23 +645,8 @@ def mainGate():
     envConfig, mppiconfig, pid0, pid1, oppNames = tinyGateEnv(afraid=False)  # pid0 = top; pid1 = bottom
     # envConfig, mppiconfig, pid0, pid1, oppNames = activeEnv()  # pid0 = afraid; pid1 = bold
 
-    # dummyconfig = DummyConfig()
-
-    cont_configs: list[ControllerConfig] = []
-
-    cont_configs = [pid0, mppiconfig]
-    # cont_configs = [pid1, mppiconfig]
-
-    # cont_configs = [mppiconfig, pid0]
-    # cont_configs = [mppiconfig, pid1]
-
-    # cont_configs = [mppiconfig, mppiconfig]
-
-    # cont_configs = [blindpidconfig, mppiconfig]
-    # cont_configs = [mppiconfig, mppiconfig2]
-    # cont_configs = [mppiconfig, blindpidconfig]
-    # cont_configs = [mppiconfig, blindpidconfig]
-    # cont_configs = [mppiconfig] + [pidconfig] * (nAgents - 1)  # type: ignore
+    envConfig.trueTheta = 0
+    envConfig.iMppi = 1
 
     verifConfig = VerifConfig(N=2**17, beta=1e-6, horizon=40, maxEps=0.001)
 
@@ -673,7 +654,7 @@ def mainGate():
 
     z = ZMQRecv()
 
-    evt, res = z.runSim(envConfig, verifConfig, cont_configs, render=envConfig.sendStates, oppNames=oppNames)
+    evt, res = z.runSim(envConfig, verifConfig, mppiconfig, render=envConfig.sendStates, oppNames=oppNames)
 
     print(f"result: {evt.name} {res}")
 

@@ -15,9 +15,8 @@ class SimulationEngine
 public:
     SimulationEngine(
         const EnvironmentConfig& cfg,
-        std::vector<float> trackPoints,
         const VerifConfig& verifConfig,
-        const std::vector<ControllerSpec>& specs,
+        const MPPIConfig& mppiConfig,
         int seed);
 
     ~SimulationEngine();
@@ -31,31 +30,25 @@ public:
 
     // public config & track data
     EnvironmentConfig envConfig;
-    std::vector<float> trackPoints;
     VerifConfig verifConfig;
 
     // current simulation state
     SimState state;
 
 private:
-    int nMppiCont = 0;  // count of MPPI controllers (used to send states)
-
     std::normal_distribution<float> nd{ 0.0f, 1.0f };
 
-    float* d_trackPoints = nullptr;   // shared across all MPPI controllers
+    float* d_trackPoints = nullptr;   // sent to MPPI controller
     int seed;
 
     // controllers
-    std::vector<std::unique_ptr<Controller>> controllers;
-    std::vector<std::string> controllerNames;
+    MPPIController mppiCont;
 
     std::mt19937 rng;
 
-    // build actual controller from spec, return it + true iff controller is MPPI
-    std::pair<std::unique_ptr<Controller>, bool> makeController(const ControllerSpec& sp);
     void allocTrack();
 
-    std::optional<std::pair<EventType, int>> dynStep(const std::vector<float>& actions);
+    std::optional<std::pair<EventType, int>> dynStep(const std::array<float, DIM>& action, int t, std::array<float, N_MODELS>& belief);
 
     std::optional<std::pair<EventType, int>> parseTerm(TerminalType term, int egoAgent);
 };

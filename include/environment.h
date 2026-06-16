@@ -8,25 +8,139 @@
 #include "cuda_runtime.h"
 #include "curand_kernel.h"
 
-
-// simulate environment step
-// TODO: merge it with new function (to fully encapsulate dynamics?)
-template <typename RNG>
-HD INLINE TerminalType applyEnvironmentDynamics(
-    int controlAgent,                   // only relevant for terminal stop reason
+// Shared PID control function. Does not add noise, since this is different on CPU and GPU.
+HD INLINE void computePIDAction(
+    int agent,
+    const SimState& state,
     const EnvironmentConfig& envConfig,
+    const PIDConfig& pid,
     const float* trackPoints,
-    SimState& state,                      // modified in-place
-    float* actions,                    // (nAgents, dim), modified in-place by clamp/noise
-    RNG& rng,                           // should be DeviceRNG or HostRNG
-    int gateMarginAgent = -1,           // if one agent should have reduced margin, change this (typically to make sure MPPI passes inside the gate)
+    float* outAction)
+{
+    float target[DIM] = {};
+
+    sampleCenterline(
+        trackPoints + N_TRACK_SAMPLES * pid.racelineIndex * DIM,
+        state.S[agent * N_RACELINES + pid.racelineIndex] + envConfig.targetDistance,
+        target);
+
+    const float* curPos = state.pos + agent * DIM;
+    const float* curVel = state.vel + agent * DIM;
+
+    float sqError = 0.0f;
+    for (int d = 0; d < DIM; d++)
+    {
+        float e = target[d] - curPos[d];
+        sqError += e * e;
+    }
+
+    float invDist = 1.0f / sqrtf(sqError + 1e-5f);
+
+    float vParallelMag = 0.0f;
+    for (int d = 0; d < DIM; d++)
+    {
+        float dirD = (target[d] - curPos[d]) * invDist;
+        vParallelMag += curVel[d] * dirD;
+    }
+
+    for (int d = 0; d < DIM; d++)
+    {
+        float error = (target[d] - curPos[d]) * invDist;
+        float latVelError = curVel[d] - vParallelMag * error;
+        outAction[d] = pid.kp * error + pid.kd * (-latVelError);
+    }
+
+    // repulsion
+    if (pid.repulsionDistFact != 0.0f)
+        for (int other = 0; other < N_AGENTS; other++)
+        {
+            if (other == agent)
+                continue;
+
+            float diff[DIM];
+            float dist2 = 0.0f;
+            for (int d = 0; d < DIM; d++)
+            {
+                diff[d] = state.pos[other * DIM + d] - curPos[d];
+                dist2 += diff[d] * diff[d];
+            }
+
+            float dist = sqrtf(dist2) + 1e-8f;
+            if (dist < pid.repulsionDistFact * envConfig.minDist)
+            {
+                float scale = pid.repulsionFactor / powf(dist / envConfig.minDist, pid.repulsionPower + 1.0f);
+                for (int d = 0; d < DIM; d++)
+                    outAction[d] -= scale * diff[d];
+            }
+        }
+
+    // normalize
+    float sqAccel = 0.0f;
+    for (int d = 0; d < DIM; d++)
+        sqAccel += outAction[d] * outAction[d];
+
+    if (sqAccel > envConfig.maxAccel[agent] * envConfig.maxAccel[agent])
+    {
+        float fact = envConfig.maxAccel[agent] / sqrtf(sqAccel);
+        for (int d = 0; d < DIM; d++)
+            outAction[d] *= fact;
+    }
+}
+
+// compute opp. nominal actions, PID noise, env dynamics, belief update and branch update
+template <typename RNG>
+HD INLINE TerminalType environmentStep(
+    int t,
+    int controlAgent,
+    int trueTheta,
+    const EnvironmentConfig& envConfig,
+    const MPPIConfig& mppiConfig,
+    const float* trackPoints,       // TODO: contained in envConfig
+    const float* egoAction,          // (dim)
+    bool applyPidNoise,
+    SimState& state,
+    BranchState& branchState,
+    float* actions,                  // scratch: (nAgents, dim)
+    float* nomPidAction,             // scratch: (nModels, dim)
+    RNG& rng,
+    int gateMarginAgent = -1,
     float gateMargin = 0.0f)
 {
+    // 1. Copy current pos (for gate update)
     float prevPos[N_AGENTS * DIM];
     for (int i = 0; i < N_AGENTS * DIM; i++)
         prevPos[i] = state.pos[i];
 
-    // clamp + env action noise
+    // 2. Build actions and nominal PID actions (for belief update)
+    // TODO: with 2 agents, this should be optimized
+    for (int a = 0; a < N_AGENTS; a++)
+    {
+        if (a == controlAgent)
+            for (int d = 0; d < DIM; d++)
+                actions[a * DIM + d] = egoAction[d];
+        else
+        {
+            for (int thetaT = 0; thetaT < N_MODELS; thetaT++)
+                computePIDAction(
+                    a,
+                    state,
+                    envConfig,
+                    envConfig.oppPid[thetaT],
+                    trackPoints,
+                    nomPidAction + thetaT * DIM);
+
+            for (int d = 0; d < DIM; d++)
+            {
+                float u = nomPidAction[trueTheta * DIM + d];
+                if (applyPidNoise && envConfig.oppPid[trueTheta].actionNoise != 0.0f)
+                    u += envConfig.oppPid[trueTheta].actionNoise * sampleNormal(rng);
+
+                actions[a * DIM + d] = u;
+            }
+        }
+    }
+
+    // 3. Clamp actions and add env action noise
     for (int a = 0; a < N_AGENTS; a++)
     {
         float sqNorm = 0.0f;
@@ -48,17 +162,17 @@ HD INLINE TerminalType applyEnvironmentDynamics(
         }
     }
 
-    // integrate position
+    // 4. Integrate position
     for (int a = 0; a < N_AGENTS; a++)
         for (int d = 0; d < DIM; d++)
             state.pos[a * DIM + d] += envConfig.dt * state.vel[a * DIM + d];
 
-    // integrate velocity
+    // 5. Integrate speed
     for (int a = 0; a < N_AGENTS; a++)
         for (int d = 0; d < DIM; d++)
             state.vel[a * DIM + d] += envConfig.dt * actions[a * DIM + d];
 
-    // cap speed
+    // 6. Cap speed
     for (int a = 0; a < N_AGENTS; a++)
     {
         float spd = agentSpeed(state.vel, a);
@@ -70,7 +184,7 @@ HD INLINE TerminalType applyEnvironmentDynamics(
         }
     }
 
-    // state noise
+    // 7. State noise (pos + speed)
     if (envConfig.posNoiseLevel != 0.0f || envConfig.speedNoiseLevel != 0.0f)
     {
         for (int a = 0; a < N_AGENTS; a++)
@@ -83,6 +197,7 @@ HD INLINE TerminalType applyEnvironmentDynamics(
             }
     }
 
+    // 8. Update gates with prev pos 
     updateGates(
         envConfig,
         state.pos,
@@ -94,7 +209,26 @@ HD INLINE TerminalType applyEnvironmentDynamics(
         gateMarginAgent,
         gateMargin);
 
-    // terminal detection
+    // 9. Update belief & branching time
+    int oppAgent = 1 - controlAgent;
+    updateBelief(
+        branchState.belief,
+        actions + oppAgent * DIM,
+        nomPidAction,
+        envConfig.oppPid,
+        envConfig.maxAccel[oppAgent]);
+
+    if (branchState.predTheta == -1)
+    {
+        int conf = findConfident(branchState.belief, mppiConfig.minConfidence);
+        if (conf != -1)
+        {
+            branchState.predTheta = conf;
+            branchState.branchingTime = t + 1;
+        }
+    }
+
+    // 10. Check for collisions, outside, or win
     bool collision = false;
     for (int a1 = 0; a1 < N_AGENTS && !collision; a1++)
         for (int a2 = a1 + 1; a2 < N_AGENTS; a2++)
@@ -118,7 +252,6 @@ HD INLINE TerminalType applyEnvironmentDynamics(
     if (isOutside(envConfig, state.pos + controlAgent * DIM, envConfig.minDist / 2.0f))
         return TERM_EGO_OUTSIDE;
 
-    int oppAgent = 1 - controlAgent;
     if (N_AGENTS > 1 && isOutside(envConfig, state.pos + oppAgent * DIM, envConfig.minDist / 2.0f))
         return TERM_OPP_OUTSIDE;
 
@@ -129,95 +262,4 @@ HD INLINE TerminalType applyEnvironmentDynamics(
         return TERM_OPP_WIN;
 
     return TERM_NONE;
-}
-
-// compute opp. nominal actions, PID noise, env dynamics, belief update and branch update
-template <typename RNG>
-HD INLINE TerminalType simulateContingentStep(
-    int t,
-    int controlAgent,
-    int trueTheta,
-    const EnvironmentConfig& envConfig,
-    const MPPIConfig& mppiConfig,
-    const float* trackPoints,
-    const float* egoAction,          // (dim)
-    bool applyPidNoise,
-    SimState& state,
-    BranchState& branchState,
-    float* actions,                  // scratch: (nAgents, dim)
-    float* nomPidAction,             // scratch: (nModels, dim)
-    RNG& rng,
-    int gateMarginAgent = -1,
-    float gateMargin = 0.0f)
-{
-    // build actions
-    for (int a = 0; a < N_AGENTS; a++)
-    {
-        if (a == controlAgent)
-            for (int d = 0; d < DIM; d++)
-                actions[a * DIM + d] = egoAction[d];
-        else
-        {
-            switch (mppiConfig.oppKind)     // should not be MPPI
-            {
-            case ControllerKind::CONT_DUMMY:
-                for (int d = 0; d < DIM; d++)
-                    actions[a * DIM + d] = 0.0f;
-                break;
-
-            case ControllerKind::CONT_PID:
-                for (int thetaT = 0; thetaT < N_MODELS; thetaT++)
-                    computePIDAction(
-                        a,
-                        state,
-                        envConfig,
-                        mppiConfig.oppPid[thetaT],
-                        trackPoints,
-                        nomPidAction + thetaT * DIM);
-
-                for (int d = 0; d < DIM; d++)
-                {
-                    float u = nomPidAction[trueTheta * DIM + d];
-                    if (applyPidNoise && mppiConfig.oppPid[trueTheta].actionNoise != 0.0f)
-                        u += mppiConfig.oppPid[trueTheta].actionNoise * sampleNormal(rng);
-
-                    actions[a * DIM + d] = u;
-                }
-                break;
-
-            case ControllerKind::CONT_MPPI: {}
-            }
-        }
-    }
-
-    TerminalType term = applyEnvironmentDynamics(
-        controlAgent,
-        envConfig,
-        trackPoints,
-        state,
-        actions,
-        rng,
-        gateMarginAgent,
-        gateMargin);
-
-    // update belief from observed opponent action
-    int oppAgent = 1 - controlAgent;
-    updateBelief(
-        branchState.belief,
-        actions + oppAgent * DIM,
-        nomPidAction,
-        mppiConfig.oppPid,
-        envConfig.maxAccel[oppAgent]);
-
-    if (branchState.predTheta == -1)
-    {
-        int conf = findConfident(branchState.belief, mppiConfig.minConfidence);
-        if (conf != -1)
-        {
-            branchState.predTheta = conf;
-            branchState.branchingTime = t + 1;
-        }
-    }
-
-    return term;
 }

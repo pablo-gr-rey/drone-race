@@ -25,8 +25,7 @@ __global__ void fullRolloutKernel(
     float* __restrict__ totalCosts,
     int* __restrict__ branchUsed,
     int* __restrict__ branchTime,
-    curandState* __restrict__ rngStates,
-    const float* __restrict__ trackPts);
+    curandState* __restrict__ rngStates);
 
 __global__ void buildMaskedCostsKernel(
     const float* __restrict__ costs,       // (nModels+1, N)
@@ -77,14 +76,8 @@ __global__ void verifyNominalFailureKernel(
     EnvironmentConfig envConfig,
     MPPIConfig mc,
     int nTimesteps,
-    // const float* __restrict__ initPos,
-    // const float* __restrict__ initVel,
-    // const float* __restrict__ initS,
-    // const int* __restrict__ initLaps,
-    // const int* __restrict__ initGates,
     SimState initState,
     const float* __restrict__ initBelief,
     const float* __restrict__ nominal,     // (nModels+1, T, dim)
-    const float* __restrict__ trackPts,
     curandState* __restrict__ rngStates,
     unsigned int* __restrict__ failCount);

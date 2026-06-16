@@ -17,16 +17,14 @@
 
 SimulationEngine::SimulationEngine(
     const EnvironmentConfig& config,
-    std::vector<float> trackPts,
     const VerifConfig& vConfig,
-    const std::vector<ControllerSpec>& specs,
+    const MPPIConfig& mppiConfig,
     int s)
     : rng(s)
 {
     d_trackPoints = nullptr;
     seed = s;
 
-    trackPoints = std::move(trackPts);
     envConfig = config;
     verifConfig = vConfig;
 
@@ -46,29 +44,14 @@ SimulationEngine::SimulationEngine(
         state.gates[a] = config.initGates[a];
     }
 
-    nMppiCont = 0;
-    int lastMppiIndex = -1;
+    allocTrack();
+    mppiCont = MPPIController(envConfig, mppiConfig, verifConfig, d_trackPoints, seed);
+    mppiCont.engine = this;
 
-    for (int i = 0; i < N_AGENTS; i++)
-    {
-        auto [ctrl, isMPPI] = makeController(specs[i]);
-        controllerNames.push_back(ctrl->name);
-        controllers.push_back(std::move(ctrl));
-
-        if (isMPPI)
-        {
-            lastMppiIndex = i;
-            nMppiCont++;
-        }
-    }
-
-    // if there is exactly one MPPI controller, then we can skip updating its S
-    // (otherwise, all PID need their S, and if someone else is MPPI, it needs to predict us using our S)
-    if (nMppiCont == 1)
-    {
-        for (int r = 0; r < N_RACELINES; r++)
-            state.S[lastMppiIndex * N_RACELINES + r] = -1.0f;
-    }
+    // we only need the S of the opponent
+    // TODO: this could be faster (since for now we only assume 1 opponent)
+    for (int r = 0; r < N_RACELINES; r++)
+        state.S[envConfig.iMppi * N_RACELINES + r] = -1.0f;
 }
 
 SimulationEngine::~SimulationEngine()
@@ -81,37 +64,6 @@ SimulationEngine::~SimulationEngine()
     }
 }
 
-std::pair<std::unique_ptr<Controller>, bool> SimulationEngine::makeController(const ControllerSpec& sp)
-{
-    std::unique_ptr<Controller> ctrl;
-    bool isMPPI = false;
-
-    std::visit([&](auto&& contConfig)
-        {
-            using T = std::decay_t<decltype(contConfig)>;
-
-            if constexpr (std::is_same_v<T, DummyConfig>)
-                ctrl = std::make_unique<DummyController>(envConfig);
-            else if constexpr (std::is_same_v<T, PIDConfig>)
-                ctrl = std::make_unique<PIDController>(envConfig, contConfig);
-            else if constexpr (std::is_same_v<T, MPPIConfig>)
-            {
-                if (d_trackPoints == nullptr)
-                    allocTrack();
-
-                ctrl = std::make_unique<MPPIController>(envConfig, contConfig, verifConfig, d_trackPoints, seed);
-                isMPPI = true;
-            }
-        }, sp.config);
-
-    if (!ctrl)
-        throw std::runtime_error("Unknown/invalid controller config for '" + sp.name + "'");
-
-    ctrl->name = sp.name;
-    ctrl->engine = this;
-    return { std::move(ctrl), isMPPI };
-}
-
 void SimulationEngine::allocTrack()
 {
     if (d_trackPoints != nullptr)
@@ -119,7 +71,7 @@ void SimulationEngine::allocTrack()
 
     size_t bytes = N_RACELINES * N_TRACK_SAMPLES * DIM * sizeof(float);
     CUDA_CHECK(cudaMalloc(&d_trackPoints, bytes));
-    CUDA_CHECK(cudaMemcpy(d_trackPoints, trackPoints.data(), bytes, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_trackPoints, envConfig.trackPoints, bytes, cudaMemcpyHostToDevice));
 }
 
 void SimulationEngine::sendState(zmq::socket_t& sock, int step)
@@ -132,113 +84,103 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
     writer.pushInt32(MSG_STATE);
     writer.pushInt32(step);
 
-    writer.pushFloatArray(state.pos, N_AGENTS * DIM);
-    writer.pushFloatArray(state.vel, N_AGENTS * DIM);
-    writer.pushFloatArray(state.S, N_AGENTS * N_RACELINES);
+    writer.pushFloatArray(state.pos);
+    writer.pushFloatArray(state.vel);
+    writer.pushFloatArray(state.S);
 
-    writer.pushIntArray(state.laps, N_AGENTS);
-    writer.pushIntArray(state.gates, N_AGENTS);
+    writer.pushIntArray<int>(state.laps);
+    writer.pushIntArray<int>(state.gates);
 
-    writer.pushInt32(nMppiCont);
+    std::cout << "controller " << envConfig.iMppi << " is MPPI controller" << std::endl;
 
-    for (int iMppi = 0; iMppi < N_AGENTS; iMppi++)
+    writer.pushFloatArray(mppiCont.h_belief);
+
+    writer.pushIntArray<uint>(mppiCont.failCount);
+    writer.pushFloat(mppiCont.epsilon);
+    writer.pushFloat(mppiCont.epsilonPartial);
+    writer.pushInt32((int) mppiCont.useNewPlan);
+    writer.pushFloat(mppiCont.certifiedLoss);
+
+    writer.pushInt32(N_MODELS);
+
+    SimState initState = state;
+    MPPIConfig mppiConfig = mppiCont.mppiConfig;
+
+    std::vector<float> fullPos(mppiConfig.nTimesteps * N_AGENTS * DIM);
+    std::vector<float> fullActions(N_AGENTS * DIM);
+
+    HostRNG hrng{ &nd, &rng };
+
+    for (int theta = 0; theta < N_MODELS; theta++)
     {
-        if (MPPIController* cont = dynamic_cast<MPPIController*>(controllers[iMppi].get()))
+        SimState predState = initState;
+
+        BranchState bstate;
+        initBranchState(bstate, mppiCont.h_belief.data(), mppiConfig.minConfidence);
+
+        int stopTime = -1;
+        EventType stopReason = EVT_TRUNCATED;
+        int stopAgent = -1;
+
+        float scratchActions[N_AGENTS * DIM];
+        float nomPidAction[N_MODELS * DIM];
+        float egoAction[DIM];
+
+        for (int t = 0; t < mppiConfig.nTimesteps; t++)
         {
-            std::cout << "controller " << iMppi << " is MPPI controller" << std::endl;
+            int startInd = ((bstate.predTheta + 1) * mppiConfig.nTimesteps + t - bstate.branchingTime) * DIM;
+            for (int d = 0; d < DIM; d++)
+                egoAction[d] = mppiCont.h_nominal[startInd + d];
 
-            writer.pushInt32(iMppi);
-            writer.pushFloatArray(cont->h_belief);
+            TerminalType term = environmentStep(
+                t,
+                envConfig.iMppi,
+                theta,
+                envConfig,
+                mppiConfig,
+                envConfig.trackPoints,
+                egoAction,
+                false,                  // no PID noise for reproducible display
+                predState,
+                bstate,
+                scratchActions,
+                nomPidAction,
+                hrng);
 
-            writer.pushIntArray(cont->failCount);
-            writer.pushFloat(cont->epsilon);
-            writer.pushFloat(cont->epsilonPartial);
-            writer.pushInt32((int) cont->useNewPlan);
-            writer.pushFloat(cont->certifiedLoss);
+            for (int i = 0; i < N_AGENTS * DIM; i++)
+                fullPos[t * N_AGENTS * DIM + i] = predState.pos[i];
 
-            writer.pushInt32(N_MODELS);
-
-            SimState initState = state;
-            MPPIConfig mppiConfig = cont->mppiConfig;
-
-            std::vector<float> fullPos(mppiConfig.nTimesteps * N_AGENTS * DIM);
-            std::vector<float> fullActions(N_AGENTS * DIM);
-            std::vector<float> beliefVec = cont->h_belief;
-
-            HostRNG hrng{ &nd, &rng };
-
-            for (int theta = 0; theta < N_MODELS; theta++)
+            if (term != TERM_NONE)
             {
-                SimState predState = initState;
-
-                BranchState bstate;
-                initBranchState(bstate, beliefVec.data(), mppiConfig.minConfidence);
-
-                int stopTime = -1;
-                EventType stopReason = EVT_TRUNCATED;
-                int stopAgent = -1;
-
-                float scratchActions[N_AGENTS * DIM];
-                float nomPidAction[N_MODELS * DIM];
-                float egoAction[DIM];
-
-                for (int t = 0; t < mppiConfig.nTimesteps; t++)
+                for (int tt = t + 1; tt < mppiConfig.nTimesteps; tt++)
                 {
-                    int startInd = ((bstate.predTheta + 1) * mppiConfig.nTimesteps + t - bstate.branchingTime) * DIM;
-                    for (int d = 0; d < DIM; d++)
-                        egoAction[d] = cont->h_nominal[startInd + d];
-
-                    TerminalType term = simulateContingentStep(
-                        t,
-                        iMppi,
-                        theta,
-                        envConfig,
-                        mppiConfig,
-                        trackPoints.data(),
-                        egoAction,
-                        false,                  // no PID noise for reproducible display
-                        predState,
-                        bstate,
-                        scratchActions,
-                        nomPidAction,
-                        hrng);
-
                     for (int i = 0; i < N_AGENTS * DIM; i++)
-                        fullPos[t * N_AGENTS * DIM + i] = predState.pos[i];
-
-                    if (term != TERM_NONE)
-                    {
-                        for (int tt = t + 1; tt < mppiConfig.nTimesteps; tt++)
-                        {
-                            for (int i = 0; i < N_AGENTS * DIM; i++)
-                                fullPos[tt * N_AGENTS * DIM + i] = predState.pos[i];
-                        }
-
-                        std::cout << "STOPPING SIMULATION at step " << t
-                            << " term " << (int) term << std::endl;
-
-                        stopTime = t;
-                        std::optional<std::pair<EventType, int>> parsed = parseTerm(term, iMppi);
-                        stopReason = parsed->first;
-                        stopAgent = parsed->second;
-
-                        break;
-                    }
+                        fullPos[tt * N_AGENTS * DIM + i] = predState.pos[i];
                 }
 
-                std::cout << "final belief for theta = " << theta << ": ";
-                for (int k = 0; k < N_MODELS; k++)
-                    std::cout << bstate.belief[k] << " ";
-                std::cout << "\n";
+                std::cout << "STOPPING SIMULATION at step " << t
+                    << " term " << (int) term << std::endl;
 
-                writer.pushInt32(bstate.branchingTime);
-                writer.pushInt32(bstate.predTheta);
-                writer.pushFloatArray(fullPos);
-                writer.pushInt32(stopReason);
-                writer.pushInt32(stopTime);
-                writer.pushInt32(stopAgent);
+                stopTime = t;
+                std::optional<std::pair<EventType, int>> parsed = parseTerm(term, envConfig.iMppi);
+                stopReason = parsed->first;
+                stopAgent = parsed->second;
+
+                break;
             }
         }
+
+        std::cout << "final belief for theta = " << theta << ": ";
+        for (int k = 0; k < N_MODELS; k++)
+            std::cout << bstate.belief[k] << " ";
+        std::cout << "\n";
+
+        writer.pushInt32(bstate.branchingTime);
+        writer.pushInt32(bstate.predTheta);
+        writer.pushFloatArray(fullPos);
+        writer.pushInt32(stopReason);
+        writer.pushInt32(stopTime);
+        writer.pushInt32(stopAgent);
     }
 
     sock.send(zmq::buffer(writer.data));
@@ -264,23 +206,34 @@ void SimulationEngine::sendDone(zmq::socket_t& sock)
     sock.send(zmq::buffer(writer.data));
 }
 
-std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::vector<float>& actions)
+// simulate one state for the given action. belief is updated in-place if given
+std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::array<float, DIM>& action, int t, std::array<float, N_MODELS>& belief)
 {
-    float actBuf[N_AGENTS * DIM] = {};
-    for (int i = 0; i < N_AGENTS * DIM; i++)
-        actBuf[i] = actions[i];
+    static std::array<float, N_AGENTS* DIM> actBuf;
+    static std::array<float, N_MODELS* DIM> nomPidBuf;
 
     HostRNG hrng{ &nd, &rng };
 
-    // controlAgent only matters for ego/opp terminal labeling, so we use 0 and ignore the return value
-    // TODO: we should check it ourselves
-    TerminalType term = applyEnvironmentDynamics(
-        0,
+    BranchState branchState;
+    initBranchState(branchState, belief.data(), 2.0f);       // here, we only care about belief, branching time/theta is unused anyway (it is recomputed by MPPI) (TODO: change that?)
+
+    TerminalType term = environmentStep(
+        t,
+        envConfig.iMppi,
+        envConfig.trueTheta,
         envConfig,
-        trackPoints.data(),
+        mppiCont.mppiConfig,
+        envConfig.trackPoints,
+        action.data(),
+        true,
         state,
-        actBuf,
-        hrng);
+        branchState,
+        actBuf.data(),
+        nomPidBuf.data(),
+        hrng
+    );
+
+    std::copy(std::begin(branchState.belief), std::end(branchState.belief), belief.begin());
 
     return parseTerm(term, 0);
 }
@@ -291,33 +244,16 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
 
     int step;
 
-    std::optional<SimState> prevState = std::nullopt;
-    std::optional<std::vector<float>> prevAction = std::nullopt;
-
     std::optional<std::pair<EventType, int>> stopInfo = std::nullopt;
 
     for (step = 1; step <= maxSteps; step++)
     {
         std::cout << "\nSTEP " << step << "\n";
 
-        std::vector<float> actions(N_AGENTS * DIM, 0.0f);
+        std::array<float, DIM> action;
+        mppiCont.getControl(envConfig.iMppi, state, action.data());
 
-        for (int i = 0; i < N_AGENTS; i++)
-        {
-            controllers[i]->getControl(
-                i,
-                state,
-                actions.data() + i * DIM,
-                nd,
-                rng,
-                prevAction,
-                prevState);
-        }
-
-        prevAction = actions;
-        prevState = state;
-
-        stopInfo = dynStep(actions);
+        stopInfo = dynStep(action, step, mppiCont.h_belief);
 
         sendState(sock, step);
 

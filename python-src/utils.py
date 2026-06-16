@@ -66,23 +66,6 @@ class EVENT_TYPE(IntEnum):
     EVT_TRUNCATED = 3
 
 
-class CONTROLLER_TYPE(IntEnum):
-    CONT_DUMMY = 0
-    CONT_PID = 1
-    CONT_MPPI = 2
-
-    @classmethod
-    def fromConfig(cls, config: "ControllerConfig") -> "CONTROLLER_TYPE":
-        if isinstance(config, DummyConfig):
-            return CONTROLLER_TYPE.CONT_DUMMY
-        elif isinstance(config, PIDConfig):
-            return CONTROLLER_TYPE.CONT_PID
-        elif isinstance(config, MPPIConfig):
-            return CONTROLLER_TYPE.CONT_MPPI
-
-        raise ValueError("Unknown controller config")
-
-
 @dataclass
 class GateEnvironmentConfig:
     nAgents: int = 2
@@ -125,6 +108,11 @@ class GateEnvironmentConfig:
     obstacles: np.ndarray = field(default_factory=lambda: np.array([]))
 
     seed: int = 42  # if -1, then it will be set to a random value
+
+    # obviously, should not be MPPIConfig
+    opponentPidConfigs: tuple["PIDConfig", ...] = ()
+    iMppi: int = 0
+    trueTheta: int = 0
 
     trackPoints: Optional[np.ndarray] = None
 
@@ -175,27 +163,16 @@ class VerifConfig:
     maxEps: float = 0.01
 
 
+# TODO: this is now useless
 @dataclass
 class ControllerConfig:
-    kind: CONTROLLER_TYPE = CONTROLLER_TYPE.CONT_DUMMY
-
-    def __post_init__(self):
-        self.kind = CONTROLLER_TYPE.fromConfig(self)
-
     def getDefaultName(self) -> str:
-        if isinstance(self, DummyConfig):
-            return "Dummy"
-        elif isinstance(self, PIDConfig):
+        if isinstance(self, PIDConfig):
             return "PID"
         elif isinstance(self, MPPIConfig):
             return "MPPI"
 
         raise ValueError("Unknown controller config")
-
-
-@dataclass
-class DummyConfig(ControllerConfig):
-    pass
 
 
 @dataclass
@@ -247,16 +224,11 @@ class MPPIConfig(ControllerConfig):
     minConfidence: float = 0.9
 
     nModels: int = 1
-    oppKind: CONTROLLER_TYPE = CONTROLLER_TYPE.CONT_DUMMY
-    # obviously, should not be MPPIConfig
-    opponentPidConfigs: tuple[PIDConfig, ...] = ()
     initBelief: np.ndarray = field(default_factory=lambda: np.array([]))
 
     def __post_init__(self) -> None:
         if self.initBelief.size == 0:
             self.initBelief = np.full(self.nModels, 1.0 / self.nModels)
-
-        super().__post_init__()
 
 
 @dataclass
@@ -271,7 +243,6 @@ class MPPIStatePredInfo:
 
 @dataclass
 class MPPIStateInfo:
-    iCont: int
     belief: np.ndarray
     failCount: np.ndarray
 
@@ -293,8 +264,7 @@ class FullStateInfo:
     nLaps: np.ndarray
     currentGates: np.ndarray
 
-    nMppiCont: int
-    mppiInfo: list[MPPIStateInfo] = field(metadata={"len": "nMppiCont"})
+    mppiInfo: MPPIStateInfo
 
     #     int,
 

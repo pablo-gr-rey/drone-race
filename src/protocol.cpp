@@ -93,22 +93,12 @@ void Writer::pushFloat(float v)
     pushPod<float>(v);
 }
 
-void Writer::pushFloatArray(const std::vector<float>& arr)
+void Writer::pushFloatArray(std::span<const float> arr)
 {
     pushInt32(static_cast<int32_t>(arr.size()));
     if (!arr.empty())
     {
         const auto* p = reinterpret_cast<const uint8_t*>(arr.data());
         data.insert(data.end(), p, p + arr.size() * sizeof(float));
-    }
-}
-
-void Writer::pushFloatArray(const float* arr, size_t size)
-{
-    pushInt32(static_cast<int32_t>(size));
-    if (size)
-    {
-        const auto* p = reinterpret_cast<const uint8_t*>(arr);
-        data.insert(data.end(), p, p + size * sizeof(float));
     }
 }

@@ -30,10 +30,12 @@ MPPIController::MPPIController(
     envConfig = c;
     mppiConfig = mc;
     verifConfig = vC;
-    d_trackPts = d_trackPoints;
     seed = s;
 
-    h_belief.assign(mc.initBelief, mc.initBelief + N_MODELS);
+    h_trackPoints = c.trackPoints;
+    envConfig.trackPoints = d_trackPoints;
+
+    h_belief = std::to_array(mc.initBelief);
 
     if (nominal)
     {
@@ -169,11 +171,7 @@ void MPPIController::freeDevice()
 void MPPIController::getControl(
     int agent,
     const SimState& state,
-    float* outAction,
-    std::normal_distribution<float>& /*nd*/,
-    std::mt19937& /*rng*/,
-    std::optional<std::vector<float>> pastAction,
-    std::optional<SimState> pastState)
+    float* outAction)
 {
     if (!engine)
         throw std::runtime_error("MPPI: engine not set");
@@ -189,45 +187,14 @@ void MPPIController::getControl(
     int blk = 256;
     int grd = (N + blk - 1) / blk;
 
-    // 0. Update belief from previous observed action/state
-    if (pastAction && pastState)
-    {
-        std::vector<float> nomPidAction(N_MODELS * DIM);
-
-        for (int thetaT = 0; thetaT < N_MODELS; thetaT++)
-        {
-            computePIDAction(
-                1 - agent,
-                *pastState,
-                envConfig,
-                mppiConfig.oppPid[thetaT],
-                engine->trackPoints.data(),
-                nomPidAction.data() + thetaT * DIM);
-        }
-
-        updateBelief(
-            h_belief.data(),
-            pastAction->data() + (1 - agent) * DIM,
-            nomPidAction.data(),
-            mppiConfig.oppPid,
-            envConfig.maxAccel[1 - agent]);
-
-        float sqSum = 0.0f;
-        for (int d = 0; d < DIM; d++)
-        {
-            float dx = nomPidAction[d] - nomPidAction[DIM + d];
-            sqSum += dx * dx;
-        }
-        std::cout << "Norm of difference between afraid and bold nominal: "
-            << std::sqrt(sqSum) << std::endl;
-    }
+    // now, belief update is done in engine
 
     std::cout << "MPPI belief: ";
     for (float v : h_belief)
         std::cout << v << " ";
     std::cout << "\n";
 
-    // 1. upload current state + belief (now, current state is copied in the kernels)
+    // 1. upload belief (now, current state is passed as argument to the kernels)
     CUDA_CHECK(cudaMemcpy(d_belief, h_belief.data(), N_MODELS * sizeof(float), cudaMemcpyHostToDevice));
 
     CUDA_CHECK(cudaMemset(d_failCountOld, 0, 2 * sizeof(uint)));
@@ -258,8 +225,7 @@ void MPPIController::getControl(
         d_costs,
         d_branchUsed,
         d_branchTime,
-        d_rng,
-        d_trackPts);
+        d_rng);
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
@@ -341,7 +307,6 @@ void MPPIController::getControl(
         state,
         d_belief,
         d_nominal,
-        d_trackPts,
         d_verif_rng,
         d_failCountNew);
 
@@ -360,7 +325,6 @@ void MPPIController::getControl(
         state,
         d_belief,
         d_prevnominal,
-        d_trackPts,
         d_verif_rng,
         d_failCountOld);
 
@@ -500,4 +464,40 @@ void MPPIController::getControl(
 #endif
 
     std::cout << "MPPI DONE" << std::endl;
+}
+
+void MPPIController::computeCertifiedLoss()
+{
+    uint totFailOld = failCountOld[0] + failCountOld[1];
+    uint totFailNew = failCountNew[0] + failCountNew[1];
+
+    int n = verifConfig.nVerifSamples;
+
+    double eps1 = clopperPearsonUpperBound(totFailNew, n, verifConfig.beta / 2.0);
+    double eps2 = clopperPearsonLowerBound(totFailOld, n, verifConfig.beta / 2.0);
+
+    certifiedLoss = eps1 - eps2;
+
+    std::cout << std::fixed << std::setprecision(5)
+        << "Certified loss: " << certifiedLoss
+        << " eps1 " << eps1
+        << " eps2 " << eps2
+        << " (totFailOld totFailNew n "
+        << totFailOld << " " << totFailNew << " " << n << ")\n";
+}
+
+void MPPIController::computeEpsilon()
+{
+    uint totFail = failCount[0] + failCount[1];
+    int n = verifConfig.nVerifSamples;
+
+    epsilonPartial = clopperPearsonUpperBound(totFail, n, verifConfig.beta);
+    epsilon = epsilonPartial + verifConfig.horizon * verifConfig.maxEps;
+
+    std::cout << std::fixed << std::setprecision(5)
+        << "For fail count " << totFail
+        << " among " << n
+        << " found epsilon = " << epsilon
+        << " partial " << epsilonPartial
+        << std::endl;
 }

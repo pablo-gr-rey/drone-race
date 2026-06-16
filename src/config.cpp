@@ -2,7 +2,27 @@
 #include <iostream>
 #include <format>
 
-std::pair<int, std::vector<float>> EnvironmentConfig::unpackHeader(const void* buf, size_t len)
+static PIDConfig unpackPIDConfig(Reader& reader)
+{
+    PIDConfig pidconfig;
+
+    pidconfig.kp = reader.readFloat();
+    pidconfig.kd = reader.readFloat();
+
+    pidconfig.repulsionFactor = reader.readFloat();
+    pidconfig.repulsionPower = reader.readFloat();
+    pidconfig.repulsionDistFact = reader.readFloat();
+
+    pidconfig.racelineIndex = reader.readInt32();
+
+    pidconfig.actionNoise = reader.readFloat();
+
+    std::cout << "loaded PID repulsionFactor " << pidconfig.repulsionFactor << " racelineIndex " << pidconfig.racelineIndex << " noise level " << pidconfig.actionNoise << '\n';
+
+    return pidconfig;
+}
+
+int EnvironmentConfig::unpackHeader(const void* buf, size_t len)
 {
     Reader reader(buf, len);
 
@@ -63,7 +83,18 @@ std::pair<int, std::vector<float>> EnvironmentConfig::unpackHeader(const void* b
 
     int seed = reader.readInt32();
 
-    std::vector<float> trackPoints = reader.readFloatArray();
+    for (int i = 0; i < N_MODELS; i++)
+        oppPid[i] = unpackPIDConfig(reader);
+
+    iMppi = reader.readInt32();
+    trueTheta = reader.readInt32();
+
+    std::vector<float> vecTrackPoints = reader.readFloatArray();
+    if (vecTrackPoints.size() != N_RACELINES * N_TRACK_SAMPLES * DIM)
+        throw std::runtime_error(std::format("Received {} track samples coordinates but expected N_RACELINES * N_TRACK_SAMPLES * DIM = {}", vecTrackPoints.size(), N_RACELINES * N_TRACK_SAMPLES * DIM));
+
+    trackPoints = (float*) malloc(N_RACELINES * N_TRACK_SAMPLES * DIM * sizeof(float));
+    std::copy(vecTrackPoints.begin(), vecTrackPoints.end(), trackPoints);
 
     reader.assertFinished();
 
@@ -72,7 +103,7 @@ std::pair<int, std::vector<float>> EnvironmentConfig::unpackHeader(const void* b
         std::cout << gateVectors[i] << (i % dim ? " " : ";  ");
     std::cout << "\n";
 
-    return { seed, trackPoints };
+    return seed;
 }
 
 void VerifConfig::unpackHeader(const void* buf, size_t len)
@@ -94,111 +125,46 @@ void VerifConfig::unpackHeader(const void* buf, size_t len)
     std::cout << "loaded verification N " << nVerifSamples << " beta " << beta << " horizon " << horizon << " maxEps " << maxEps << "\n";
 }
 
-static PIDConfig unpackPIDConfig(Reader& reader)
+void MPPIConfig::unpackHeader(const void* buf, size_t len)
 {
-    PIDConfig pidconfig;
+    Reader reader(buf, len);
 
-    pidconfig.kp = reader.readFloat();
-    pidconfig.kd = reader.readFloat();
+    int kind = reader.readInt32();
+    if (kind != MSG_HEADER)
+        throw std::runtime_error(std::format("Expected header message type for MPPI config (type {}) but got type {} instead", static_cast<int>(MSG_HEADER), kind));
 
-    pidconfig.repulsionFactor = reader.readFloat();
-    pidconfig.repulsionPower = reader.readFloat();
-    pidconfig.repulsionDistFact = reader.readFloat();
+    nSamples = (int) reader.readInt32();
+    nTimesteps = (int) reader.readInt32();
+    invTemperature = reader.readFloat();
 
-    pidconfig.racelineIndex = reader.readInt32();
+    samplingNoise = reader.readFloat();
+    gateTraversalMargin = reader.readFloat();
 
-    pidconfig.actionNoise = reader.readFloat();
+    collDistFactor = reader.readFloat();
 
-    std::cout << "loaded PID repulsionFactor " << pidconfig.repulsionFactor << " racelineIndex " << pidconfig.racelineIndex << " noise level " << pidconfig.actionNoise << '\n';
+    oppDistWeight = reader.readFloat();
+    oppDistPower = reader.readFloat();
+    oppDistThresholdFactor = reader.readFloat();
+    boundaryCost = reader.readFloat();
+    boundaryThresholdFactor = reader.readFloat();
+    outsideCost = reader.readFloat();
+    oppOutsideCost = reader.readFloat();
+    collisionCost = reader.readFloat();
+    winCost = reader.readFloat();
 
-    return pidconfig;
-}
+    finalAdvWeight = reader.readFloat();
+    finalOppAdvWeight = reader.readFloat();
+    finalSpeedWeight = reader.readFloat();
 
-// does not unpack opponents
-static MPPIConfig unpackMPPIConfig(Reader& reader)
-{
-    MPPIConfig mppiconfig;
-
-    mppiconfig.nSamples = (int) reader.readInt32();
-    mppiconfig.nTimesteps = (int) reader.readInt32();
-    mppiconfig.invTemperature = reader.readFloat();
-
-    mppiconfig.samplingNoise = reader.readFloat();
-    mppiconfig.gateTraversalMargin = reader.readFloat();
-
-    mppiconfig.collDistFactor = reader.readFloat();
-
-    mppiconfig.oppDistWeight = reader.readFloat();
-    mppiconfig.oppDistPower = reader.readFloat();
-    mppiconfig.oppDistThresholdFactor = reader.readFloat();
-    mppiconfig.boundaryCost = reader.readFloat();
-    mppiconfig.boundaryThresholdFactor = reader.readFloat();
-    mppiconfig.outsideCost = reader.readFloat();
-    mppiconfig.oppOutsideCost = reader.readFloat();
-    mppiconfig.collisionCost = reader.readFloat();
-    mppiconfig.winCost = reader.readFloat();
-
-    mppiconfig.finalAdvWeight = reader.readFloat();
-    mppiconfig.finalOppAdvWeight = reader.readFloat();
-    mppiconfig.finalSpeedWeight = reader.readFloat();
-
-    mppiconfig.minConfidence = reader.readFloat();
+    minConfidence = reader.readFloat();
     int nModels = reader.readInt32();
-    mppiconfig.oppKind = (ControllerKind) reader.readInt32();
 
     if (nModels != N_MODELS)
         throw std::runtime_error(std::format("Received MPPI config for %d PID strategies but N_MODELS is set to %d. Edit this constant and recompile", nModels, N_MODELS));
 
-    for (int i = 0; i < N_MODELS; i++)
-    {
-        ControllerKind kind = (ControllerKind) reader.readInt32();
-        if (kind != CONT_PID)
-            throw std::runtime_error(std::format("For opponent %d of MPPI config, received kind %d instead of CONT_PID (%d)", i, (int) kind, (int) CONT_PID));
-
-        mppiconfig.oppPid[i] = unpackPIDConfig(reader);
-    }
-
-    reader.readFloatArray(mppiconfig.initBelief);
-
-    std::cout << "loaded MPPI samples " << mppiconfig.nSamples << " timesteps " << mppiconfig.nTimesteps << " collDistFactor " << mppiconfig.collDistFactor << " with " << N_MODELS << " opponent strats:\n";
-    for (int i = 0; i < N_MODELS; i++)
-        std::cout << "\tConfig " << i << ": initBelief " << mppiconfig.initBelief[i] << " repulsionFactor " << mppiconfig.oppPid[i].repulsionFactor << " action noise " << mppiconfig.oppPid[i].actionNoise << "\n";
-
-    return mppiconfig;
-}
-
-void ControllerSpec::unpackHeader(const void* buf, size_t len)
-{
-    Reader reader(buf, len);
-
-    int msgKind = reader.readInt32();
-    if (msgKind != MSG_HEADER)
-        throw std::runtime_error(std::format("Expected header message type for environment config (type %d) but got type %d instead", static_cast<int>(MSG_HEADER), msgKind));
-
-    int contKind = reader.readInt32();
-
-    if (contKind == ControllerKind::CONT_DUMMY)
-        config = DummyConfig{};
-    else if (contKind == ControllerKind::CONT_PID)
-        config = unpackPIDConfig(reader);
-    else if (contKind == ControllerKind::CONT_MPPI)
-    {
-        // read scalar parameters
-        MPPIConfig mppiconfig = unpackMPPIConfig(reader);
-
-        // read opponent
-        // mppiconfig.oppKind = (ControllerKind) reader.readInt32();
-        // if (mppiconfig.oppKind == CONT_DUMMY)
-        // {
-        // }
-        // //     mppiconfig.opponent = DummyConfig{};
-        // else if (mppiconfig.oppKind == CONT_PID)
-        //     mppiconfig.oppPid = unpackPIDConfig(reader);
-        // else
-        //     throw std::runtime_error("MPPI opponent kind unsupported");
-
-        config = mppiconfig;
-    }
+    reader.readFloatArray(initBelief);
 
     reader.assertFinished();
+
+    std::cout << "loaded MPPI samples " << nSamples << " timesteps " << nTimesteps << " collDistFactor " << collDistFactor << " with " << N_MODELS << " opponent strats\n";
 }

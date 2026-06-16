@@ -48,8 +48,7 @@ __global__ void fullRolloutKernel(
     float* __restrict__ totalCosts,
     int* __restrict__ branchesUsed,
     int* __restrict__ branchesTime,
-    curandState* __restrict__ rngStates,
-    const float* __restrict__ trackPts)
+    curandState* __restrict__ rngStates)
 {
     int N = mc.nSamples;
 
@@ -104,13 +103,13 @@ __global__ void fullRolloutKernel(
                 egoAction[d] = nom + noisef;
             }
 
-            TerminalType term = simulateContingentStep(
+            TerminalType term = environmentStep(
                 t,
                 controlAgent,
                 theta,
                 envConfig,
                 mc,
-                trackPts,
+                envConfig.trackPoints,
                 egoAction,
                 true,              // applyPidNoise
                 state,
@@ -149,7 +148,7 @@ __global__ void fullRolloutKernel(
     rngStates[s] = rng;
 }
 
-// mask costs as explained in controller.h
+// mask costs as explained in controller.h (maskedCosts[theta, t, s] = costs[theta, s] if eligible (i.e. the sample for given branch and time was actually used) otherwise +inf to not take into account samples which did not contribute to strategy)
 __global__ void buildMaskedCostsKernel(
     const float* __restrict__ costs,       // (nModels+1, N)
     const int* __restrict__ branchUsed,    // (nModels, N)
@@ -169,7 +168,6 @@ __global__ void buildMaskedCostsKernel(
     int branchIdx = tmp / T;   // 0 = generic, k+1 = specialized k
 
     bool eligible = false;
-
 
     if (branchIdx == 0)
     {
@@ -389,7 +387,6 @@ __global__ void verifyNominalFailureKernel(
     SimState initState,
     const float* __restrict__ initBelief,
     const float* __restrict__ nominal,     // (nModels+1, T, dim)
-    const float* __restrict__ trackPts,
     curandState* __restrict__ rngStates,
     unsigned int* __restrict__ failCount)
 {
@@ -425,13 +422,13 @@ __global__ void verifyNominalFailureKernel(
             egoAction[d] = nominal[startInd + d];
         }
 
-        TerminalType term = simulateContingentStep(
+        TerminalType term = environmentStep(
             t,
             controlAgent,
             theta,
             envConfig,
             mc,
-            trackPts,
+            envConfig.trackPoints,
             egoAction,
             true,          // applyPidNoise in real verification
             state,

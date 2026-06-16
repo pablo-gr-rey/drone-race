@@ -43,8 +43,60 @@ constexpr int N_TRACK_SAMPLES = 512;
 #define CUDA_CHECK(call) (call)
 #endif
 
-// ── Environment configuration ────────────────────────────────────────
-// this should have the same layout as GateEnvironmentConfig in the Python side (including superclasses, ie. BaseEnvironmentConfig then GateEnvironmentConfig)
+
+
+// PID parameters (also used for opponent modelling on GPU)
+struct PIDConfig
+{
+    float kp = 10.0f;
+    float kd = 5.0f;
+
+    float repulsionFactor = 20.0f;
+    float repulsionPower = 2.0f;
+    float repulsionDistFact = 10.0f;
+
+    int racelineIndex = 0;
+
+    float actionNoise = 0.0f;
+};
+
+// MPPI configuration
+struct MPPIConfig
+{
+    int   nSamples = 100;
+    int   nTimesteps = 20;
+    float invTemperature = 10.0f;
+
+    float samplingNoise = 0.1f;
+    float gateTraversalMargin = 0.95f;
+
+    float collDistFactor = 1.0f;
+
+    // running costs
+    float oppDistWeight = 1.0f;
+    float oppDistPower = 2.0f;
+    float oppDistThresholdFactor = 3.0f;
+    float boundaryCost = 10.0f;
+    float boundaryThresholdFactor = 1.5f;
+    float outsideCost = 1000.0f;
+    float oppOutsideCost = 100.0f;
+    float collisionCost = 10000.0f;
+    float winCost = 1000.0f;
+
+    // terminal costs
+    float finalAdvWeight = 10.0f;
+    float finalOppAdvWeight = 5.0f;
+    float finalSpeedWeight = 5.0f;
+
+    float minConfidence = 0.9f;
+
+    float initBelief[N_MODELS];
+
+    void unpackHeader(const void* buf, size_t len);
+};
+
+// Environment configuration
+// this should have the same layout as GateEnvironmentConfig in the Python side
 struct EnvironmentConfig
 {
     float dt;
@@ -78,12 +130,16 @@ struct EnvironmentConfig
 
     float obstacles[N_OBSTACLES * DIM * 2];   // (nObstacles * dim * 2): rectangle obstacles, i.e. [xmin, ymin, xmax, ymax]
 
-    // float* trackPoints = nullptr; // (nTrackSamples * nRacelines, dim)
+    float* trackPoints = nullptr; // (nTrackSamples * nRacelines, dim)  // this pointer is different on host & device!
+
+    PIDConfig oppPid[N_MODELS];
+    int iMppi;
+    int trueTheta;
 
     EnvironmentConfig()
     {}
 
-    std::pair<int, std::vector<float>> unpackHeader(const void* buf, size_t len);   // returns (seed, trackPoints)
+    int unpackHeader(const void* buf, size_t len);   // returns (seed, trackPoints)
 };
 
 struct VerifConfig
@@ -92,79 +148,6 @@ struct VerifConfig
     float beta;
     int horizon;
     float maxEps;
-
-    void unpackHeader(const void* buf, size_t len);
-};
-
-// dummy controller parameters
-struct DummyConfig {};
-
-// ── Opponent model type (for GPU kernels) ────────────────────────────
-enum ControllerKind
-{
-    CONT_DUMMY = 0,   // zero acceleration
-    CONT_PID = 1,
-    CONT_MPPI = 2
-};
-
-// ── PID parameters (also used for opponent modelling on GPU) ─────────
-struct PIDConfig
-{
-    float kp = 10.0f;
-    float kd = 5.0f;
-
-    float repulsionFactor = 20.0f;
-    float repulsionPower = 2.0f;
-    float repulsionDistFact = 10.0f;
-
-    int racelineIndex = 0;
-
-    float actionNoise = 0.0f;
-};
-
-// ── MPPI configuration ───────────────────────────────────────────────
-struct MPPIConfig
-{
-    int   nSamples = 100;
-    int   nTimesteps = 20;
-    float invTemperature = 10.0f;
-
-    float samplingNoise = 0.1f;
-    float gateTraversalMargin = 0.95f;
-
-    float collDistFactor = 1.0f;
-
-    // running costs
-    float oppDistWeight = 1.0f;
-    float oppDistPower = 2.0f;
-    float oppDistThresholdFactor = 3.0f;
-    float boundaryCost = 10.0f;
-    float boundaryThresholdFactor = 1.5f;
-    float outsideCost = 1000.0f;
-    float oppOutsideCost = 100.0f;
-    float collisionCost = 10000.0f;
-    float winCost = 1000.0f;
-
-    // terminal costs
-    float finalAdvWeight = 10.0f;
-    float finalOppAdvWeight = 5.0f;
-    float finalSpeedWeight = 5.0f;
-
-    float minConfidence = 0.9f;
-
-    ControllerKind oppKind = CONT_DUMMY;
-
-    PIDConfig oppPid[N_MODELS];
-    float initBelief[N_MODELS];
-};
-
-using ControllerConfig = std::variant<DummyConfig, PIDConfig, MPPIConfig>;
-
-// ── Controller specification (POD, used to construct controllers) ────
-struct ControllerSpec
-{
-    std::string name = "dummy";
-    ControllerConfig config = DummyConfig{};
 
     void unpackHeader(const void* buf, size_t len);
 };
