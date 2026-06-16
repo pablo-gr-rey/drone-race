@@ -434,7 +434,7 @@ def standardGateEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PID
 def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig, list[str]]:
     nAgents = 2
     dim = 2
-    nTrackSamples = 1000
+    nTrackSamples = 512
 
     # startS = np.linspace(0.15, 0.0, nAgents)
     startS = np.linspace(0.1, 0.02, nAgents)

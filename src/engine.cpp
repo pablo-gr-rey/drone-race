@@ -1,6 +1,7 @@
 #include "engine.h"
 #include "state.h"
 #include "protocol.h"
+#include "environment.h"
 
 #include <zmq.h>
 #include <cstring>
@@ -14,7 +15,6 @@
 #include <cuda_runtime.h>
 #include <optional>
 
-
 SimulationEngine::SimulationEngine(
     const EnvironmentConfig& config,
     std::vector<float> trackPts,
@@ -23,32 +23,33 @@ SimulationEngine::SimulationEngine(
     int s)
     : rng(s)
 {
-    hasCollision = false;
-    anyWinner = -1;
-    anyOutside = -1;
     d_trackPoints = nullptr;
     seed = s;
 
-    trackPoints = trackPts;
+    trackPoints = std::move(trackPts);
     envConfig = config;
     verifConfig = vConfig;
-    // pos = config.initPos;
-    // speed = config.initSpeed;
-    // currentS = config.initS;
-    // nLaps = config.initLaps;
-    // currentGates = config.initGates;
 
-    pos.assign(config.initPos, config.initPos + config.nAgents * config.dim);
-    speed.assign(config.initSpeed, config.initSpeed + config.nAgents * config.dim);
+    // initialize current state from config
+    for (int a = 0; a < N_AGENTS; a++)
+    {
+        for (int d = 0; d < DIM; d++)
+        {
+            state.pos[a * DIM + d] = config.initPos[a * DIM + d];
+            state.vel[a * DIM + d] = config.initSpeed[a * DIM + d];
+        }
 
-    currentS.assign(config.initS, config.initS + config.nAgents * config.nRacelines);
-    nLaps.assign(config.initLaps, config.initLaps + config.nAgents);
-    currentGates.assign(config.initGates, config.initGates + config.nAgents);
+        for (int r = 0; r < N_RACELINES; r++)
+            state.S[a * N_RACELINES + r] = config.initS[a * N_RACELINES + r];
+
+        state.laps[a] = config.initLaps[a];
+        state.gates[a] = config.initGates[a];
+    }
 
     nMppiCont = 0;
     int lastMppiIndex = -1;
 
-    for (int i = 0; i < envConfig.nAgents; i++)
+    for (int i = 0; i < N_AGENTS; i++)
     {
         auto [ctrl, isMPPI] = makeController(specs[i]);
         controllerNames.push_back(ctrl->name);
@@ -62,10 +63,12 @@ SimulationEngine::SimulationEngine(
     }
 
     // if there is exactly one MPPI controller, then we can skip updating its S
-    // (otherwise, all PID needs their S, and if someone else is MPPI, it needs to predict us using our S)
+    // (otherwise, all PID need their S, and if someone else is MPPI, it needs to predict us using our S)
     if (nMppiCont == 1)
-        for (int iRaceline = 0; iRaceline < envConfig.nRacelines; iRaceline++)
-            currentS[lastMppiIndex * envConfig.nRacelines + iRaceline] = -1.0f;
+    {
+        for (int r = 0; r < N_RACELINES; r++)
+            state.S[lastMppiIndex * N_RACELINES + r] = -1.0f;
+    }
 }
 
 SimulationEngine::~SimulationEngine()
@@ -81,7 +84,6 @@ SimulationEngine::~SimulationEngine()
 std::pair<std::unique_ptr<Controller>, bool> SimulationEngine::makeController(const ControllerSpec& sp)
 {
     std::unique_ptr<Controller> ctrl;
-
     bool isMPPI = false;
 
     std::visit([&](auto&& contConfig)
@@ -115,154 +117,131 @@ void SimulationEngine::allocTrack()
     if (d_trackPoints != nullptr)
         return;
 
-    // upload track
-    size_t bytes = envConfig.nRacelines * envConfig.nTrackSamples * envConfig.dim * sizeof(float);
+    size_t bytes = N_RACELINES * N_TRACK_SAMPLES * DIM * sizeof(float);
     CUDA_CHECK(cudaMalloc(&d_trackPoints, bytes));
     CUDA_CHECK(cudaMemcpy(d_trackPoints, trackPoints.data(), bytes, cudaMemcpyHostToDevice));
 }
 
 void SimulationEngine::sendState(zmq::socket_t& sock, int step)
 {
-    if (envConfig.sendStates)
+    if (!envConfig.sendStates)
+        return;
+
+    Writer writer;
+
+    writer.pushInt32(MSG_STATE);
+    writer.pushInt32(step);
+
+    writer.pushFloatArray(state.pos, N_AGENTS * DIM);
+    writer.pushFloatArray(state.vel, N_AGENTS * DIM);
+    writer.pushFloatArray(state.S, N_AGENTS * N_RACELINES);
+
+    writer.pushIntArray(state.laps, N_AGENTS);
+    writer.pushIntArray(state.gates, N_AGENTS);
+
+    writer.pushInt32(nMppiCont);
+
+    for (int iMppi = 0; iMppi < N_AGENTS; iMppi++)
     {
-        Writer writer;
+        if (MPPIController* cont = dynamic_cast<MPPIController*>(controllers[iMppi].get()))
+        {
+            std::cout << "controller " << iMppi << " is MPPI controller" << std::endl;
 
-        writer.pushInt32(MSG_STATE);
+            writer.pushInt32(iMppi);
+            writer.pushFloatArray(cont->h_belief);
 
-        writer.pushInt32(step);
-        writer.pushFloatArray(pos);
-        writer.pushFloatArray(speed);
-        writer.pushFloatArray(currentS);
-        writer.pushIntArray(nLaps);
-        writer.pushIntArray(currentGates);
+            writer.pushIntArray(cont->failCount);
+            writer.pushFloat(cont->epsilon);
+            writer.pushFloat(cont->epsilonPartial);
+            writer.pushInt32((int) cont->useNewPlan);
+            writer.pushFloat(cont->certifiedLoss);
 
-        writer.pushInt32(nMppiCont);
+            writer.pushInt32(N_MODELS);
 
-        // send MPPI info
-        for (int iMppi = 0; iMppi < envConfig.nAgents; iMppi++)
-            if (MPPIController* cont = dynamic_cast<MPPIController*>(controllers[iMppi].get()))
+            SimState initState = state;
+            MPPIConfig mppiConfig = cont->mppiConfig;
+
+            std::vector<float> fullPos(mppiConfig.nTimesteps * N_AGENTS * DIM);
+            std::vector<float> fullActions(N_AGENTS * DIM);
+            std::vector<float> beliefVec = cont->h_belief;
+
+            HostRNG hrng{ &nd, &rng };
+
+            for (int theta = 0; theta < N_MODELS; theta++)
             {
-                std::cout << "controller " << iMppi << " is MPPI controller" << std::endl;
-                // send belief
-                writer.pushInt32(iMppi);
-                writer.pushFloatArray(cont->h_belief);
+                SimState predState = initState;
 
-                // send collision status
-                writer.pushIntArray(cont->failCount);
-                writer.pushFloat(cont->epsilon);
-                writer.pushFloat(cont->epsilonPartial);
-                writer.pushInt32((int) cont->useNewPlan);
-                writer.pushFloat(cont->certifiedLoss);
+                BranchState bstate;
+                initBranchState(bstate, beliefVec.data(), mppiConfig.minConfidence);
 
-                writer.pushInt32(cont->mppiConfig.nModels);
+                int stopTime = -1;
+                EventType stopReason = EVT_TRUNCATED;
+                int stopAgent = -1;
 
-                // build the predicted trajectories
-                // we simulate it for nominal and every theta
+                float scratchActions[N_AGENTS * DIM];
+                float nomPidAction[N_MODELS * DIM];
+                float egoAction[DIM];
 
-                // we keep copies of the initial state, since they are modified by dynStep
-
-                std::vector<float> initPos = pos, initSpeed = speed, initS = currentS;
-                std::vector<int> initGates = currentGates, initLaps = nLaps;
-                MPPIConfig mppiConfig = cont->mppiConfig;
-
-                std::vector<float> fullPos(mppiConfig.nTimesteps * envConfig.nAgents * envConfig.dim);
-                std::vector<float> actions(envConfig.nAgents * envConfig.dim);
-                std::vector<float> nomPIDactions(mppiConfig.nModels * envConfig.dim);
-
-                for (int theta = 0; theta < mppiConfig.nModels; theta++)
+                for (int t = 0; t < mppiConfig.nTimesteps; t++)
                 {
-                    int stopTime = -1;
-                    EventType stopReason = EVT_TRUNCATED;
-                    int stopAgent = -1;
+                    int startInd = ((bstate.predTheta + 1) * mppiConfig.nTimesteps + t - bstate.branchingTime) * DIM;
+                    for (int d = 0; d < DIM; d++)
+                        egoAction[d] = cont->h_nominal[startInd + d];
 
-                    std::vector<float> belief = cont->h_belief;
-                    int predTheta = findConfident(belief.data(), mppiConfig.nModels, mppiConfig.minConfidence);
-                    int branchingTime = 0;
+                    TerminalType term = simulateContingentStep(
+                        t,
+                        iMppi,
+                        theta,
+                        envConfig,
+                        mppiConfig,
+                        trackPoints.data(),
+                        egoAction,
+                        false,                  // no PID noise for reproducible display
+                        predState,
+                        bstate,
+                        scratchActions,
+                        nomPidAction,
+                        hrng);
 
-                    for (int t = 0; t < mppiConfig.nTimesteps; t++)
+                    for (int i = 0; i < N_AGENTS * DIM; i++)
+                        fullPos[t * N_AGENTS * DIM + i] = predState.pos[i];
+
+                    if (term != TERM_NONE)
                     {
-                        // build actions (we do not add PID noise for reproductibility) TODO: should we use noise?
-                        for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
+                        for (int tt = t + 1; tt < mppiConfig.nTimesteps; tt++)
                         {
-                            if (iAgent == iMppi)
-                            {
-                                int startInd = ((predTheta + 1) * mppiConfig.nTimesteps + t - branchingTime) * envConfig.dim;
-                                std::copy(cont->h_nominal.begin() + startInd, cont->h_nominal.begin() + startInd + envConfig.dim, actions.begin() + iAgent * envConfig.dim);
-                            }
-                            else
-                            {
-                                for (int thetaT = 0; thetaT < mppiConfig.nModels; thetaT++)
-                                    computePIDAction(iAgent, pos.data(), speed.data(), currentS.data(), envConfig, mppiConfig.oppPid[thetaT], trackPoints.data(), nomPIDactions.data() + thetaT * envConfig.dim);
-
-                                std::copy(nomPIDactions.begin() + theta * envConfig.dim, nomPIDactions.begin() + (theta + 1) * envConfig.dim, actions.begin() + iAgent * envConfig.dim);
-                            }
+                            for (int i = 0; i < N_AGENTS * DIM; i++)
+                                fullPos[tt * N_AGENTS * DIM + i] = predState.pos[i];
                         }
 
-                        // compute step, and update positions
-                        dynStep(actions);
-                        std::copy(pos.begin(), pos.end(), fullPos.begin() + t * envConfig.nAgents * envConfig.dim);
+                        std::cout << "STOPPING SIMULATION at step " << t
+                            << " term " << (int) term << std::endl;
 
-                        // update belief
-                        updateBelief(belief.data(), actions.data() + (1 - iMppi) * envConfig.dim, nomPIDactions.data(), mppiConfig.oppPid, mppiConfig.nModels, envConfig.dim, envConfig.maxAccel[1 - iMppi]);
-                        if (predTheta == -1 && (predTheta = findConfident(belief.data(), mppiConfig.nModels, mppiConfig.minConfidence)) != -1)
-                            branchingTime = t + 1;
+                        stopTime = t;
+                        std::optional<std::pair<EventType, int>> parsed = parseTerm(term, iMppi);
+                        stopReason = parsed->first;
+                        stopAgent = parsed->second;
 
-                        std::optional<std::pair<int, int>> coll = checkCollision();
-                        int out = checkOutside(), win = checkWinner();
-                        if (coll || out != -1 || win != -1)      // should we allow outside for display??
-                        {
-                            // copy everything and break (i.e. stop simulation)
-                            for (int tt = t + 1; tt < mppiConfig.nTimesteps; tt++)
-                                std::copy(pos.begin(), pos.end(), fullPos.begin() + tt * envConfig.nAgents * envConfig.dim);
-
-                            std::cout << "STOPPING SIMULATION at step " << t << " collision " << (bool) coll << " outside " << out << " winner " << win << std::endl;
-
-                            stopTime = t;
-                            if (coll)
-                            {
-                                stopReason = EVT_COLLISION;
-                                stopAgent = coll->first;
-                            }
-                            else if (win != -1)
-                            {
-                                stopReason = EVT_WINNER;
-                                stopAgent = win;
-                            }
-                            else
-                            {
-                                stopReason = EVT_OUTSIDE;
-                                stopAgent = out;
-                            }
-
-                            break;
-                        }
+                        break;
                     }
-
-                    // copy back original state
-                    pos = initPos;
-                    speed = initSpeed;
-                    currentS = initS;
-                    currentGates = initGates;
-                    nLaps = initLaps;
-
-                    std::cout << "final belief for theta = " << theta << ": ";
-                    for (float v : belief)
-                        std::cout << v << " ";
-                    std::cout << "\n";
-
-                    // send branching time, last predTheta, and full pos then stopReason, stopTime, and stopAgent
-                    writer.pushInt32(branchingTime);
-                    writer.pushInt32(predTheta);
-                    writer.pushFloatArray(fullPos);
-                    writer.pushInt32(stopReason);
-                    writer.pushInt32(stopTime);
-                    writer.pushInt32(stopAgent);
                 }
 
-            }
+                std::cout << "final belief for theta = " << theta << ": ";
+                for (int k = 0; k < N_MODELS; k++)
+                    std::cout << bstate.belief[k] << " ";
+                std::cout << "\n";
 
-        sock.send(zmq::buffer(writer.data));
+                writer.pushInt32(bstate.branchingTime);
+                writer.pushInt32(bstate.predTheta);
+                writer.pushFloatArray(fullPos);
+                writer.pushInt32(stopReason);
+                writer.pushInt32(stopTime);
+                writer.pushInt32(stopAgent);
+            }
+        }
     }
+
+    sock.send(zmq::buffer(writer.data));
 }
 
 void SimulationEngine::sendEvent(zmq::socket_t& sock, EventType type, int info)
@@ -285,66 +264,25 @@ void SimulationEngine::sendDone(zmq::socket_t& sock)
     sock.send(zmq::buffer(writer.data));
 }
 
-void SimulationEngine::dynStep(const std::vector<float>& actions)
+std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::vector<float>& actions)
 {
-    // clamp + noise actions
+    float actBuf[N_AGENTS * DIM] = {};
+    for (int i = 0; i < N_AGENTS * DIM; i++)
+        actBuf[i] = actions[i];
 
-    std::vector<float> act = actions;
-    std::vector<float> old_pos = pos;
-    std::vector<float> old_speed = speed;
+    HostRNG hrng{ &nd, &rng };
 
-    int dim = envConfig.dim;
+    // controlAgent only matters for ego/opp terminal labeling, so we use 0 and ignore the return value
+    // TODO: we should check it ourselves
+    TerminalType term = applyEnvironmentDynamics(
+        0,
+        envConfig,
+        trackPoints.data(),
+        state,
+        actBuf,
+        hrng);
 
-    for (int a = 0; a < envConfig.nAgents; a++)
-    {
-        float sqNorm = 0.0f;
-        for (int d = 0; d < dim; d++)
-            sqNorm += act[a * dim + d] * act[a * dim + d];
-
-        float factor = 1.0f;
-        if (sqNorm > envConfig.maxAccel[a] * envConfig.maxAccel[a])
-            factor = envConfig.maxAccel[a] / sqrtf(sqNorm);
-
-        for (int d = 0; d < dim; d++)
-        {
-            float& v = act[a * dim + d];
-            v *= factor;
-            v += nd(rng) * envConfig.actionNoiseLevel;
-        }
-    }
-
-    for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
-    {
-        // integrate position
-        for (int d = 0; d < dim; d++)
-            pos[iAgent * dim + d] += envConfig.dt * speed[iAgent * dim + d];
-
-        // integrate velocity
-        float sqSpeedNorm = 0.f;
-        for (int d = 0; d < dim; d++)
-        {
-            float& sp = speed[iAgent * dim + d];
-            sp += envConfig.dt * act[iAgent * dim + d];
-            sqSpeedNorm += sp * sp;
-        }
-
-        // cap speed
-        if (sqSpeedNorm > envConfig.maxSpeed[iAgent] * envConfig.maxSpeed[iAgent])
-        {
-            float sc = envConfig.maxSpeed[iAgent] / std::sqrt(sqSpeedNorm);
-            for (int d = 0; d < dim; d++)
-                speed[iAgent * dim + d] *= sc;
-        }
-
-        // noise
-        for (int d = 0; d < dim; d++)
-        {
-            pos[iAgent * dim + d] += nd(rng) * envConfig.posNoiseLevel;
-            speed[iAgent * dim + d] += nd(rng) * envConfig.speedNoiseLevel;
-        }
-    }
-
-    updateGates(envConfig, pos.data(), old_pos.data(), currentS.data(), currentGates.data(), nLaps.data(), trackPoints.data());
+    return parseTerm(term, 0);
 }
 
 void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
@@ -353,96 +291,82 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
 
     int step;
 
-    std::vector<float> prevPos;
-    std::vector<float> prevSpeed;
-    std::vector<float> prevS;
-    std::vector<float> prevAction;
+    std::optional<SimState> prevState = std::nullopt;
+    std::optional<std::vector<float>> prevAction = std::nullopt;
 
-    // ── simulation loop ──────────────────────────────────────────────
+    std::optional<std::pair<EventType, int>> stopInfo = std::nullopt;
+
     for (step = 1; step <= maxSteps; step++)
     {
         std::cout << "\nSTEP " << step << "\n";
-        // compute actions
-        std::vector<float> actions(envConfig.nAgents * envConfig.dim, 0.0f);
-        for (int i = 0; i < envConfig.nAgents; i++)
-            controllers[i]->getControl(i, pos.data(), speed.data(), currentS.data(),
-                nLaps.data(),
-                currentGates.data(),
-                actions.data() + i * envConfig.dim,
+
+        std::vector<float> actions(N_AGENTS * DIM, 0.0f);
+
+        for (int i = 0; i < N_AGENTS; i++)
+        {
+            controllers[i]->getControl(
+                i,
+                state,
+                actions.data() + i * DIM,
                 nd,
                 rng,
-                step == 1 ? std::nullopt : std::make_optional(prevAction),
-                step == 1 ? std::nullopt : std::make_optional(prevPos),
-                step == 1 ? std::nullopt : std::make_optional(prevSpeed),
-                step == 1 ? std::nullopt : std::make_optional(prevS)
-            );
+                prevAction,
+                prevState);
+        }
 
         prevAction = actions;
-        prevPos = pos;
-        prevSpeed = speed;
-        prevS = currentS;
+        prevState = state;
 
-        dynStep(actions);
-
-        // float sq = 0.f;
-        // int iPid = 0;
-        // for (int d = 0; d < envConfig.dim; d++)
-        //     sq += pos[iPid * envConfig.dim + d] * pos[iPid * envConfig.dim + d];
-        // std::cout << "position of PID: radius " << sqrtf(sq) << " pos " << pos[iPid * envConfig.dim] << " " << pos[iPid * envConfig.dim + 1] << "\n";
+        stopInfo = dynStep(actions);
 
         sendState(sock, step);
 
-        int best = -1;
-        float bestAdvance = 0.;
-        for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
-        {
-            float advance = getAdvance(nLaps.data(), currentGates.data(), iAgent, envConfig.nGates, pos.data() + envConfig.dim * iAgent, envConfig.gateCenters, envConfig.dim);
-            if (iAgent == 0 || advance > bestAdvance)
-            {
-                best = iAgent;
-                bestAdvance = advance;
-            }
-        }
-
         std::cout << std::fixed << std::setprecision(2);
+        std::cout << "Current state at step " << step << ":\n";
 
-        std::cout << "Current state at step " << step << ": agent " << (best + 1) << " in front (advance " << bestAdvance << ")" << std::endl;
-
-        for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
+        for (int a = 0; a < N_AGENTS; a++)
         {
-            std::cout << "\tAgent " << (iAgent + 1)
-                << ": currentS:";
-            for (int i = 0; i < envConfig.nRacelines; i++)
-                std::cout << " " << currentS[iAgent * envConfig.nRacelines + i];
+            std::cout << "\tAgent " << (a + 1) << ": currentS:";
+            for (int r = 0; r < N_RACELINES; r++)
+                std::cout << " " << state.S[a * N_RACELINES + r];
 
-            std::cout << "\tcurrentGates: " << currentGates[iAgent]
-                << "\tnLaps: " << nLaps[iAgent]
+            std::cout << "\tcurrentGates: " << state.gates[a]
+                << "\tnLaps: " << state.laps[a]
                 << "\tposition";
 
-            for (int d = 0; d < envConfig.dim; d++)
-                std::cout << " " << pos[iAgent * envConfig.dim + d];
+            for (int d = 0; d < DIM; d++)
+                std::cout << " " << state.pos[a * DIM + d];
 
             std::cout << "\tspeed:";
-            for (int d = 0; d < envConfig.dim; d++)
-                std::cout << " " << speed[iAgent * envConfig.dim + d];
+            for (int d = 0; d < DIM; d++)
+                std::cout << " " << state.vel[a * DIM + d];
 
             std::cout << std::endl;
         }
 
+        if (stopInfo)
+            std::cout << "Event " << stopInfo->first << " (agent " << stopInfo->second << ")\n";
+
         // termination checks
-        hasCollision = (bool) checkCollision();
-        anyOutside = checkOutside();
-        anyWinner = checkWinner();
+        // hasCollision = (bool) checkCollision();
+        // anyOutside = checkOutside();
+        // anyWinner = checkWinner();
 
-        if (hasCollision || anyOutside >= 0 || anyWinner >= 0)
+        // if (hasCollision || anyOutside >= 0 || anyWinner >= 0)
+        // {
+        //     if (anyOutside >= 0)
+        //         sendEvent(sock, EVT_OUTSIDE, anyOutside);
+        //     else if (anyWinner >= 0)
+        //         sendEvent(sock, EVT_WINNER, anyWinner);
+        //     else
+        //         sendEvent(sock, EVT_COLLISION, -1);
+
+        //     break;
+        // }
+
+        if (stopInfo)
         {
-            if (anyOutside >= 0)
-                sendEvent(sock, EVT_OUTSIDE, anyOutside);
-            else if (anyWinner >= 0)
-                sendEvent(sock, EVT_WINNER, anyWinner);
-            else
-                sendEvent(sock, EVT_COLLISION, -1);
-
+            sendEvent(sock, stopInfo->first, stopInfo->second);
             break;
         }
 
@@ -452,50 +376,38 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
 
     sendDone(sock);
 
-    std::cout << "Simulation finished. " << envConfig.nAgents << " agents, " << envConfig.nTrackSamples << " track samples after " << step << " steps.\nStop reason: ";
-    if (hasCollision)
-        std::cout << "Collision\n";
-    else if (anyOutside >= 0)
-        std::cout << "Agent " << (anyOutside + 1) << " is outside\n";
-    else if (anyWinner >= 0)
-        std::cout << "Agent " << (anyWinner + 1) << "wins\n";
-    else
+    std::cout << "Simulation finished. "
+        << N_AGENTS << " agents, "
+        << N_TRACK_SAMPLES << " track samples after "
+        << step << " steps.\nStop reason: ";
+
+    if (!stopInfo)
         std::cout << "Simulation truncated (maxSteps reached)\n";
+    else if (stopInfo->first == EVT_COLLISION)
+        std::cout << "Collision\n";
+    else if (stopInfo->first == EVT_OUTSIDE)
+        std::cout << "Agent " << (stopInfo->second + 1) << " is outside\n";
+    else if (stopInfo->first == EVT_WINNER)
+        std::cout << "Agent " << (stopInfo->second + 1) << " wins\n";
 }
 
-std::optional<std::pair<int, int>> SimulationEngine::checkCollision() const
+std::optional<std::pair<EventType, int>> SimulationEngine::parseTerm(TerminalType term, int egoAgent)
 {
-    for (int a = 0; a < envConfig.nAgents; a++)
-        for (int b = a + 1; b < envConfig.nAgents; b++)
-            if (agentDist(pos.data(), a, b, envConfig.dim) < envConfig.minDist)
-                return { { a, b } };
-    return {};
-}
-
-int SimulationEngine::checkOutside() const
-{
-    for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
+    switch (term)
     {
-        if (isOutside(envConfig, pos.data() + iAgent * envConfig.dim, envConfig.minDist / 2.0f))
-            return iAgent;
-
-        // for (int d = 0; d < envConfig.dim; d++)
-        // {
-        //     float p = pos[iAgent * envConfig.dim + d];
-        //     if (p < envConfig.arenaMin[d] || p > envConfig.arenaMax[d])
-        //     {
-        //         std::cout << "agent " << (iAgent + 1) << " outside (dimension " << d << ": position " << p << " outside of arena\n";
-        //         return iAgent;
-        //     }
-        // }
+    case TERM_NONE:
+        return std::nullopt;
+    case TERM_COLLISION:
+        return { {EVT_COLLISION, -1} };
+    case TERM_EGO_OUTSIDE:
+        return { {EVT_OUTSIDE, egoAgent} };
+    case TERM_OPP_OUTSIDE:
+        return { {EVT_OUTSIDE, 1 - egoAgent} };
+    case TERM_WIN:
+        return { {EVT_WINNER, egoAgent} };
+    case TERM_OPP_WIN:
+        return { {EVT_WINNER, 1 - egoAgent} };
+    default:
+        throw std::runtime_error("Unexpected TerminalType value");
     }
-
-    return -1;
-}
-
-int SimulationEngine::checkWinner() const
-{
-    for (int a = 0; a < envConfig.nAgents; a++)
-        if (nLaps[a] >= (float) envConfig.nWinLaps) return a;
-    return -1;
 }

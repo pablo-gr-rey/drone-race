@@ -10,12 +10,13 @@
 #include <type_traits>
 
 // ── compile-time limits ──────────────────────────────────────────────
-constexpr int MAX_AGENTS = 2;
-constexpr int MAX_DIM = 2;
-constexpr int MAX_GATES = 5;
-constexpr int MAX_MODELS = 2;
-constexpr int MAX_OBSTACLES = 2;
-constexpr int MAX_RACELINES = 2;
+constexpr int N_AGENTS = 2;
+constexpr int DIM = 2;
+constexpr int N_GATES = 2;
+constexpr int N_MODELS = 2;
+constexpr int N_OBSTACLES = 1;
+constexpr int N_RACELINES = 2;
+constexpr int N_TRACK_SAMPLES = 512;
 
 #ifdef __CUDACC__
 #define HD __host__ __device__
@@ -46,42 +47,36 @@ constexpr int MAX_RACELINES = 2;
 // this should have the same layout as GateEnvironmentConfig in the Python side (including superclasses, ie. BaseEnvironmentConfig then GateEnvironmentConfig)
 struct EnvironmentConfig
 {
-    int nAgents;
-    int dim;
     float dt;
 
     bool sendStates;
-    int nRacelines;
-    int nGates;
 
-    float initPos[MAX_AGENTS * MAX_DIM];
-    float initSpeed[MAX_AGENTS * MAX_DIM];
-    float initS[MAX_AGENTS * MAX_RACELINES];    // (nAgents * nRacelines). if == -1.0f, will not be updated (since it is only useful for PIDs)
-    int initLaps[MAX_AGENTS];
-    int initGates[MAX_AGENTS];
+    float initPos[N_AGENTS * DIM];
+    float initSpeed[N_AGENTS * DIM];
+    float initS[N_AGENTS * N_RACELINES];    // (nAgents * nRacelines). if == -1.0f, will not be updated (since it is only useful for PIDs)
+    int initLaps[N_AGENTS];
+    int initGates[N_AGENTS];
 
     float minDist;
     float posNoiseLevel;
     float speedNoiseLevel;
     float actionNoiseLevel;
 
-    float maxSpeed[MAX_AGENTS];
-    float maxAccel[MAX_AGENTS];
+    float maxSpeed[N_AGENTS];
+    float maxAccel[N_AGENTS];
 
     // track
-    int nTrackSamples;
     int nWinLaps;
     float targetDistance;
 
-    float gateCenters[MAX_GATES * MAX_DIM]; // (nGates * dim)
-    float gateVectors[MAX_GATES * MAX_DIM]; // (nGates * dim)
-    float gateRadius[MAX_GATES];  // (nGates)
+    float gateCenters[N_GATES * DIM]; // (nGates * dim)
+    float gateVectors[N_GATES * DIM]; // (nGates * dim)
+    float gateRadius[N_GATES];  // (nGates)
 
-    float arenaMin[MAX_DIM];    // (dim)
-    float arenaMax[MAX_DIM];    // (dim)
+    float arenaMin[DIM];    // (dim)
+    float arenaMax[DIM];    // (dim)
 
-    int nObstacles;
-    float obstacles[MAX_OBSTACLES * MAX_DIM * 2];   // (nObstacles * dim * 2): rectangle obstacles, i.e. [xmin, ymin, xmax, ymax]
+    float obstacles[N_OBSTACLES * DIM * 2];   // (nObstacles * dim * 2): rectangle obstacles, i.e. [xmin, ymin, xmax, ymax]
 
     // float* trackPoints = nullptr; // (nTrackSamples * nRacelines, dim)
 
@@ -157,11 +152,10 @@ struct MPPIConfig
 
     float minConfidence = 0.9f;
 
-    int nModels;
     ControllerKind oppKind = CONT_DUMMY;
 
-    PIDConfig oppPid[MAX_MODELS];
-    float initBelief[MAX_MODELS];
+    PIDConfig oppPid[N_MODELS];
+    float initBelief[N_MODELS];
 };
 
 using ControllerConfig = std::variant<DummyConfig, PIDConfig, MPPIConfig>;

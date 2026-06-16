@@ -28,8 +28,8 @@ void runEngine(zmq::socket_t& sock)
     VerifConfig verifConfig;
     verifConfig.unpackHeader(msg.data(), msg.size());
 
-    std::vector<ControllerSpec> specs(envConfig.nAgents);
-    for (int i = 0; i < envConfig.nAgents; i++)
+    std::vector<ControllerSpec> specs(N_AGENTS);
+    for (int i = 0; i < N_AGENTS; i++)
     {
         res = sock.recv(msg);
         if (!res)

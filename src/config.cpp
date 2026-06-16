@@ -10,22 +10,22 @@ std::pair<int, std::vector<float>> EnvironmentConfig::unpackHeader(const void* b
     if (kind != MSG_HEADER)
         throw std::runtime_error(std::format("Expected header message type for environment config (type {}) but got type {} instead", static_cast<int>(MSG_HEADER), kind));
 
-    nAgents = (int) reader.readInt32();
-    dim = (int) reader.readInt32();
+    int nAgents = (int) reader.readInt32();
+    int dim = (int) reader.readInt32();
     dt = reader.readFloat();
 
     sendStates = (bool) reader.readInt32();
-    nRacelines = (int) reader.readInt32();
-    nGates = (int) reader.readInt32();
+    int nRacelines = (int) reader.readInt32();
+    int nGates = (int) reader.readInt32();
 
-    if (nAgents > MAX_AGENTS)
-        throw std::runtime_error(std::format("Received config for {} agents but MAX_AGENTS is set to {}. Edit this constant and recompile", nAgents, MAX_AGENTS));
-    if (dim > MAX_DIM)
-        throw std::runtime_error(std::format("Received config for dimension {} but MAX_DIM is set to {}. Edit this constant and recompile", dim, MAX_DIM));
-    if (nRacelines > MAX_RACELINES)
-        throw std::runtime_error(std::format("Received config for {} racelines but MAX_RACELINES is set to {}. Edit this constant and recompile", nRacelines, MAX_RACELINES));
-    if (nGates > MAX_GATES)
-        throw std::runtime_error(std::format("Received config for {} gates but MAX_GATES is set to {}. Edit this constant and recompile", nGates, MAX_GATES));
+    if (nAgents != N_AGENTS)
+        throw std::runtime_error(std::format("Received config for {} agents but N_AGENTS is set to {}. Edit this constant and recompile", nAgents, N_AGENTS));
+    if (dim != DIM)
+        throw std::runtime_error(std::format("Received config for dimension {} but DIM is set to {}. Edit this constant and recompile", dim, DIM));
+    if (nRacelines != N_RACELINES)
+        throw std::runtime_error(std::format("Received config for {} racelines but N_RACELINES is set to {}. Edit this constant and recompile", nRacelines, N_RACELINES));
+    if (nGates != N_GATES)
+        throw std::runtime_error(std::format("Received config for {} gates but N_GATES is set to {}. Edit this constant and recompile", nGates, N_GATES));
 
     reader.readFloatArray(initPos);
     reader.readFloatArray(initSpeed);
@@ -42,7 +42,10 @@ std::pair<int, std::vector<float>> EnvironmentConfig::unpackHeader(const void* b
     reader.readFloatArray(maxSpeed);
     reader.readFloatArray(maxAccel);
 
-    nTrackSamples = (int) reader.readInt32();
+    int nTrackSamples = (int) reader.readInt32();
+    if (nTrackSamples != N_TRACK_SAMPLES)
+        throw std::runtime_error(std::format("Received config for {} track samples but N_TRACK_SAMPLES is set to {}. Edit this constant and recompile", nTrackSamples, N_TRACK_SAMPLES));
+
     nWinLaps = (int) reader.readInt32();
     targetDistance = reader.readFloat();
 
@@ -53,9 +56,9 @@ std::pair<int, std::vector<float>> EnvironmentConfig::unpackHeader(const void* b
     reader.readFloatArray(arenaMin);
     reader.readFloatArray(arenaMax);
 
-    nObstacles = reader.readInt32();
-    if (nObstacles > MAX_OBSTACLES)
-        throw std::runtime_error(std::format("Received config for {} obstacles but MAX_OBSTACLES is set to {}. Edit this constant and recompile", nObstacles, MAX_OBSTACLES));
+    int nObstacles = reader.readInt32();
+    if (nObstacles != N_OBSTACLES)
+        throw std::runtime_error(std::format("Received config for {} obstacles but N_OBSTACLES is set to {}. Edit this constant and recompile", nObstacles, N_OBSTACLES));
     reader.readFloatArray(obstacles);
 
     int seed = reader.readInt32();
@@ -140,13 +143,13 @@ static MPPIConfig unpackMPPIConfig(Reader& reader)
     mppiconfig.finalSpeedWeight = reader.readFloat();
 
     mppiconfig.minConfidence = reader.readFloat();
-    mppiconfig.nModels = reader.readInt32();
+    int nModels = reader.readInt32();
     mppiconfig.oppKind = (ControllerKind) reader.readInt32();
 
-    if (mppiconfig.nModels > MAX_MODELS)
-        throw std::runtime_error(std::format("Received MPPI config for %d PID strategies but MAX_MODELS is set to %d. Edit this constant and recompile", mppiconfig.nModels, MAX_MODELS));
+    if (nModels != N_MODELS)
+        throw std::runtime_error(std::format("Received MPPI config for %d PID strategies but N_MODELS is set to %d. Edit this constant and recompile", nModels, N_MODELS));
 
-    for (int i = 0; i < mppiconfig.nModels; i++)
+    for (int i = 0; i < N_MODELS; i++)
     {
         ControllerKind kind = (ControllerKind) reader.readInt32();
         if (kind != CONT_PID)
@@ -157,8 +160,8 @@ static MPPIConfig unpackMPPIConfig(Reader& reader)
 
     reader.readFloatArray(mppiconfig.initBelief);
 
-    std::cout << "loaded MPPI samples " << mppiconfig.nSamples << " timesteps " << mppiconfig.nTimesteps << " collDistFactor " << mppiconfig.collDistFactor << " with " << mppiconfig.nModels << " opponent strats:\n";
-    for (int i = 0; i < mppiconfig.nModels; i++)
+    std::cout << "loaded MPPI samples " << mppiconfig.nSamples << " timesteps " << mppiconfig.nTimesteps << " collDistFactor " << mppiconfig.collDistFactor << " with " << N_MODELS << " opponent strats:\n";
+    for (int i = 0; i < N_MODELS; i++)
         std::cout << "\tConfig " << i << ": initBelief " << mppiconfig.initBelief[i] << " repulsionFactor " << mppiconfig.oppPid[i].repulsionFactor << " action noise " << mppiconfig.oppPid[i].actionNoise << "\n";
 
     return mppiconfig;

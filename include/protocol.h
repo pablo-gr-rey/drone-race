@@ -55,9 +55,13 @@ struct Writer
     void pushInt32(int32_t v);
     void pushFloat(float v);
     void pushFloatArray(const std::vector<float>& arr);
+    void pushFloatArray(const float* arr, size_t size);
 
     template <typename T>
     void pushIntArray(const std::vector<T>& arr);
+
+    template<typename T>
+    void pushIntArray(const T* arr, size_t size);
 
     const uint8_t* bytes() const { return data.data(); }
     size_t size() const { return data.size(); }
@@ -70,6 +74,17 @@ void Writer::pushIntArray(const std::vector<T>& arr)
     std::vector<float> n(arr.size());
 
     for (size_t i = 0; i < arr.size(); i++)
+        n[i] = arr[i];
+
+    pushFloatArray(n);
+}
+
+template <typename T>
+void Writer::pushIntArray(const T* arr, size_t size)
+{
+    std::vector<float> n(size);
+
+    for (size_t i = 0; i < size; i++)
         n[i] = arr[i];
 
     pushFloatArray(n);
