@@ -9,15 +9,6 @@
 #include <variant>
 #include <type_traits>
 
-// ── compile-time limits ──────────────────────────────────────────────
-constexpr int N_AGENTS = 2;
-constexpr int DIM = 2;
-constexpr int N_GATES = 2;
-constexpr int N_MODELS = 2;
-constexpr int N_OBSTACLES = 1;
-constexpr int N_RACELINES = 2;
-constexpr int N_TRACK_SAMPLES = 512;
-
 #ifdef __CUDACC__
 #define HD __host__ __device__
 #define INLINE static __forceinline__ 
@@ -25,6 +16,58 @@ constexpr int N_TRACK_SAMPLES = 512;
 #define HD
 #define INLINE inline
 #endif
+
+// ── compile-time limits ──────────────────────────────────────────────
+constexpr int N_AGENTS = 2;
+constexpr int DIM = 2;
+constexpr int N_GATES = 2;
+constexpr int N_OBSTACLES = 1;
+constexpr int N_RACELINES = 2;
+constexpr int N_TRACK_SAMPLES = 512;
+
+// CUDA does not like constexpr arrays, so we use constexpr inline functions
+
+
+// constexpr int constProduct(const int* arr, int n)
+// {
+//     int p = 1;
+//     for (int i = 0; i < n; i++)
+//         p *= arr[i];
+//     return p;
+// }
+
+// constexpr int constMax(const int* arr, int n)
+// {
+//     int m = arr[0];
+//     for (int i = 1; i < n; i++)
+//         if (arr[i] > m)
+//             m = arr[i];
+//     return m;
+// }
+
+// constexpr int MODEL_SIZES[N_MODEL_FACTORS] = { 2, 2 };      // number of models for given parameter (ie. N_i)
+// constexpr int BRANCH_SIZES[N_MODEL_FACTORS] = { MODEL_SIZES[0] + 1, MODEL_SIZES[1] + 1 };       // branch size for each parameter (ie. N_i + 1)
+// constexpr int N_TRUE_MODELS = constProduct(MODEL_SIZES, N_MODEL_FACTORS);               // total number of models (ie. N_0 * N_1 * ...). in particular, belief size
+// constexpr int N_BRANCH_PLANS = constProduct(BRANCH_SIZES, N_MODEL_FACTORS);       // total number of branches including nominals (ie. (N_0 + 1) * (N_1 + 1) * ...). in particular
+// constexpr int MAX_MODEL_SIZE = constMax(MODEL_SIZES, N_MODEL_FACTORS);      // max size of a model (ie. max(MODEL_SIZES))
+
+constexpr int N_MODEL_FACTORS = 1;
+
+HD INLINE constexpr int MODEL_SIZE(int /* k */)
+{
+    // for several models with different sizes, `if` are fine: return (k == 0) ? 2 : 3 or a switch, but here we can just fold it
+    return 2;
+}
+
+HD INLINE constexpr int BRANCH_SIZE(int /* k */)
+{
+    // same comment as above
+    return 3;
+}
+
+constexpr int N_TRUE_MODELS = N_MODEL_FACTORS == 1 ? MODEL_SIZE(0) : MODEL_SIZE(0) * MODEL_SIZE(1);
+constexpr int N_BRANCH_PLANS = N_MODEL_FACTORS == 1 ? BRANCH_SIZE(0) : BRANCH_SIZE(0) * BRANCH_SIZE(1);
+constexpr int MAX_MODEL_SIZE = N_MODEL_FACTORS == 1 ? MODEL_SIZE(0) : (MODEL_SIZE(0) > MODEL_SIZE(1) ? MODEL_SIZE(0) : MODEL_SIZE(1));
 
 // if defined, fastProjectOnTrack will be compared to projectOnTrack. use this to test that the margin is correct when changing track (it will be much slower, though)
 // #define CHECK_PROJECTION
@@ -90,7 +133,7 @@ struct MPPIConfig
 
     float minConfidence = 0.9f;
 
-    float initBelief[N_MODELS];
+    float initBelief[N_TRUE_MODELS];
 
     void unpackHeader(const void* buf, size_t len);
 };
@@ -132,7 +175,7 @@ struct EnvironmentConfig
 
     float* trackPoints = nullptr; // (nTrackSamples * nRacelines, dim)  // this pointer is different on host & device!
 
-    PIDConfig oppPid[N_MODELS];
+    PIDConfig oppPid[N_TRUE_MODELS];
     int iMppi;
     int trueTheta;
 

@@ -22,46 +22,42 @@ __global__ void fullRolloutKernel(
     const float* __restrict__ initBelief,
     const float* __restrict__ nominal,
     const float* __restrict__ noise,
-    float* __restrict__ totalCosts,
+    float* __restrict__ costsTrue,
     int* __restrict__ branchUsed,
     int* __restrict__ branchTime,
     curandState* __restrict__ rngStates);
 
-__global__ void buildMaskedCostsKernel(
-    const float* __restrict__ costs,       // (nModels+1, N)
-    const int* __restrict__ branchUsed,    // (nModels, N)
-    const int* __restrict__ branchTime,    // (nModels, N)
-    const float* __restrict__ belief,      // (nModels)
-    float* __restrict__ maskedCosts,       // ((nModels+1) * T, N)
-    int N, int T);
+__global__ void aggregateBranchCostsKernel(
+    const float* __restrict__ costsTrue,   // (N_TRUE_MODELS, N)
+    const float* __restrict__ belief,      // (N_TRUE_MODELS)
+    float* __restrict__ costs,             // (N_BRANCH_PLANS, N)
+    int N);
 
-void minReduceCUB(const float* __restrict__ d_in, float* __restrict__ d_out, int N, int nRows, void* __restrict__ d_temp_storage, size_t temp_storage_bytes);
+// for each (branchPlan, tLocal), loop over samples, and compute min of costs[branchPlan, s] for eligible samples
+__global__ void computeMaskedMinCostsKernel(
+    const float* __restrict__ costs,       // (N_BRANCH_PLANS, N)
+    const int* __restrict__ branchUsed,    // (N_TRUE_MODELS, N, N_MODEL_FACTORS)
+    const int* __restrict__ branchTime,    // (N_TRUE_MODELS, N, N_MODEL_FACTORS)
+    const float* __restrict__ belief,      // (N_TRUE_MODELS)
+    float* __restrict__ minCosts,          // (N_BRANCH_PLANS, T)
+    int N,
+    int T);
 
 // Weighted average of noise
 // One block per (timestep * dim) entry.
 // Updates nominalAction in-place: nominalAction[t*dim+d] += weightedAvg
-__global__ void weightedAverageKernel(
-    const float* __restrict__ costs,
-    const float* __restrict__ noise,    // (nTimesteps, nSamples, dim)
-    float* __restrict__ nominalAction,  // (nTimesteps, dim)
-    const float* __restrict__  minCost,
-    float  invTemperature,
-    int    nSamples,
-    int    nTimesteps,
-    float* __restrict__ nu);
-
 __global__ void weightedAverageKernelUnified(
-    const float* __restrict__ costs,       // (nModels+1, N)
-    const float* __restrict__ minCosts,    // (nModels+1)
-    const float* __restrict__ noise,       // (nModels+1, T, N, dim)
-    const int* __restrict__ branchUsed,    // (nModels, N)
-    const int* __restrict__ branchTime,    // (nModels, N)
-    const float* __restrict__ belief,      // (nModels)
-    float* __restrict__ nominal,           // (nModels+1, T, dim)
+    const float* __restrict__ costs,       // (nBranchPlans, N)
+    const float* __restrict__ minCosts,    // (nBranchPlans, T)
+    const float* __restrict__ noise,       // (nBranchPlans, T, N, dim)
+    const int* __restrict__ branchUsed,    // (N_TRUE_MODELS, N, nModelFactors)
+    const int* __restrict__ branchTime,    // (N_TRUE_MODELS, N, nModelFactors)
+    const float* __restrict__ belief,      // (N_TRUE_MODELS)
+    float* __restrict__ nominal,           // (nBranchPlans, T, dim)
     float invTemp,
-    int N, int T,
-    float* __restrict__ nu                  // (nModels+1)
-);
+    int N,
+    int T,
+    float* __restrict__ nu);               // (nBranchPlans)
 
 // Clamp nominal actions to maxAccel (avoids them drifting to high-magnitude areas from which it's difficult to recover)
 __global__ void clampNominalKernel(

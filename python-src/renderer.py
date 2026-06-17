@@ -400,25 +400,34 @@ class EnvironmentRenderer:
         for theta, ((lc_nom, lc_branch, lc_opp), pred) in enumerate(zip(self.lcs_pred, mppiState.preds)):
             fullPos = pred.fullPos.reshape((self.mppiConfig.nTimesteps, self.envConfig.nAgents, self.envConfig.dim))
 
-            if pred.predTheta == -1:
-                pred.branchTime = self.mppiConfig.nTimesteps
+            # if pred.predTheta == -1:
+            #     pred.branchTime = self.mppiConfig.nTimesteps
 
             vHor = self.verifConfig.horizon
+
+            # TODO: this does not work with several models
+            branchTime = int(round(pred.branchTime[0]))
+            initPredTheta = int(round(pred.initPredTheta[0]))
+
+            if initPredTheta != 0:
+                branchTime = 0  # from a rendering point of view, if we're already committed, then it's as if we committed at time t=0 (but for MPPI computations, it is conceptually different)
 
             def set_data(lineStrong: Line2D, lineLight: Line2D, arr: np.ndarray | None, basis: int) -> None:
                 if arr is not None:
                     ind = max(vHor - basis, 0)
+
                     lineStrong.set_data(arr[:ind, self.axis[0]], arr[:ind, self.axis[1]])
                     lineLight.set_data(arr[max(ind - 1, 0) :, self.axis[0]], arr[max(ind - 1, 0) :, self.axis[1]])
                 else:
                     lineStrong.set_data([], [])
                     lineLight.set_data([], [])
 
-            set_data(*lc_nom, fullPos[: pred.branchTime, self.iMppi, :], 0)
+            set_data(*lc_nom, fullPos[:branchTime, self.iMppi, :], 0)
 
-            if pred.branchTime != 0 or pred.predTheta == theta:
-                # if we branch at time 0, only show the corresponding plot (otherwise, it might get confusing)
-                set_data(*lc_branch, fullPos[pred.branchTime :, self.iMppi, :], pred.branchTime)
+            # if branchTime != 0 or predTheta == theta:
+            if initPredTheta == 0 or initPredTheta == theta + 1:
+                # if we branch at time 0, only show the corresponding plot (otherwise, it might get confusing) (skip if we are already committed to a theta, which is different from the current theta)
+                set_data(*lc_branch, fullPos[branchTime:, self.iMppi, :], branchTime)
                 set_data(*lc_opp, fullPos[:, 1 - self.iMppi, :], 0)
 
                 if pred.stopReason == EVENT_TYPE.EVT_COLLISION or pred.stopReason == EVENT_TYPE.EVT_OUTSIDE:

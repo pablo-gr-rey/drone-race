@@ -38,8 +38,8 @@ public:
 
     MPPIConfig mppiConfig;
 
-    std::vector<float> h_nominal;   // host mirror (nModels+1, T, dim)
-    std::array<float, N_MODELS> h_belief;    // host belief (nModels). now, this is updated by the engine
+    std::vector<float> h_nominal;   // host mirror (nBranchPlans, T, dim)
+    std::array<float, N_TRUE_MODELS> h_belief;    // host belief (nTrueModels). this is updated by the engine
 
     std::array<uint, 2> failCountOld;    // size 2: nColl, nOutside (previous nominal, only MPPI outside is counted)
     std::array<uint, 2> failCountNew;    // size 2: nColl, nOutside (candidate new nominal, only MPPI outside is counted)
@@ -62,33 +62,33 @@ private:
     // Device memory
 
     // Rollout side
-    float* d_belief = nullptr;     // (nModels)
+    float* d_belief = nullptr;     // (nTrueModels)
 
-    float* d_noise = nullptr;      // (nModels+1, T, N, dim)
+    float* d_noise = nullptr;      // (nBranchPlans, T, N, dim)
 
-    // d_costs[0, s] = averaged / expected cost of sample s
-    // d_costs[theta+1, s] = cost of sample s if opp is following theta
-    float* d_costs = nullptr;      // (nModels+1, N)
+    // d_costs[(nom0/theta0, nom1/theta1, ...), s] = cost of sample s, averaged over unknown parameters (i.e. d_costs[(nom0, theta1), s] = cost of sample s under theta1, averaged over theta0)
+    float* d_costs = nullptr;      // (nBranchPlans, N)
 
-    // d_branchUsed[theta, s] = -1 if MPPI did not switch, value of model it switched to otherwise
-    int* d_branchUsed = nullptr;   // (nModels, N)
+    // d_costsTrue[trueModel, s] = cost of sample s over true model (it will then be averaged to compute d_costs)
+    float* d_costsTrue = nullptr;   // (nTrueModels, N)
 
-    // d_branchTime[theta, s] = branching time (or T if no branching)
-    int* d_branchTime = nullptr;   // (nModels, N)
+    // d_branchUsed[trueTheta, s, k] = 0 if sample s stayed in nominal for parameter k in case of trueTheta, otherwise 1 + value of model it switched to
+    int* d_branchUsed = nullptr;   // (nTrueModels, N, nModelFactors)
 
-    float* d_nominal = nullptr;      // (nModels+1, T, dim)
-    float* d_prevnominal = nullptr;  // (nModels+1, T, dim)
+    // d_branchTime[trueTheta, s, k] = branching time for parameter k in case of trueTheta (or T if no branching)
+    int* d_branchTime = nullptr;   // (nTrueModels, N, nModelFactors)
 
-    // ((nModels+1), T, N): masked row costs used for branch/time-aware min reduction
-    float* d_maskedCosts = nullptr;
+    float* d_nominal = nullptr;      // (nBranchPlans, T, dim)
+    float* d_prevnominal = nullptr;  // (nBranchPlans, T, dim)
 
-    // ((nModels+1), T): branch/time-aware mins
-    float* d_minCosts = nullptr;
+    // masked row costs used for branch/time-aware min reduction
+    float* d_maskedCosts = nullptr; // (nBranchPlans, T, N)
 
-    // (nModels+1): denom for generic at t=0 and each specialized branch at local time 0
-    float* d_nu = nullptr;
+    // branch/time aware minimums
+    float* d_minCosts = nullptr;    // (nBranchPlans, T)
 
-    // float* d_trackPts = nullptr;  // cached on device // now part of EnvironmentConfig
+    // denominator for each branch tuple
+    float* d_nu = nullptr;  // (nBranchPlans)
 
     void* d_temp_storage = nullptr; // for min-reduce
     size_t temp_storage_bytes = 0;  // for min-reduce

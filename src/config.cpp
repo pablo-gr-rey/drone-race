@@ -83,7 +83,7 @@ int EnvironmentConfig::unpackHeader(const void* buf, size_t len)
 
     int seed = reader.readInt32();
 
-    for (int i = 0; i < N_MODELS; i++)
+    for (int i = 0; i < N_TRUE_MODELS; i++)
         oppPid[i] = unpackPIDConfig(reader);
 
     iMppi = reader.readInt32();
@@ -159,12 +159,12 @@ void MPPIConfig::unpackHeader(const void* buf, size_t len)
     minConfidence = reader.readFloat();
     int nModels = reader.readInt32();
 
-    if (nModels != N_MODELS)
-        throw std::runtime_error(std::format("Received MPPI config for %d PID strategies but N_MODELS is set to %d. Edit this constant and recompile", nModels, N_MODELS));
+    if (nModels != N_TRUE_MODELS)
+        throw std::runtime_error(std::format("Received MPPI config for %d PID strategies but N_TRUE_MODELS is set to %d. Edit this constant and recompile", nModels, N_TRUE_MODELS));
 
     reader.readFloatArray(initBelief);
 
     reader.assertFinished();
 
-    std::cout << "loaded MPPI samples " << nSamples << " timesteps " << nTimesteps << " collDistFactor " << collDistFactor << " with " << N_MODELS << " opponent strats\n";
+    std::cout << "loaded MPPI samples " << nSamples << " timesteps " << nTimesteps << " collDistFactor " << collDistFactor << " with " << N_TRUE_MODELS << " opponent strats\n";
 }

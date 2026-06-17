@@ -101,7 +101,7 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
     writer.pushInt32((int) mppiCont.useNewPlan);
     writer.pushFloat(mppiCont.certifiedLoss);
 
-    writer.pushInt32(N_MODELS);
+    writer.pushInt32(N_TRUE_MODELS);
 
     SimState initState = state;
     MPPIConfig mppiConfig = mppiCont.mppiConfig;
@@ -111,24 +111,30 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
 
     HostRNG hrng{ &nd, &rng };
 
-    for (int theta = 0; theta < N_MODELS; theta++)
+    for (int theta = 0; theta < N_TRUE_MODELS; theta++)
     {
         SimState predState = initState;
 
         BranchState bstate;
-        initBranchState(bstate, mppiCont.h_belief.data(), mppiConfig.minConfidence);
+        initBranchState(bstate, mppiCont.h_belief.data(), mppiConfig.minConfidence, mppiConfig.nTimesteps);
 
         int stopTime = -1;
         EventType stopReason = EVT_TRUNCATED;
         int stopAgent = -1;
 
         float scratchActions[N_AGENTS * DIM];
-        float nomPidAction[N_MODELS * DIM];
+        float nomPidAction[N_TRUE_MODELS * DIM];
         float egoAction[DIM];
+
+        writer.pushIntArray<int>(bstate.predTheta);
+
+        // std::cout << "sending initPredTheta: " << bstate.predTheta[0] << "\n";
 
         for (int t = 0; t < mppiConfig.nTimesteps; t++)
         {
-            int startInd = ((bstate.predTheta + 1) * mppiConfig.nTimesteps + t - bstate.branchingTime) * DIM;
+            // int startInd = ((bstate.predTheta + 1) * mppiConfig.nTimesteps + t - bstate.branchingTime) * DIM;
+            int startInd = (flattenBranchIndex(bstate.predTheta) * mppiConfig.nTimesteps + t - localBranchTimeOrigin(bstate.predTheta, bstate.branchingTime)) * DIM;
+
             for (int d = 0; d < DIM; d++)
                 egoAction[d] = mppiCont.h_nominal[startInd + d];
 
@@ -171,12 +177,12 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
         }
 
         std::cout << "final belief for theta = " << theta << ": ";
-        for (int k = 0; k < N_MODELS; k++)
+        for (int k = 0; k < N_TRUE_MODELS; k++)
             std::cout << bstate.belief[k] << " ";
         std::cout << "\n";
 
-        writer.pushInt32(bstate.branchingTime);
-        writer.pushInt32(bstate.predTheta);
+        writer.pushIntArray<int>(bstate.branchingTime);
+        writer.pushIntArray<int>(bstate.predTheta);
         writer.pushFloatArray(fullPos);
         writer.pushInt32(stopReason);
         writer.pushInt32(stopTime);
@@ -207,15 +213,15 @@ void SimulationEngine::sendDone(zmq::socket_t& sock)
 }
 
 // simulate one state for the given action. belief is updated in-place if given
-std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::array<float, DIM>& action, int t, std::array<float, N_MODELS>& belief)
+std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::array<float, DIM>& action, int t, std::array<float, N_TRUE_MODELS>& belief)
 {
     static std::array<float, N_AGENTS* DIM> actBuf;
-    static std::array<float, N_MODELS* DIM> nomPidBuf;
+    static std::array<float, N_TRUE_MODELS* DIM> nomPidBuf;
 
     HostRNG hrng{ &nd, &rng };
 
     BranchState branchState;
-    initBranchState(branchState, belief.data(), 2.0f);       // here, we only care about belief, branching time/theta is unused anyway (it is recomputed by MPPI) (TODO: change that?)
+    initBranchState(branchState, belief.data(), 2.0f, mppiCont.mppiConfig.nTimesteps);       // here, we only care about belief, branching time/theta is unused anyway (it is recomputed by MPPI) (TODO: change that?)
 
     TerminalType term = environmentStep(
         t,

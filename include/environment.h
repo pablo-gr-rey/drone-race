@@ -120,7 +120,7 @@ HD INLINE TerminalType environmentStep(
                 actions[a * DIM + d] = egoAction[d];
         else
         {
-            for (int thetaT = 0; thetaT < N_MODELS; thetaT++)
+            for (int thetaT = 0; thetaT < N_TRUE_MODELS; thetaT++)
                 computePIDAction(
                     a,
                     state,
@@ -218,15 +218,25 @@ HD INLINE TerminalType environmentStep(
         envConfig.oppPid,
         envConfig.maxAccel[oppAgent]);
 
-    if (branchState.predTheta == -1)
-    {
-        int conf = findConfident(branchState.belief, mppiConfig.minConfidence);
-        if (conf != -1)
+    int newPredTheta[N_MODEL_FACTORS];
+    findConfident(branchState.belief, mppiConfig.minConfidence, newPredTheta);
+
+    for (int k = 0; k < N_MODEL_FACTORS; k++)
+        if (branchState.predTheta[k] == 0 && newPredTheta[k] != 0)
         {
-            branchState.predTheta = conf;
-            branchState.branchingTime = t + 1;
+            branchState.predTheta[k] = newPredTheta[k];
+            branchState.branchingTime[k] = t + 1;
         }
-    }
+
+    // if (branchState.predTheta == 0)
+    // {
+    //     int conf = findConfident(branchState.belief, mppiConfig.minConfidence);
+    //     if (conf != -1)
+    //     {
+    //         branchState.predTheta = conf;
+    //         branchState.branchingTime = t + 1;
+    //     }
+    // }
 
     // 10. Check for collisions, outside, or win
     bool collision = false;

@@ -233,8 +233,9 @@ class MPPIConfig(ControllerConfig):
 
 @dataclass
 class MPPIStatePredInfo:
-    branchTime: int
-    predTheta: int
+    initPredTheta: np.ndarray
+    branchTime: np.ndarray
+    predTheta: np.ndarray
     fullPos: np.ndarray
     stopReason: EVENT_TYPE
     stopTime: int

@@ -48,7 +48,7 @@ private:
 
     void allocTrack();
 
-    std::optional<std::pair<EventType, int>> dynStep(const std::array<float, DIM>& action, int t, std::array<float, N_MODELS>& belief);
+    std::optional<std::pair<EventType, int>> dynStep(const std::array<float, DIM>& action, int t, std::array<float, N_TRUE_MODELS>& belief);
 
     std::optional<std::pair<EventType, int>> parseTerm(TerminalType term, int egoAgent);
 };
