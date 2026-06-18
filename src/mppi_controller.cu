@@ -35,7 +35,7 @@ MPPIController::MPPIController(
     h_trackPoints = c.trackPoints;
     envConfig.trackPoints = d_trackPoints;
 
-    h_belief = std::to_array(mc.initBelief);
+    h_belief = std::to_array(envConfig.initBelief);
 
     if (nominal)
     {
@@ -227,7 +227,6 @@ void MPPIController::getControl(
         d_belief,
         d_nominal,
         d_noise,
-        // d_costs,
         d_costsTrue,
         d_branchUsed,
         d_branchTime,
@@ -237,32 +236,6 @@ void MPPIController::getControl(
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 #endif
-
-    // 4. build masked costs
-//     int maskTotal = N_BRANCH_PLANS * T * N;
-//     int maskGrd = (maskTotal + blk - 1) / blk;
-
-//     buildMaskedCostsKernel << <maskGrd, blk >> > (
-//         d_costs,
-//         d_branchUsed,
-//         d_branchTime,
-//         d_belief,
-//         d_maskedCosts,
-//         N, T);
-
-// #ifdef DEBUG
-//     CUDA_CHECK(cudaGetLastError());
-//     CUDA_CHECK(cudaDeviceSynchronize());
-// #endif
-
-//     // 4.5 reduce mins over each (branch,time) row
-//     minReduceCUB(
-//         d_maskedCosts,
-//         d_minCosts,
-//         N,
-//         N_BRANCH_PLANS * T,
-//         d_temp_storage,
-//         temp_storage_bytes);
 
     // 3.5 Compute costs from costsTrue
     int aggTotal = N_BRANCH_PLANS * N;
@@ -465,24 +438,6 @@ void MPPIController::getControl(
     // 7. Shift nominal action sequence left by one timestep (warm start)
     // this ensures that the verification logic makes sense: if we stop optimizing (useNewPlan=false), then shifting corresponds
     // to simply time passing, such that the predicted plan matches the actual behavior
-
-    // for (int t = 0; t < T - 1; t++)
-    //     for (int d = 0; d < DIM; d++)
-    //         h_nominal[t * DIM + d] = h_nominal[(t + 1) * DIM + d];
-
-    // for (int d = 0; d < DIM; d++)
-    //     h_nominal[(T - 1) * DIM + d] = 0.0f;
-
-    // if (predTheta >= 0)
-    // {
-    //     for (int t = 0; t < T - 1; t++)
-    //         for (int d = 0; d < DIM; d++)
-    //             h_nominal[((predTheta + 1) * T + t) * DIM + d] =
-    //             h_nominal[((predTheta + 1) * T + (t + 1)) * DIM + d];
-
-    //     for (int d = 0; d < DIM; d++)
-    //         h_nominal[((predTheta + 1) * T + T - 1) * DIM + d] = 0.0f;
-    // }
 
     int base = branchIdx * T * DIM;
     for (int t = 0; t < T - 1; t++)

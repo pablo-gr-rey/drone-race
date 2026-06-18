@@ -580,23 +580,6 @@ HD INLINE bool branchCompatibleWithModel(const int* predTheta, const int* trueTh
 }
 
 // Return whether branchTuple is active for this realized path at local time tLocal (branchTuple[k] = 0 if nominal, i+1 if committed to i; used[k] = 0 if in this sample factor k never committed (and branchingTime[k] = T), otherwise 1+theta and branchingTime is the absolute committment time). Return false if tAbs >= T or if factors are inconsistent
-//
-// Inputs:
-// - branchTuple[k]:
-//     0      => still nominal on factor k
-//     i + 1  => committed to model i on factor k
-//
-// - used[k]:
-//     -1     => factor k never committed in this sample/path
-//     i      => factor k committed to model i
-//
-// - branchingTime[k]:
-//     T      => factor k never committed
-//     t0     => factor k became committed at absolute time t0
-//
-
-//
-// Returns false if tAbs >= T or if any factor is inconsistent.
 HD INLINE bool branchActiveAtLocalTime(
     const int* branchTuple,      // N_MODEL_FACTORS
     const int* used,             // N_MODEL_FACTORS
@@ -609,19 +592,6 @@ HD INLINE bool branchActiveAtLocalTime(
 
     if (tAbs >= T)
         return false;
-
-    // Semantics:
-    // The local time origin of a tuple is:
-    //     max(branchingTime[k]) over all k such that branchTuple[k] != 0,
-    //     or 0 if the tuple is fully nominal.
-    //
-    // The tuple is active at local time tLocal iff, at absolute time
-    //     tAbs = localOrigin + tLocal,
-    // every factor matches the tuple:
-    //   - if branchTuple[k] == 0, factor k must still be nominal at tAbs,
-    //     i.e. tAbs < branchingTime[k]
-    //   - if branchTuple[k] == i+1, factor k must have committed to model i
-    //     and already be active at tAbs, i.e. used[k] == i and tAbs >= branchingTime[k]
 
     for (int k = 0; k < N_MODEL_FACTORS; k++)
     {

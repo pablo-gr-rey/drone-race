@@ -11,10 +11,7 @@ __global__ void initRNGKernel(curandState* states, unsigned long long seed, int 
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < N)
-    {
-        // printf("initializing RNG %d\n", i);
         curand_init(seed, i, 0, &states[i]);
-    }
 }
 
 // Noise generation
@@ -26,7 +23,6 @@ __global__ void generateNoiseKernel(float* noise, curandState* rng,
     if (s >= N)
         return;
 
-    // printf("Accessing RNG %d\n", s);
     curandState local = rng[s];
     for (int theta = 0; theta < N_BRANCH_PLANS; theta++)      // generate for nominal + 1 for each model
         for (int t = 0; t < nTimesteps; t++)
@@ -95,19 +91,6 @@ __global__ void fullRolloutKernel(
         // this happen if for any k, firstBranchState.predTheta[k] != 0 and firstBranchState.predTheta[k] != trueTheta[k] + 1
         // otherwise, very high cost on very unlikely models can incur perturbations on the other branches and degrade specialized plan quality
 
-        // if (initPredTheta != -1 && trueTheta != initPredTheta)
-        //     continue;
-
-        // bool incompatible = false;
-        // for (int k = 0; k < N_MODEL_FACTORS; k++)
-        //     if (firstBranchState.predTheta[k] != 0 && firstBranchState.predTheta[k] != trueTheta[k] + 1)
-        //     {
-        //         incompatible = true;
-        //         break;
-        //     }
-        // if (incompatible)
-        //     continue;
-
         if (!branchCompatibleWithModel(firstBranchState.predTheta, trueTheta))
             continue;
 
@@ -160,19 +143,6 @@ __global__ void fullRolloutKernel(
         cost += finalCost(controlAgent, state.pos, state.vel, state.laps, state.gates, envConfig, mc);
 
         // actual cost is dependent on the probability that the opponent is actually following trueTheta, ie. initBelief[theta], unless we are already committed
-        // if (initPredTheta == -1)
-        // {
-        //     branchTime[trueTheta * mc.nSamples + s] = (branchState.predTheta == -1 ? mc.nTimesteps : branchState.branchingTime);
-        //     costsTrue[s] += initBelief[trueTheta] * cost;
-        // }
-        // else
-        // {
-        //     branchTime[trueTheta * mc.nSamples + s] = 0;
-        //     costsTrue[s] = cost;
-        // }
-
-        // branchUsed[trueTheta * mc.nSamples + s] = branchState.predTheta;
-        // costsTrue[(trueTheta + 1) * mc.nSamples + s] = cost;
 
         costsTrue[trueThetaFlat * mc.nSamples + s] = cost;
 
@@ -328,100 +298,6 @@ __global__ void computeMaskedMinCostsKernel(
         minCosts[branchPlan * T + tLocal] = smins[0];
 }
 
-// we want to add the contribution of nominal + each branch based on its actual contribution to the sample
-// for example, if a given branch is never taken in a sample (belief does not get skewed enough), then the noise on that branch should not count towards the corresponding minimal (it would just add noise)
-// likewise, generic noise at time t should only be considered with a coefficient proportional to how much this noise actually influenced the cost (ie. sum of belief[theta] for theta whose branching time is > t)
-// __global__ void weightedAverageKernelUnified(
-//     const float* __restrict__ costs,       // (nModels+1, N)
-//     const float* __restrict__ minCosts,    // (nModels+1)
-//     const float* __restrict__ noise,       // (nModels+1, T, N, dim)
-//     const int* __restrict__ branchUsed,    // (nModels, N)
-//     const int* __restrict__ branchTime,    // (nModels, N)
-//     const float* __restrict__ belief,      // (nModels)
-//     float* __restrict__ nominal,           // (nModels+1, T, dim)
-//     float invTemp,
-//     int N, int T,
-//     float* __restrict__ nu)                // nModels: sum of weights for nominal[0], spec[theta, 0]
-// {
-//     int btd = blockIdx.x;
-//     if (btd >= (N_MODELS + 1) * T * DIM)
-//         return;
-
-//     int d = btd % DIM;
-//     btd /= DIM;
-//     int tLocal = btd % T;
-//     int branchIdx = btd / T;   // 0 = generic, k+1 = specialized branch k
-
-//     extern __shared__ float sh[];
-//     float* s_num = sh;
-//     float* s_den = sh + blockDim.x;
-
-//     float num = 0.0f;
-//     float den = 0.0f;
-
-//     float minC = minCosts[branchIdx * T + tLocal];
-
-//     for (int s = threadIdx.x; s < N; s += blockDim.x)
-//     {
-//         float coeff = 0.0f;
-
-//         if (branchIdx == 0)
-//         {
-//             // Generic branch at absolute time tLocal: used in each true-model rollout theta if tLocal < branchTime[theta, s]
-//             for (int theta = 0; theta < N_MODELS; theta++)
-//             {
-//                 int tb = branchTime[theta * N + s];
-//                 if (tLocal < tb)
-//                     coeff += belief[theta];
-//             }
-//         }
-//         else
-//         {
-//             int k = branchIdx - 1;
-
-//             int bu = branchUsed[k * N + s];
-//             int tb = branchTime[k * N + s];
-
-//             // Specialized branch k at local time tLocal: used only if rollout under true model k actually branched to k, and local time is still within horizon
-//             if (bu == k && tb + tLocal < T)
-//                 coeff = 1.0f;
-//         }
-
-//         if (coeff > 0.0f)
-//         {
-//             float cost = costs[branchIdx * N + s];
-//             float w = expf(-(cost - minC) / invTemp);
-//             float eps = noise[((branchIdx * T + tLocal) * N + s) * DIM + d];
-
-//             num += w * coeff * eps;
-//             den += w * coeff;
-//         }
-//     }
-
-//     s_num[threadIdx.x] = num;
-//     s_den[threadIdx.x] = den;
-//     __syncthreads();
-
-//     for (int stride = blockDim.x / 2; stride > 0; stride >>= 1)
-//     {
-//         if (threadIdx.x < stride)
-//         {
-//             s_num[threadIdx.x] += s_num[threadIdx.x + stride];
-//             s_den[threadIdx.x] += s_den[threadIdx.x + stride];
-//         }
-//         __syncthreads();
-//     }
-
-//     if (threadIdx.x == 0)
-//     {
-//         if (s_den[0] > 1e-30f)
-//             nominal[(branchIdx * T + tLocal) * DIM + d] += s_num[0] / s_den[0];
-
-//         if (threadIdx.x == 0 && tLocal == 0 && d == 0)
-//             nu[branchIdx] = s_den[0];
-//     }
-// }
-
 // Weighted average of noise
 // One block per (timestep * dim) entry.
 // Updates nominalAction in-place: nominalAction[t*dim+d] += weightedAvg
@@ -479,37 +355,6 @@ __global__ void weightedAverageKernelUnified(
 
                 const int* used = branchUsed + (m * N + s) * N_MODEL_FACTORS;
                 const int* bTime = branchTime + (m * N + s) * N_MODEL_FACTORS;
-
-                // int tOrigin = localBranchTimeOrigin(branchTuple, bTime);
-                // int tAbs = tOrigin + tLocal;
-
-                // if (tAbs >= T)
-                //     continue;
-
-                // bool active = true;
-                // for (int k = 0; k < N_MODEL_FACTORS; k++)
-                // {
-                //     if (branchTuple[k] == 0)
-                //     {
-                //         if (tAbs >= bTime[k])
-                //         {
-                //             active = false;
-                //             break;
-                //         }
-                //     }
-                //     else
-                //     {
-                //         int requiredModel = branchTuple[k] - 1;
-                //         if (used[k] != requiredModel || tAbs < bTime[k])
-                //         {
-                //             active = false;
-                //             break;
-                //         }
-                //     }
-                // }
-
-                // if (active)
-                //     coeff += belief[m];
 
                 if (branchActiveAtLocalTime(branchTuple, used, bTime, tLocal, T))
                     coeff += belief[m];

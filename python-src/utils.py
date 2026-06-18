@@ -109,7 +109,11 @@ class GateEnvironmentConfig:
 
     seed: int = 42  # if -1, then it will be set to a random value
 
-    # obviously, should not be MPPIConfig
+    nModelFactors: int = 1
+    nTrueModels: int = field(init=False)
+    modelSizes: np.ndarray = field(default_factory=lambda: np.array([]))
+    initBelief: np.ndarray = field(default_factory=lambda: np.array([]))
+
     opponentPidConfigs: tuple["PIDConfig", ...] = ()
     iMppi: int = 0
     trueTheta: int = 0
@@ -152,6 +156,40 @@ class GateEnvironmentConfig:
 
         if self.seed == -1:
             self.seed = random.randrange(2**31)
+
+        self.modelSizes = self.modelSizes.astype(np.int32)
+        self.nTrueModels = int(np.prod(self.modelSizes))
+
+        if self.initBelief.size == 0:
+            self.initBelief = np.full(self.nTrueModels, 1.0 / self.nTrueModels)
+
+    def flattenTheta(self, thetaTuple: list[int]) -> int:
+        "Flatten thetaTuple (0 <= theta[k] < modelSize[k]) into 0 <= trueTheta < nTrueModels"
+        trueTheta, stride = 0, 1
+
+        for k in range(self.nModelFactors - 1, -1, -1):
+            trueTheta += thetaTuple[k] * stride
+            stride *= self.modelSizes[k]
+
+        return trueTheta
+
+    def unflattenTheta(self, theta: int) -> list[int]:
+        "Unflatten 0 <= trueTheta < nTrueModels into thetaTuple (0 <= theta[k] < modelSize[k])"
+        ans: list[int] = [0] * self.nModelFactors
+        for k in range(self.nModelFactors - 1, -1, -1):
+            ans[k] = theta % self.modelSizes[k]
+            theta //= self.modelSizes[k]
+
+        return ans
+
+    def computeMarginal(self, belief: np.ndarray, k: int) -> np.ndarray:
+        "Compute belief marginalized over parameter k"
+        marginal = np.zeros(self.modelSizes[k])
+
+        for theta in range(self.nTrueModels):
+            marginal[self.unflattenTheta(theta)[k]] += belief[theta]
+
+        return marginal
 
 
 @dataclass
@@ -222,13 +260,6 @@ class MPPIConfig(ControllerConfig):
     # )
 
     minConfidence: float = 0.9
-
-    nModels: int = 1
-    initBelief: np.ndarray = field(default_factory=lambda: np.array([]))
-
-    def __post_init__(self) -> None:
-        if self.initBelief.size == 0:
-            self.initBelief = np.full(self.nModels, 1.0 / self.nModels)
 
 
 @dataclass

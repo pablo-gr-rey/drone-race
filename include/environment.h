@@ -87,7 +87,7 @@ HD INLINE void computePIDAction(
     }
 }
 
-// compute opp. nominal actions, PID noise, env dynamics, belief update and branch update
+// compute opp. nominal actions, PID noise, env dynamics, belief update and branch update. if we become specialized, set corresponding branching time to t+1
 template <typename RNG>
 HD INLINE TerminalType environmentStep(
     int t,

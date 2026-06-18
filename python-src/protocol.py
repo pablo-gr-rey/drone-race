@@ -45,6 +45,11 @@ class BytePacker:
                     return False
         elif dataclasses.is_dataclass(val) and not isinstance(val, type):
             for field in dataclasses.fields(val):
+                if (
+                    not field.init
+                ):  # usually, these fields are computed afterwards for ease of implementation and should not be sent
+                    continue
+
                 n_val = getattr(val, field.name)
                 # avoid numeric issues: it's important to send the correct type! (ie. trackWidth=2 instead of 2.0 is wrongly sent as int and reinterpreted as messy float)
                 if field.type is float:
@@ -184,7 +189,7 @@ class ZMQRecv:
         mppiConfig: MPPIConfig,
         render: bool = True,
         contNames: Optional[list[str]] = None,
-        oppNames: Optional[list[str]] = None,
+        oppNames: Optional[list[list[str]]] = None,
     ) -> tuple[EVENT_TYPE, int]:
         if render:
             # only display the racelines which are actually used
@@ -202,7 +207,7 @@ class ZMQRecv:
                 ]
 
             if oppNames is None:
-                oppNames = [f"Model {i}" for i in range(mppiConfig.nModels)]
+                oppNames = [[f"Param {k}={i}" for i in range(envConfig.modelSizes[k])] for k in range(envConfig.nModelFactors)]
 
             renderer = EnvironmentRenderer(
                 envConfig,

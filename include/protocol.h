@@ -39,8 +39,8 @@ struct Reader
     std::vector<float> readFloatArray();
     std::vector<int> readIntArray();
 
-    void readFloatArray(float* arr);    // assumes array is allocated and has the right size
-    void readIntArray(int* arr);        // assumes array is allocated and has the right size
+    int readFloatArray(float* arr);    // returns length. assumes array is allocated and has the right size
+    int readIntArray(int* arr);        // returns length. assumes array is allocated and has the right size
 
     void assertFinished();
 };

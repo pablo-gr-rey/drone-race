@@ -176,9 +176,17 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
             }
         }
 
-        std::cout << "final belief for theta = " << theta << ": ";
+        std::cout << "Final belief for theta = " << theta << ": ";
         for (int k = 0; k < N_TRUE_MODELS; k++)
             std::cout << bstate.belief[k] << " ";
+        std::cout << "\n";
+
+        std::cout << "Final branching time: ";
+        for (int t : bstate.branchingTime)
+            std::cout << t << ' ';
+        std::cout << "\nFinal pred theta: ";
+        for (int t : bstate.predTheta)
+            std::cout << t << ' ';
         std::cout << "\n";
 
         writer.pushIntArray<int>(bstate.branchingTime);
@@ -241,7 +249,7 @@ std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::ar
 
     std::copy(std::begin(branchState.belief), std::end(branchState.belief), belief.begin());
 
-    return parseTerm(term, 0);
+    return parseTerm(term, envConfig.iMppi);
 }
 
 void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)

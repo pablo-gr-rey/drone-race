@@ -79,9 +79,23 @@ int EnvironmentConfig::unpackHeader(const void* buf, size_t len)
     int nObstacles = reader.readInt32();
     if (nObstacles != N_OBSTACLES)
         throw std::runtime_error(std::format("Received config for {} obstacles but N_OBSTACLES is set to {}. Edit this constant and recompile", nObstacles, N_OBSTACLES));
-    reader.readFloatArray(obstacles);
+
+    int nObsCoords = reader.readFloatArray(obstacles);
+    if (nObsCoords != N_OBSTACLES * DIM * 2)
+        throw std::runtime_error(std::format("Received config for {} obstacles coordinates but expected N_OBSTACLES * DIM * 2 = {}", nObsCoords, N_OBSTACLES * DIM * 2));
 
     int seed = reader.readInt32();
+
+    int nModelFactors = reader.readInt32();
+    if (nModelFactors != N_MODEL_FACTORS)
+        throw std::runtime_error(std::format("Received MPPI config for {} environment parameters but N_MODEL_FACTORS is set to {}. Edit this constant and recompile", nModelFactors, N_MODEL_FACTORS));
+
+    std::vector<float> modelSizes = reader.readFloatArray();
+    for (int k = 0; k < N_MODEL_FACTORS; k++)
+        if ((int) modelSizes[k] != MODEL_SIZE(k))
+            throw std::runtime_error(std::format("Received invalid model size for parameter {}: got {}, but MODEL_SIZE({}) is set to {}. Edit this constant and recompile", k, (int) modelSizes[k], k, MODEL_SIZE(k)));
+
+    reader.readFloatArray(initBelief);
 
     for (int i = 0; i < N_TRUE_MODELS; i++)
         oppPid[i] = unpackPIDConfig(reader);
@@ -98,7 +112,7 @@ int EnvironmentConfig::unpackHeader(const void* buf, size_t len)
 
     reader.assertFinished();
 
-    std::cout << "read nAgents " << nAgents << " nWinLaps " << nWinLaps << " max speed " << maxSpeed[0] << ' ' << maxSpeed[1] << " nTrackSamples" << nTrackSamples << "\ngate vectors:";
+    std::cout << "read nAgents " << nAgents << " nWinLaps " << nWinLaps << " true theta " << trueTheta << " max speed " << maxSpeed[0] << ' ' << maxSpeed[1] << " nTrackSamples" << nTrackSamples << "\ngate vectors:";
     for (int i = 0; i < nGates * dim; i++)
         std::cout << gateVectors[i] << (i % dim ? " " : ";  ");
     std::cout << "\n";
@@ -157,12 +171,6 @@ void MPPIConfig::unpackHeader(const void* buf, size_t len)
     finalSpeedWeight = reader.readFloat();
 
     minConfidence = reader.readFloat();
-    int nModels = reader.readInt32();
-
-    if (nModels != N_TRUE_MODELS)
-        throw std::runtime_error(std::format("Received MPPI config for %d PID strategies but N_TRUE_MODELS is set to %d. Edit this constant and recompile", nModels, N_TRUE_MODELS));
-
-    reader.readFloatArray(initBelief);
 
     reader.assertFinished();
 
