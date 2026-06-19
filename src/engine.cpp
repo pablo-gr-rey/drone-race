@@ -49,7 +49,7 @@ SimulationEngine::SimulationEngine(
     mppiCont.engine = this;
 
     // we only need the S of the opponent
-    // TODO: this could be faster (since for now we only assume 1 opponent)
+    // this could be faster if we only assume 1 opponent)
     for (int r = 0; r < N_RACELINES; r++)
         state.S[envConfig.iMppi * N_RACELINES + r] = -1.0f;
 }
@@ -144,7 +144,6 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
                 theta,
                 envConfig,
                 mppiConfig,
-                envConfig.trackPoints,
                 egoAction,
                 false,                  // no PID noise for reproducible display
                 predState,
@@ -229,7 +228,7 @@ std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::ar
     HostRNG hrng{ &nd, &rng };
 
     BranchState branchState;
-    initBranchState(branchState, belief.data(), 2.0f, mppiCont.mppiConfig.nTimesteps);       // here, we only care about belief, branching time/theta is unused anyway (it is recomputed by MPPI) (TODO: change that?)
+    initBranchState(branchState, belief.data(), 2.0f, mppiCont.mppiConfig.nTimesteps);       // here, we only care about belief, branching time/theta is unused anyway (it is recomputed by MPPI)
 
     TerminalType term = environmentStep(
         t,
@@ -237,7 +236,6 @@ std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::ar
         envConfig.trueTheta,
         envConfig,
         mppiCont.mppiConfig,
-        envConfig.trackPoints,
         action.data(),
         true,
         state,
@@ -295,27 +293,8 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
         }
 
         if (stopInfo)
-            std::cout << "Event " << stopInfo->first << " (agent " << stopInfo->second << ")\n";
-
-        // termination checks
-        // hasCollision = (bool) checkCollision();
-        // anyOutside = checkOutside();
-        // anyWinner = checkWinner();
-
-        // if (hasCollision || anyOutside >= 0 || anyWinner >= 0)
-        // {
-        //     if (anyOutside >= 0)
-        //         sendEvent(sock, EVT_OUTSIDE, anyOutside);
-        //     else if (anyWinner >= 0)
-        //         sendEvent(sock, EVT_WINNER, anyWinner);
-        //     else
-        //         sendEvent(sock, EVT_COLLISION, -1);
-
-        //     break;
-        // }
-
-        if (stopInfo)
         {
+            std::cout << "Event " << stopInfo->first << " (agent " << stopInfo->second << ")\n";
             sendEvent(sock, stopInfo->first, stopInfo->second);
             break;
         }

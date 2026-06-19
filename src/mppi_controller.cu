@@ -484,8 +484,8 @@ void MPPIController::computeCertifiedLoss()
         << "Certified loss: " << certifiedLoss
         << " eps1 " << eps1
         << " eps2 " << eps2
-        << " (totFailOld totFailNew n "
-        << totFailOld << " " << totFailNew << " " << n << ")\n";
+        << ": totFailOld "
+        << totFailOld << " (" << failCountOld[0] << "+" << failCountOld[1] << ") totFailNew " << totFailNew << " (" << failCountNew[0] << "+" << failCountNew[1] << "), n " << n << ")\n";
 }
 
 void MPPIController::computeEpsilon()

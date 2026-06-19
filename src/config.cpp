@@ -78,11 +78,22 @@ int EnvironmentConfig::unpackHeader(const void* buf, size_t len)
 
     int nObstacles = reader.readInt32();
     if (nObstacles != N_OBSTACLES)
-        throw std::runtime_error(std::format("Received config for {} obstacles but N_OBSTACLES is set to {}. Edit this constant and recompile", nObstacles, N_OBSTACLES));
+        throw std::runtime_error(std::format("Received config for {} rect obstacles but N_OBSTACLES is set to {}. Edit this constant and recompile", nObstacles, N_OBSTACLES));
 
     int nObsCoords = reader.readFloatArray(obstacles);
     if (nObsCoords != N_OBSTACLES * DIM * 2)
-        throw std::runtime_error(std::format("Received config for {} obstacles coordinates but expected N_OBSTACLES * DIM * 2 = {}", nObsCoords, N_OBSTACLES * DIM * 2));
+        throw std::runtime_error(std::format("Received config for {} rect obstacles coordinates but expected N_OBSTACLES * DIM * 2 = {}", nObsCoords, N_OBSTACLES * DIM * 2));
+
+    int nRoundObs = reader.readInt32();
+    if (nRoundObs != N_ROUND_OBSTACLES)
+        throw std::runtime_error(std::format("Received config for {} round obstacles but N_ROUND_OBSTACLES is set to {}. Edit this constant and recompile", nRoundObs, N_ROUND_OBSTACLES));
+
+    int nRoundObsCoords = reader.readFloatArray(roundObsCenters);
+    if (nRoundObsCoords != N_ROUND_OBSTACLES * DIM)
+        throw std::runtime_error(std::format("Received config for {} round obstacles centers but expected N_ROUND_OBSTACLES * DIM = {}", nRoundObsCoords, N_ROUND_OBSTACLES * DIM));
+    int nRadius = reader.readFloatArray(roundObsRadius);
+    if (nRadius != N_ROUND_OBSTACLES)
+        throw std::runtime_error(std::format("Received config for {} round obstacles radius but expected N_ROUND_OBSTACLES = {}", nRadius, N_ROUND_OBSTACLES));
 
     int seed = reader.readInt32();
 

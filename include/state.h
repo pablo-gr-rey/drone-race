@@ -424,6 +424,17 @@ __device__ INLINE float trackBoundaryDist(const EnvironmentConfig& envConfig, co
         minDist = fminf(minDist, sqrtf(sqDist));
     }
 
+    for (int iObs = 0; iObs < N_ROUND_OBSTACLES; iObs++)
+    {
+        float sqDist = 0.0f;
+        for (int d = 0; d < DIM; d++)
+        {
+            float dx = pos[d] - envConfig.roundObsCenters[iObs * DIM + d];
+            sqDist += dx * dx;
+        }
+        minDist = fminf(minDist, sqrtf(sqDist) - envConfig.roundObsRadius[iObs]);
+    }
+
     return minDist;
 }
 
@@ -446,11 +457,23 @@ HD INLINE bool isOutside(const EnvironmentConfig& envConfig, const float* __rest
             return true;
     }
 
+    for (int iObs = 0; iObs < N_ROUND_OBSTACLES; iObs++)
+    {
+        float sqDist = 0.0f;
+        for (int d = 0; d < DIM; d++)
+        {
+            float dx = pos[d] - envConfig.roundObsCenters[iObs * DIM + d];
+            sqDist += dx * dx;
+        }
+        if (sqDist <= (margin + envConfig.roundObsRadius[iObs]) * (margin + envConfig.roundObsRadius[iObs]))
+            return true;
+    }
+
     return false;
 }
 
 // if agent == marginAgent, use additional margin (we restrict to passing within gateRadius * margin of the gate center)
-HD INLINE void updateGates(const EnvironmentConfig& envConfig, const float* __restrict__ pos, const float* __restrict__ prevPos, float* __restrict__ currentS, int* __restrict__ currentGates, int* __restrict__ nLaps, const float* __restrict__ trackPoints, int marginAgent = -1, float margin = 0.f)
+HD INLINE void updateGates(const EnvironmentConfig& envConfig, const float* __restrict__ pos, const float* __restrict__ prevPos, float* __restrict__ currentS, int* __restrict__ currentGates, int* __restrict__ nLaps, int marginAgent = -1, float margin = 00.f)
 {
     for (int iAgent = 0; iAgent < N_AGENTS; iAgent++)
     {
@@ -459,7 +482,7 @@ HD INLINE void updateGates(const EnvironmentConfig& envConfig, const float* __re
         if (currentS[iAgent * N_RACELINES] >= 0.0f)
             for (int iRaceline = 0; iRaceline < N_RACELINES; iRaceline++)
             {
-                float s = fastProjectOnTrack(trackPoints + iRaceline * N_TRACK_SAMPLES * DIM, pos + iAgent * DIM, nullptr, dist, currentS[iAgent * N_RACELINES + iRaceline]);
+                float s = fastProjectOnTrack(envConfig.trackPoints + iRaceline * N_TRACK_SAMPLES * DIM, pos + iAgent * DIM, nullptr, dist, currentS[iAgent * N_RACELINES + iRaceline]);
                 currentS[iAgent * N_RACELINES + iRaceline] = s;
             }
 
@@ -595,20 +618,8 @@ HD INLINE bool branchActiveAtLocalTime(
 
     for (int k = 0; k < N_MODEL_FACTORS; k++)
     {
-        if (branchTuple[k] == 0)
-        {
-            // This factor should still be nominal at tAbs
-            if (tAbs >= branchingTime[k])
-                return false;
-        }
-        else
-        {
-            // This factor should be committed to branchTuple[k] (both are 1-indexed) and active at tAbs
-            if (used[k] != branchTuple[k] || tAbs < branchingTime[k])
-                return false;
-        }
-
-        // TODO: write this more cleanly
+        if ((branchTuple[k] == 0 && tAbs >= branchingTime[k]) || (branchTuple[k] != 0 && (used[k] != branchTuple[k] || tAbs < branchingTime[k])))
+            return false;
     }
 
     return true;

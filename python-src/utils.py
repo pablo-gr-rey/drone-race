@@ -107,6 +107,10 @@ class GateEnvironmentConfig:
     nObstacles: int = 0
     obstacles: np.ndarray = field(default_factory=lambda: np.array([]))
 
+    nRoundObstacles: int = 0
+    roundObsCenters: np.ndarray = field(default_factory=lambda: np.array([]))
+    roundObsRadius: np.ndarray = field(default_factory=lambda: np.array([]))
+
     seed: int = 42  # if -1, then it will be set to a random value
 
     nModelFactors: int = 1

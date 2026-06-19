@@ -432,6 +432,14 @@ class EnvironmentRenderer:
                 )
             )
 
+        for center, radius in zip(
+            self.envConfig.roundObsCenters.reshape(self.envConfig.nRoundObstacles, self.envConfig.dim),
+            self.envConfig.roundObsRadius,
+        ):
+            self.ax.add_patch(
+                patches.Circle(tuple(center), radius, linewidth=3, edgecolor="black", facecolor="gray", hatch="/", fill=True)
+            )
+
     def coordIndex(self, agent: int, coord: int) -> int:
         return agent * self.envConfig.dim + coord
 

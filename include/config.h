@@ -22,15 +22,16 @@ constexpr int N_AGENTS = 2;
 constexpr int DIM = 2;
 constexpr int N_GATES = 2;
 // constexpr int N_OBSTACLES = 1;
-// constexpr int N_RACELINES = 2;
-constexpr int N_OBSTACLES = 2;
-constexpr int N_RACELINES = 4;
+constexpr int N_OBSTACLES = 0;
+constexpr int N_ROUND_OBSTACLES = 1;
+constexpr int N_RACELINES = 2;
+// constexpr int N_RACELINES = 4;
 constexpr int N_TRACK_SAMPLES = 512;
 
 // CUDA does not like constexpr arrays, so we use constexpr inline functions
 
-// constexpr int N_MODEL_FACTORS = 1;
-constexpr int N_MODEL_FACTORS = 2;
+constexpr int N_MODEL_FACTORS = 1;
+// constexpr int N_MODEL_FACTORS = 2;
 
 HD INLINE constexpr int MODEL_SIZE(int /* k */)
 {
@@ -149,6 +150,8 @@ struct EnvironmentConfig
     float arenaMax[DIM];    // (dim)
 
     float obstacles[N_OBSTACLES * DIM * 2];   // (nObstacles * dim * 2): rectangle obstacles, i.e. [xmin, ymin, xmax, ymax]
+    float roundObsCenters[N_ROUND_OBSTACLES * DIM];     // (nRoundObstacles * dim): center of obstacles
+    float roundObsRadius[N_ROUND_OBSTACLES];        // (nRoundObstacles): radius of obstacles
 
     float* trackPoints = nullptr; // (nTrackSamples * nRacelines, dim)  // this pointer is different on host & device!
 

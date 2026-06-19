@@ -122,7 +122,6 @@ __global__ void fullRolloutKernel(
                 trueThetaFlat,
                 envConfig,
                 mc,
-                envConfig.trackPoints,
                 egoAction,
                 true,              // applyPidNoise
                 state,
@@ -475,7 +474,6 @@ __global__ void verifyNominalFailureKernel(
             theta,
             envConfig,
             mc,
-            envConfig.trackPoints,
             egoAction,
             true,          // applyPidNoise in real verification
             state,

@@ -14,13 +14,12 @@ HD INLINE void computePIDAction(
     const SimState& state,
     const EnvironmentConfig& envConfig,
     const PIDConfig& pid,
-    const float* trackPoints,
     float* outAction)
 {
     float target[DIM] = {};
 
     sampleCenterline(
-        trackPoints + N_TRACK_SAMPLES * pid.racelineIndex * DIM,
+        envConfig.trackPoints + N_TRACK_SAMPLES * pid.racelineIndex * DIM,
         state.S[agent * N_RACELINES + pid.racelineIndex] + envConfig.targetDistance,
         target);
 
@@ -95,7 +94,6 @@ HD INLINE TerminalType environmentStep(
     int trueTheta,
     const EnvironmentConfig& envConfig,
     const MPPIConfig& mppiConfig,
-    const float* trackPoints,       // TODO: contained in envConfig
     const float* egoAction,          // (dim)
     bool applyPidNoise,
     SimState& state,
@@ -126,7 +124,6 @@ HD INLINE TerminalType environmentStep(
                     state,
                     envConfig,
                     envConfig.oppPid[thetaT],
-                    trackPoints,
                     nomPidAction + thetaT * DIM);
 
             for (int d = 0; d < DIM; d++)
@@ -205,7 +202,6 @@ HD INLINE TerminalType environmentStep(
         state.S,
         state.gates,
         state.laps,
-        trackPoints,
         gateMarginAgent,
         gateMargin);
 
@@ -227,16 +223,6 @@ HD INLINE TerminalType environmentStep(
             branchState.predTheta[k] = newPredTheta[k];
             branchState.branchingTime[k] = t + 1;
         }
-
-    // if (branchState.predTheta == 0)
-    // {
-    //     int conf = findConfident(branchState.belief, mppiConfig.minConfidence);
-    //     if (conf != -1)
-    //     {
-    //         branchState.predTheta = conf;
-    //         branchState.branchingTime = t + 1;
-    //     }
-    // }
 
     // 10. Check for collisions, outside, or win
     bool collision = false;

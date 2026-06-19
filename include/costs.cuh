@@ -26,7 +26,8 @@ __device__ INLINE float stateCost(
 
                 float danger = mppiConfig.boundaryThresholdFactor * envConfig.minDist;
                 if (bd < danger)
-                    cost += mppiConfig.boundaryCost * (danger - bd) / danger;
+                    // cost += mppiConfig.boundaryCost * (danger - bd) / danger;
+                    cost += mppiConfig.boundaryCost / powf(bd / envConfig.minDist, 2.0f);
             }
 
             // for own agent, add a margin to keep it further off the boundary (since otherwise noise can push it a bit)
@@ -79,24 +80,6 @@ __device__ INLINE float finalCost(
 
             if (mppiConfig.finalSpeedWeight != 0.0f)
             {
-                // target: track point at s + targetDistance
-                // float target[MAX_DIM];
-                // sampleCenterline(trackPoints, nTP, DIM, currentS[a] + envConfig.targetDistance, target);
-
-                // float diff[MAX_DIM];
-                // const float* spd = speed + a * DIM;
-                // float diffNorm = 0.0f;
-                // for (int d = 0; d < DIM; d++)
-                // {
-                //     diff[d] = target[d] - pos[a * DIM + d];
-                //     diffNorm += diff[d] * diff[d];
-                // }
-                // diffNorm = sqrtf(diffNorm) + 1e-8f;
-
-                // float dot = 0.0f;
-                // for (int d = 0; d < DIM; d++)
-                //     dot += spd[d] * (diff[d] / diffNorm);
-
                 // target direction is nextGate - pos
                 int nextGate = (currentGates[agent] + 1) % N_GATES;
 
