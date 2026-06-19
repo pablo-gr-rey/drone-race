@@ -2,19 +2,26 @@
 
 #include "config.h"
 #include "controllers.h"
+#include "state.h"
 
 #include <vector>
 #include <memory>
 #include <random>
 #include <string>
+#include <optional>
 
 class SimulationEngine
 {
 public:
-    SimulationEngine(const EnvironmentConfig& cfg, std::vector<float> trackPoints, const VerifConfig& verifConfig, const std::vector<ControllerSpec>& specs, int seed);
+    SimulationEngine(
+        const EnvironmentConfig& cfg,
+        const VerifConfig& verifConfig,
+        const MPPIConfig& mppiConfig,
+        int seed);
+
     ~SimulationEngine();
 
-    void sendState(zmq::socket_t& sock, int step);
+    void sendState(zmq::socket_t& sock, int step, const std::array<float, DIM>& egoAction);
     void sendEvent(zmq::socket_t& sock, EventType type, int info);
     void sendDone(zmq::socket_t& sock);
 
@@ -23,43 +30,26 @@ public:
 
     // public config & track data
     EnvironmentConfig envConfig;
-    std::vector<float> trackPoints;
     VerifConfig verifConfig;
 
-private:
-    int nMppiCont = 0;  // count of MPPI controllers (used to send states)
+    // current simulation state
+    SimState state;
 
+private:
     std::normal_distribution<float> nd{ 0.0f, 1.0f };
 
-    float* d_trackPoints;   // shared across all MPPI controllers
+    float* d_trackPoints = nullptr;   // sent to MPPI controller
     int seed;
 
-    // state
-    std::vector<float> pos;   // (nAgents * dim) positions (x1 y1 .. x2 y2 ..)
-    std::vector<float> speed; // (nAgents * dim) speeds  (vx1 vy1 .. vx2 vy2 ..)
-    std::vector<float> currentS;    // (nAgents * nRacelines) current S relative to the given raceline, -1.0f means it is not used and should not be updated (since it's only useful for PID) 
-    std::vector<int> nLaps;       // (nAgents) current number of laps
-    std::vector<int> currentGates;  // (nAgents) current number of gates passed (1 = we already went through gates[0], now we aim at gates[1])
-
-    // stop reason
-    bool hasCollision;
-    int anyOutside;      // -1 = none
-    int anyWinner;       // -1 = none
-
     // controllers
-    std::vector<std::unique_ptr<Controller>> controllers;
-    std::vector<std::string> controllerNames;
+    MPPIController mppiCont;
 
     std::mt19937 rng;
 
-    // build actual controller from spec, return it + true iff controller is MPPI
-    std::pair<std::unique_ptr<Controller>, bool> makeController(const ControllerSpec& sp);
     void allocTrack();
 
-    void dynStep(const std::vector<float>& actions);
+    std::optional<std::pair<EventType, int>> dynStep(const std::array<float, DIM>& action, int t, std::array<float, N_TRUE_MODELS>& belief);
 
-    // checks
-    std::optional<std::pair<int, int>> checkCollision() const;
-    int  checkOutside()   const;  // -1 = none
-    int  checkWinner()    const;  // -1 = none
+    std::optional<std::pair<EventType, int>> parseTerm(TerminalType term, int egoAgent);
 };
+ 

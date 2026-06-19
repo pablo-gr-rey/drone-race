@@ -9,14 +9,6 @@
 #include <variant>
 #include <type_traits>
 
-// ── compile-time limits ──────────────────────────────────────────────
-constexpr int MAX_AGENTS = 2;
-constexpr int MAX_DIM = 2;
-constexpr int MAX_GATES = 5;
-constexpr int MAX_MODELS = 2;
-constexpr int MAX_OBSTACLES = 2;
-constexpr int MAX_RACELINES = 2;
-
 #ifdef __CUDACC__
 #define HD __host__ __device__
 #define INLINE static __forceinline__ 
@@ -24,6 +16,42 @@ constexpr int MAX_RACELINES = 2;
 #define HD
 #define INLINE inline
 #endif
+
+// ── compile-time limits ──────────────────────────────────────────────
+constexpr int N_AGENTS = 2;
+constexpr int DIM = 2;
+constexpr int N_GATES = 2;
+constexpr int N_TRACK_SAMPLES = 512;
+constexpr int N_OBSTACLES = 0;
+
+// 1 agent
+// constexpr int N_ROUND_OBSTACLES = 1;
+// constexpr int N_RACELINES = 2;
+// constexpr int N_MODEL_FACTORS = 1;
+
+// 2 agents
+constexpr int N_ROUND_OBSTACLES = 2;
+constexpr int N_RACELINES = 4;
+constexpr int N_MODEL_FACTORS = 2;
+
+// CUDA does not like constexpr arrays, so we use constexpr inline functions
+
+
+HD INLINE constexpr int MODEL_SIZE(int /* k */)
+{
+    // for several models with different sizes, tests are fine: return (k == 0) ? 2 : 3 or a switch, but here we can just fold it
+    return 2;
+}
+
+HD INLINE constexpr int BRANCH_SIZE(int /* k */)
+{
+    // same comment as above
+    return 3;
+}
+
+constexpr int N_TRUE_MODELS = N_MODEL_FACTORS == 1 ? MODEL_SIZE(0) : MODEL_SIZE(0) * MODEL_SIZE(1);
+constexpr int N_BRANCH_PLANS = N_MODEL_FACTORS == 1 ? BRANCH_SIZE(0) : BRANCH_SIZE(0) * BRANCH_SIZE(1);
+constexpr int MAX_MODEL_SIZE = N_MODEL_FACTORS == 1 ? MODEL_SIZE(0) : (MODEL_SIZE(0) > MODEL_SIZE(1) ? MODEL_SIZE(0) : MODEL_SIZE(1));
 
 // if defined, fastProjectOnTrack will be compared to projectOnTrack. use this to test that the margin is correct when changing track (it will be much slower, though)
 // #define CHECK_PROJECTION
@@ -42,77 +70,9 @@ constexpr int MAX_RACELINES = 2;
 #define CUDA_CHECK(call) (call)
 #endif
 
-// ── Environment configuration ────────────────────────────────────────
-// this should have the same layout as GateEnvironmentConfig in the Python side (including superclasses, ie. BaseEnvironmentConfig then GateEnvironmentConfig)
-struct EnvironmentConfig
-{
-    int nAgents;
-    int dim;
-    float dt;
 
-    bool sendStates;
-    int nRacelines;
-    int nGates;
 
-    float initPos[MAX_AGENTS * MAX_DIM];
-    float initSpeed[MAX_AGENTS * MAX_DIM];
-    float initS[MAX_AGENTS * MAX_RACELINES];    // (nAgents * nRacelines). if == -1.0f, will not be updated (since it is only useful for PIDs)
-    int initLaps[MAX_AGENTS];
-    int initGates[MAX_AGENTS];
-
-    float minDist;
-    float posNoiseLevel;
-    float speedNoiseLevel;
-    float actionNoiseLevel;
-
-    float maxSpeed[MAX_AGENTS];
-    float maxAccel[MAX_AGENTS];
-
-    // track
-    int nTrackSamples;
-    int nWinLaps;
-    float targetDistance;
-
-    float gateCenters[MAX_GATES * MAX_DIM]; // (nGates * dim)
-    float gateVectors[MAX_GATES * MAX_DIM]; // (nGates * dim)
-    float gateRadius[MAX_GATES];  // (nGates)
-
-    float arenaMin[MAX_DIM];    // (dim)
-    float arenaMax[MAX_DIM];    // (dim)
-
-    int nObstacles;
-    float obstacles[MAX_OBSTACLES * MAX_DIM * 2];   // (nObstacles * dim * 2): rectangle obstacles, i.e. [xmin, ymin, xmax, ymax]
-
-    // float* trackPoints = nullptr; // (nTrackSamples * nRacelines, dim)
-
-    EnvironmentConfig()
-    {}
-
-    std::pair<int, std::vector<float>> unpackHeader(const void* buf, size_t len);   // returns (seed, trackPoints)
-};
-
-struct VerifConfig
-{
-    int nVerifSamples;
-    float beta;
-    int horizon;
-    float maxEps;
-
-    void unpackHeader(const void* buf, size_t len);
-};
-
-// dummy controller parameters
-struct DummyConfig {};
-
-// ── Opponent model type (for GPU kernels) ────────────────────────────
-enum ControllerKind
-{
-    CONT_DUMMY = 0,   // zero acceleration
-    CONT_PID = 1,
-    CONT_MPPI = 2
-};
-
-// ── PID parameters (also used for opponent modelling on GPU) ─────────
+// PID parameters (also used for opponent modelling on GPU)
 struct PIDConfig
 {
     float kp = 10.0f;
@@ -127,7 +87,7 @@ struct PIDConfig
     float actionNoise = 0.0f;
 };
 
-// ── MPPI configuration ───────────────────────────────────────────────
+// MPPI configuration
 struct MPPIConfig
 {
     int   nSamples = 100;
@@ -157,20 +117,66 @@ struct MPPIConfig
 
     float minConfidence = 0.9f;
 
-    int nModels;
-    ControllerKind oppKind = CONT_DUMMY;
-
-    PIDConfig oppPid[MAX_MODELS];
-    float initBelief[MAX_MODELS];
+    void unpackHeader(const void* buf, size_t len);
 };
 
-using ControllerConfig = std::variant<DummyConfig, PIDConfig, MPPIConfig>;
-
-// ── Controller specification (POD, used to construct controllers) ────
-struct ControllerSpec
+// Environment configuration
+// this should have the same layout as GateEnvironmentConfig in the Python side
+struct EnvironmentConfig
 {
-    std::string name = "dummy";
-    ControllerConfig config = DummyConfig{};
+    float dt;
+
+    bool sendStates;
+
+    float initPos[N_AGENTS * DIM];
+    float initSpeed[N_AGENTS * DIM];
+    float initS[N_AGENTS * N_RACELINES];    // (nAgents * nRacelines). if == -1.0f, will not be updated (since it is only useful for PIDs)
+    int initLaps[N_AGENTS];
+    int initGates[N_AGENTS];
+
+    float minDist;
+    float posNoiseLevel;
+    float speedNoiseLevel;
+    float actionNoiseLevel;
+
+    float maxSpeed[N_AGENTS];
+    float maxAccel[N_AGENTS];
+
+    // track
+    int nWinLaps;
+    float targetDistance;
+
+    float gateCenters[N_GATES * DIM]; // (nGates * dim)
+    float gateVectors[N_GATES * DIM]; // (nGates * dim)
+    float gateRadius[N_GATES];  // (nGates)
+
+    float arenaMin[DIM];    // (dim)
+    float arenaMax[DIM];    // (dim)
+
+    float obstacles[N_OBSTACLES * DIM * 2];   // (nObstacles * dim * 2): rectangle obstacles, i.e. [xmin, ymin, xmax, ymax]
+    float roundObsCenters[N_ROUND_OBSTACLES * DIM];     // (nRoundObstacles * dim): center of obstacles
+    float roundObsRadius[N_ROUND_OBSTACLES];        // (nRoundObstacles): radius of obstacles
+
+    float* trackPoints = nullptr; // (nTrackSamples * nRacelines, dim)  // this pointer is different on host & device!
+
+    float initBelief[N_TRUE_MODELS];
+
+    PIDConfig oppPid[N_TRUE_MODELS];
+    int iMppi;
+    int trueTheta;
+
+    EnvironmentConfig()
+    {}
+
+    int unpackHeader(const void* buf, size_t len);   // returns (seed, trackPoints)
+};
+
+struct VerifConfig
+{
+    int nVerifSamples;
+    float beta;
+    int horizon;
+    float maxEps;
 
     void unpackHeader(const void* buf, size_t len);
 };

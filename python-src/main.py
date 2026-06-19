@@ -13,8 +13,6 @@ from typing import Any
 import numpy as np
 from protocol import ZMQRecv
 from utils import (
-    CONTROLLER_TYPE,
-    ControllerConfig,
     GateEnvironmentConfig,
     MPPIConfig,
     PIDConfig,
@@ -40,7 +38,7 @@ class NpJsonEncoder(json.JSONEncoder):
 #     dim = 2
 #     trackWidth = 1
 
-#     centerline: Callable[[float], np.ndarray] = lambda s: lissajous(s, 10, 2, 8)  # noqa: E731
+#     centerline: Callable[[float], np.ndarray] = lambda s: lissajous(s, 10, 2, 8)  # noqa:rend E731
 
 #     startS = [0.0]
 
@@ -349,6 +347,11 @@ def standardGateEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PID
 
     gateCenters, gateVectors, gateRadius = circularGateTrack(nGates, trackRadius, 1, None if dim == 2 else 0.0)
 
+    pidafraid = PIDConfig(
+        kp=5, kd=20, repulsionFactor=30, repulsionDistFactor=3, racelineIndex=1, actionNoise=2, repulsionPower=2.0
+    )
+    pidbold = PIDConfig(kp=5, kd=20, repulsionFactor=0, repulsionDistFactor=3, racelineIndex=1, actionNoise=2, repulsionPower=2.0)
+
     config = GateEnvironmentConfig(
         nAgents=nAgents,
         dim=dim,
@@ -363,6 +366,10 @@ def standardGateEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PID
         gateVectors=gateVectors,
         gateRadius=gateRadius,
         minDist=1.5,
+        opponentPidConfigs=(pidafraid, pidbold),
+        nModelFactors=1,
+        modelSizes=np.array([2]),
+        initBelief=np.array([0.5, 0.5]),
     )
 
     assert config.trackPoints is not None  # it is built automatically in GateEnvironmentConfig
@@ -390,11 +397,6 @@ def standardGateEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PID
         ]
     )
 
-    pidafraid = PIDConfig(
-        kp=5, kd=20, repulsionFactor=30, repulsionDistFactor=3, racelineIndex=1, actionNoise=2, repulsionPower=2.0
-    )
-    pidbold = PIDConfig(kp=5, kd=20, repulsionFactor=0, repulsionDistFactor=3, racelineIndex=1, actionNoise=2, repulsionPower=2.0)
-
     mppiconfig = MPPIConfig(
         nSamples=10000,
         nTimesteps=60,
@@ -421,26 +423,24 @@ def standardGateEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PID
         collisionCost=1000000,
         winCost=100000,
         minConfidence=0.95,
-        oppKind=CONTROLLER_TYPE.CONT_PID,
-        nModels=2,
-        opponentPidConfigs=(pidafraid, pidbold),
-        initBelief=np.array([0.5, 0.5]),
         # initBelief=np.array([1, 0]),
     )
 
     return config, mppiconfig, pidafraid, pidbold, ["Afraid", "Bold"]
 
 
-def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig, list[str]]:
+def tinyGateEnv(
+    roundObs: bool = True, afraid: bool = False
+) -> tuple[GateEnvironmentConfig, MPPIConfig, list[PIDConfig], list[list[str]]]:
     nAgents = 2
     dim = 2
-    nTrackSamples = 1000
+    nTrackSamples = 512
 
     # startS = np.linspace(0.15, 0.0, nAgents)
     startS = np.linspace(0.1, 0.02, nAgents)
     nGates = 2
 
-    length = 30
+    length = 25 if roundObs else 30
     height = 0.5
     obsSize = 0.2
     raceDelay = 0.1
@@ -452,6 +452,10 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig
         np.array([[1, 0], [1, 0]]),
         np.array([1, 1]),
     )
+
+    repulsion = 30 if afraid else 0
+    pid0 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=0, actionNoise=2)
+    pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=1, actionNoise=2)
 
     config = GateEnvironmentConfig(
         nAgents=nAgents,
@@ -470,10 +474,20 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig
         minDist=1,
         arenaMin=np.array([-0.1 * length, -2 * height * heightFactor]),
         arenaMax=np.array([1.1 * length, 2 * height * heightFactor]),
-        nObstacles=1,
-        obstacles=np.array([length * (0.5 - obsSize / 2), -height, length * (0.5 + obsSize / 2), height]),
         seed=42,
+        opponentPidConfigs=(pid0, pid1),
+        nModelFactors=1,
+        modelSizes=np.array([2]),
+        initBelief=np.array([0.5, 0.5]),
     )
+
+    if roundObs:
+        config.nRoundObstacles = 1
+        config.roundObsCenters = np.array([length / 2, 0.0])
+        config.roundObsRadius = np.array([height * 1.5])
+    else:
+        config.nObstacles = 1
+        config.obstacles = np.array([length * (0.5 - obsSize / 2), -height, length * (0.5 + obsSize / 2), height])
 
     assert config.trackPoints is not None  # it is built automatically in GateEnvironmentConfig
 
@@ -512,12 +526,9 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig
     # if afraid:
     #     config.init_pos = np.array([10.0, 4.0, 0.1, 0.0])
 
-    repulsion = 30 if afraid else 0
-    pid0 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=0, actionNoise=2)
-    pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=1, actionNoise=2)
-
     mppiconfig = MPPIConfig(
         nSamples=2**15,
+        # nSamples=1,
         nTimesteps=60,
         inv_temperature=10,
         samplingNoise=3,
@@ -528,28 +539,205 @@ def tinyGateEnv(afraid: bool = False) -> tuple[GateEnvironmentConfig, MPPIConfig
         # finalAdvWeight=0,
         # finalSpeedWeight=50,
         finalSpeedWeight=0,
-        oppDistWeight=0,
-        # oppDistWeight=0.0,
-        oppDistThresholdFactor=2,
+        # oppDistWeight=0,
+        oppDistWeight=1,
+        oppDistThresholdFactor=3,
         finalOppAdvWeight=0,
         # finalOppAdvWeight=500,
-        # boundaryCost=0.01,
-        boundaryCost=0.0,
+        boundaryCost=0.1,
+        # boundaryCost=0.0,
         boundaryThresholdFactor=2,
         oppOutsideCost=0,
         # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
         outsideCost=1e6,
         collisionCost=1e6,
-        winCost=1e10,
+        winCost=1e6,
         minConfidence=0.95,
-        oppKind=CONTROLLER_TYPE.CONT_PID,
-        nModels=2,
-        opponentPidConfigs=(pid0, pid1),
-        initBelief=np.array([0.5, 0.5]),
         # initBelief=np.array([0.7, 0.3]),
     )
 
-    return config, mppiconfig, pid0, pid1, ["Top", "Bottom"]
+    return config, mppiconfig, [pid0, pid1], [["Top", "Bottom"]]
+
+
+def tinyGateEnv2Models(roundObs: bool = True) -> tuple[GateEnvironmentConfig, MPPIConfig, list[PIDConfig], list[list[str]]]:
+    nAgents = 2
+    dim = 2
+    nTrackSamples = 512
+
+    # startS = np.linspace(0.15, 0.0, nAgents)
+    startS = np.linspace(0.1, 0.02, nAgents)
+    nGates = 2
+
+    totLength = 20 if roundObs else 20
+
+    height = 0.5
+    heightFactor = 3
+
+    obsLength = 0.1
+
+    obsx1 = 0.55
+    obsx2 = 0.8
+
+    curveLength = 0.06
+    curveOffset = 0.08
+
+    gateCenters, gateVectors, gateRadius = (
+        np.array([[totLength, 0], [totLength * 0.01, 0]]),
+        np.array([[1, 0], [1, 0]]),
+        np.array([1, 1]),
+    )
+
+    pids = [
+        PIDConfig(
+            kp=5,
+            kd=20,
+            repulsionFactor=0,
+            racelineIndex=index,
+            actionNoise=2,
+        )
+        for index in range(4)
+    ]
+
+    obstacles = np.column_stack(
+        [
+            totLength * np.array([obsx1 - obsLength / 2, obsx1 + obsLength / 2, obsx2 - obsLength / 2, obsx2 + obsLength / 2]),
+            height * np.array([-1, 1, -1, 1]),
+        ]
+    )
+
+    config = GateEnvironmentConfig(
+        nAgents=nAgents,
+        dim=dim,
+        nRaceLines=4,
+        nWinLaps=1,
+        nGates=nGates,
+        maxSpeed=np.linspace(2, 2.5, nAgents),
+        # maxSpeed=np.linspace(2, 3, nAgents),
+        maxAccel=np.linspace(3, 3, nAgents),
+        nTrackSamples=nTrackSamples,
+        targetDistance=0.1,
+        gateCenters=gateCenters,
+        gateVectors=gateVectors,
+        gateRadius=gateRadius,
+        minDist=0.6,
+        arenaMin=np.array([-0.1 * totLength, -2 * height * heightFactor]),
+        arenaMax=np.array([1.1 * totLength, 2 * height * heightFactor]),
+        seed=42,
+        nModelFactors=2,
+        modelSizes=np.array([2, 2]),
+        opponentPidConfigs=tuple(pids),
+    )
+
+    if roundObs:
+        config.nRoundObstacles = 2
+        config.roundObsCenters = np.array([obsx1, 0, obsx2, 0]) * totLength
+        config.roundObsRadius = np.array([height, height]) * 1.5
+    else:
+        config.nObstacles = 2
+        config.obstacles = obstacles
+
+    def getHeightStay(x: float) -> float:
+        "Goes on top and stay there for the 2 obstacles"
+        x_norm = x / totLength
+
+        if x_norm < obsx1 - obsLength / 2 - curveOffset:
+            return 0.0
+        elif x_norm < obsx1 - obsLength / 2 - curveOffset + curveLength:
+            x_norm_s = (x_norm - obsx1 + obsLength / 2 + curveOffset) / curveLength  # between 0 and 1
+            return np.sin(np.pi / 2.0 * x_norm_s) ** 2  # smooth between 0 and 1
+        elif x_norm < obsx2 + obsLength / 2 + curveOffset - curveLength:
+            return 1.0
+        elif x_norm < obsx2 + obsLength / 2 + curveOffset:
+            x_norm_s = (x_norm - obsx2 - obsLength / 2 - curveOffset + curveLength) / curveLength
+            return np.sin(np.pi / 2.0 * (1 - x_norm_s))
+        else:
+            return 0.0
+
+    def getHeightSwitch(x: float) -> float:
+        "Goes on top then on bottom"
+        x_norm = x / totLength
+
+        if x_norm < obsx1 - obsLength / 2 - curveOffset:
+            return 0.0
+
+        elif x_norm < obsx1 - obsLength / 2 - curveOffset + curveLength:
+            x_norm_s = (x_norm - obsx1 + obsLength / 2 + curveOffset) / curveLength  # between 0 and 1
+            return np.sin(np.pi / 2.0 * x_norm_s) ** 2  # smooth between 0 and 1
+        elif x_norm < obsx1 + obsLength / 2 + curveOffset - curveLength:
+            return 1.0
+        elif x_norm < obsx1 + obsLength / 2 + curveOffset:
+            x_norm_s = (x_norm - obsx1 - obsLength / 2 - curveOffset + curveLength) / curveLength
+            return np.sin(np.pi / 2.0 * (1 - x_norm_s))
+
+        if x_norm < obsx2 - obsLength / 2 - curveOffset:
+            return 0.0
+
+        elif x_norm < obsx2 - obsLength / 2 - curveOffset + curveLength:
+            x_norm_s = (x_norm - obsx2 + obsLength / 2 + curveOffset) / curveLength  # between 0 and 1
+            return -(np.sin(np.pi / 2.0 * x_norm_s) ** 2)  # smooth between 0 and 1
+        elif x_norm < obsx2 + obsLength / 2 + curveOffset - curveLength:
+            return -1.0
+        elif x_norm < obsx2 + obsLength / 2 + curveOffset:
+            x_norm_s = (x_norm - obsx2 - obsLength / 2 - curveOffset + curveLength) / curveLength
+            return -np.sin(np.pi / 2.0 * (1 - x_norm_s))
+
+        else:
+            return 0.0
+
+    base_x = np.linspace(0.0, totLength * 1.1, nTrackSamples)
+    base_y_stay = np.array([getHeightStay(x) for x in base_x]) * height * heightFactor
+    base_y_switch = np.array([getHeightSwitch(x) for x in base_x]) * height * heightFactor
+
+    config.trackPoints = np.concat(
+        [
+            np.column_stack((base_x, base_y_stay)),
+            np.column_stack((base_x, base_y_switch)),
+            np.column_stack((base_x, -base_y_stay)),
+            np.column_stack((base_x, -base_y_switch)),
+        ]
+    )
+
+    config.init_pos = np.array([config.trackPoints[int(s * config.nTrackSamples)] for s in startS]).flatten()
+    config.initS = np.repeat(startS, 2)
+    print(config.initS)
+    config.initnLaps = np.zeros(nAgents)
+    config.initGates = np.array([1, 1])
+
+    # if afraid:
+    #     config.init_pos = np.array([10.0, 4.0, 0.1, 0.0])
+
+    mppiconfig = MPPIConfig(
+        nSamples=2**15,
+        # nSamples=1,
+        nTimesteps=60,
+        inv_temperature=10,
+        samplingNoise=3,
+        gateTraversalMargin=0.9,  # restrict 5% on each side
+        # collDistFactor=1.1,
+        collDistFactor=1.3,
+        finalAdvWeight=200,
+        # finalAdvWeight=0,
+        # finalSpeedWeight=50,
+        finalSpeedWeight=0,
+        oppDistWeight=20,
+        # oppDistWeight=0.0,
+        oppDistThresholdFactor=3,
+        finalOppAdvWeight=0,
+        # finalOppAdvWeight=5000,
+        # boundaryCost=0.01,
+        boundaryCost=100.0,
+        boundaryThresholdFactor=3,
+        oppOutsideCost=0,
+        # oppOutsideCost=1e6,  # with this, it's too competitive and will push the opponent out of the arena
+        outsideCost=1e7,
+        collisionCost=1e7,
+        winCost=1e5,
+        minConfidence=0.95,
+        # initBelief=np.array([0.5, 0.5]),
+        # initBelief=np.array([0.7, 0.3]),
+    )
+
+    return config, mppiconfig, pids, [["1st=Top", "1st=Bottom"], ["2nd=Top", "2nd=Bottom"]]
 
 
 def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig, list[str]]:
@@ -570,6 +758,11 @@ def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig
         np.array([[1, 0], [1, 0]]),
         np.array([1, 1]),
     )
+
+    pid0 = PIDConfig(
+        kp=5, kd=20, repulsionFactor=120, racelineIndex=0, actionNoise=1, repulsionDistFactor=2.5, repulsionPower=1.5
+    )
+    pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=0, racelineIndex=0, actionNoise=1, repulsionDistFactor=2.5)
 
     config = GateEnvironmentConfig(
         nAgents=nAgents,
@@ -594,6 +787,10 @@ def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig
                 [-0.2 * length, -1.1 * fullHeight, 1.2 * length, -corridor],
             ]
         ),
+        opponentPidConfigs=(pid0, pid1),
+        nModelFactors=1,
+        modelSizes=np.array([2]),
+        initBelief=np.array([0.5, 0.5]),
     )
 
     config.trackPoints = np.column_stack([np.linspace(0, length * 1.2, nTrackSamples), np.zeros(nTrackSamples)])
@@ -602,11 +799,6 @@ def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig
     config.initS = np.repeat(startS, 2)
     config.initnLaps = np.zeros(nAgents)
     config.initGates = np.array([1, 1])
-
-    pid0 = PIDConfig(
-        kp=5, kd=20, repulsionFactor=120, racelineIndex=0, actionNoise=1, repulsionDistFactor=2.5, repulsionPower=1.5
-    )
-    pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=0, racelineIndex=0, actionNoise=1, repulsionDistFactor=2.5)
 
     mppiconfig = MPPIConfig(
         nSamples=2**18,
@@ -634,11 +826,6 @@ def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig
         collisionCost=1e6,
         winCost=100000,
         minConfidence=0.95,
-        oppKind=CONTROLLER_TYPE.CONT_PID,
-        nModels=2,
-        opponentPidConfigs=(pid0, pid1),
-        initBelief=np.array([0.5, 0.5]),
-        # initBelief=np.array([0, 1]),
     )
 
     return config, mppiconfig, pid0, pid1, ["Afraid", "Bold"]
@@ -646,34 +833,21 @@ def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig
 
 def mainGate():
     # envConfig, mppiconfig, pid0, pid1, oppNames = standardGateEnv()  # pid0 = afraid; pid1 = bold
-    envConfig, mppiconfig, pid0, pid1, oppNames = tinyGateEnv(afraid=False)  # pid0 = top; pid1 = bottom
+    # envConfig, mppiconfig, pids, oppNames = tinyGateEnv(afraid=False)  # pid0 = top; pid1 = bottom
+    envConfig, mppiconfig, pids, oppNames = tinyGateEnv2Models(roundObs=True)
     # envConfig, mppiconfig, pid0, pid1, oppNames = activeEnv()  # pid0 = afraid; pid1 = bold
 
-    # dummyconfig = DummyConfig()
-
-    cont_configs: list[ControllerConfig] = []
-
-    cont_configs = [pid0, mppiconfig]
-    # cont_configs = [pid1, mppiconfig]
-
-    # cont_configs = [mppiconfig, pid0]
-    # cont_configs = [mppiconfig, pid1]
-
-    # cont_configs = [mppiconfig, mppiconfig]
-
-    # cont_configs = [blindpidconfig, mppiconfig]
-    # cont_configs = [mppiconfig, mppiconfig2]
-    # cont_configs = [mppiconfig, blindpidconfig]
-    # cont_configs = [mppiconfig, blindpidconfig]
-    # cont_configs = [mppiconfig] + [pidconfig] * (nAgents - 1)  # type: ignore
+    envConfig.trueTheta = 1
+    envConfig.iMppi = 1
 
     verifConfig = VerifConfig(N=2**17, beta=1e-6, horizon=40, maxEps=0.001)
+    # verifConfig = VerifConfig(N=2**17, beta=1e-6, horizon=40, maxEps=10)
 
     envConfig.sendStates = True
 
     z = ZMQRecv()
 
-    evt, res = z.runSim(envConfig, verifConfig, cont_configs, render=envConfig.sendStates, oppNames=oppNames)
+    evt, res = z.runSim(envConfig, verifConfig, mppiconfig, render=envConfig.sendStates, oppNames=oppNames)
 
     print(f"result: {evt.name} {res}")
 

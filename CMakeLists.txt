@@ -22,7 +22,6 @@ pkg_check_modules(ZMQ REQUIRED libzmq)
 add_executable(drone_race
     src/main.cpp
     src/engine.cpp
-    src/controllers.cpp
     src/config.cpp
     src/mppi_controller.cu
     src/kernels.cu

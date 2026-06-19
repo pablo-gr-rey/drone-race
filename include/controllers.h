@@ -7,68 +7,54 @@
 #include <string>
 #include <curand_kernel.h>
 #include <random>
+#include <optional>
 
 // forward
 class SimulationEngine;
 
-// ── Abstract controller ──────────────────────────────────────────────
-class Controller
+class MPPIController
 {
 public:
-    std::string name;
-    const EnvironmentConfig* envConfig = nullptr;
-    SimulationEngine* engine = nullptr;
+    // if nominal (size (nModels+1) * T * dim) is not given, assumed 0
+    MPPIController() {};
 
-    virtual ~Controller() = default;
+    MPPIController(
+        const EnvironmentConfig& c,
+        const MPPIConfig& mc,
+        const VerifConfig& vConfig,
+        float* d_trackPoints,
+        int s,
+        std::optional<std::vector<float>> nominal = std::nullopt);
 
-    // Writes `dim` floats into outAction.
-    virtual void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng, std::optional<std::vector<float>> pastAction = std::nullopt, std::optional<std::vector<float>> pastPos = std::nullopt, std::optional<std::vector<float>> pastVel = std::nullopt, std::optional<std::vector<float>> pastS = std::nullopt) = 0;
-};
-
-// ── Dummy ────────────────────────────────────────────────────────────
-class DummyController : public Controller
-{
-public:
-    explicit DummyController(const EnvironmentConfig& c);
-    void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng, std::optional<std::vector<float>> pastAction = std::nullopt, std::optional<std::vector<float>> pastPos = std::nullopt, std::optional<std::vector<float>> pastVel = std::nullopt, std::optional<std::vector<float>> pastS = std::nullopt) override;
-};
-
-// ── PID ──────────────────────────────────────────────────────────────
-class PIDController : public Controller
-{
-public:
-    PIDController(const EnvironmentConfig& c, const PIDConfig& p);
-    void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng, std::optional<std::vector<float>> pastAction = std::nullopt, std::optional<std::vector<float>> pastPos = std::nullopt, std::optional<std::vector<float>> pastVel = std::nullopt, std::optional<std::vector<float>> pastS = std::nullopt) override;
-
-    PIDConfig params;
-};
-
-// ── MPPI ─────────────────────────────────────────────────────────────
-class MPPIController : public Controller
-{
-public:
-    // if belief is not given, assumed uniform; if nominal (size (nModels+1) * T * dim) is not given, assumed 0
-    MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc, const VerifConfig& vConfig, float* d_trackPoints, int s, std::optional<std::vector<float>> nominal = std::nullopt);
     ~MPPIController();
-    void getControl(int agent, const float* pos, const float* speed, const float* S, const int* laps, const int* currentGates, float* outAction, std::normal_distribution<float>& nd, std::mt19937& rng, std::optional<std::vector<float>> pastAction = std::nullopt, std::optional<std::vector<float>> pastPos = std::nullopt, std::optional<std::vector<float>> pastVel = std::nullopt, std::optional<std::vector<float>> pastS = std::nullopt) override;
+
+    void getControl(
+        int agent,
+        const SimState& state,
+        float* outAction);
+
+    std::string name;
+    SimulationEngine* engine = nullptr;
 
     MPPIConfig mppiConfig;
 
-    std::vector<float> h_nominal;   // host mirror (nModels+1, T, dim)
-    std::vector<float> h_belief;    // host belief (nModels)
+    std::vector<float> h_nominal;   // host mirror (nBranchPlans, T, dim)
+    std::array<float, N_TRUE_MODELS> h_belief;    // host belief (nTrueModels). this is updated by the engine
 
-    std::vector<uint> failCountOld;    // size 2: nColl, nOutside (previous nominal, only MPPI outside is counted)
-    std::vector<uint> failCountNew;    // size 2: nColl, nOutside (candidate new nominal, only MPPI outside is counted)
-    std::vector<uint> failCount;       // size 2: nColl, nOutside (final nominal, only MPPI outside is counted)
-    double epsilonPartial;              // epsilon obtained by verification at current iteration
-    double epsilon;                     // epsilonPartial + verifConfig.horizon * verifConfig.maxEps
-    double certifiedLoss;               // certified max loss if we use new plan instead of previous
+    std::array<uint, 2> failCountOld;    // size 2: nColl, nOutside (previous nominal, only MPPI outside is counted)
+    std::array<uint, 2> failCountNew;    // size 2: nColl, nOutside (candidate new nominal, only MPPI outside is counted)
+    std::array<uint, 2> failCount;       // size 2: nColl, nOutside (final nominal, only MPPI outside is counted)
+    double epsilonPartial;             // epsilon obtained by verification at current iteration
+    double epsilon;                    // epsilonPartial + verifConfig.horizon * verifConfig.maxEps
+    double certifiedLoss;              // certified max loss if we use new plan instead of previous
     bool useNewPlan;
 
-    float min_nu = 0.0005;    // in terms of proportion of nSamples   // TODO: tune this better?
-    float max_nu = 0.001;
+    float min_nu = 0.0005f;    // in terms of proportion of nSamples
+    float max_nu = 0.001f;
+
 private:
-    EnvironmentConfig envConfig;
+    float* h_trackPoints;
+    EnvironmentConfig envConfig;    // this contains the device track points
     VerifConfig verifConfig;
 
     int seed;
@@ -76,26 +62,33 @@ private:
     // Device memory
 
     // Rollout side
-    float* d_pos = nullptr;   // (nAgents, dim) - initial positions
-    float* d_speed = nullptr; // (nAgents, dim) - initial speeds
-    float* d_S = nullptr;      // (nAgents, nRacelines) - initial advance along the track
-    int* d_laps = nullptr;   // (nAgents) - initial number of laps
-    int* d_currentGates = nullptr;    // (nAgents) - initial gate progression
-    float* d_belief = nullptr;  // (nModels) - initial belief
+    float* d_belief = nullptr;     // (nTrueModels)
 
-    float* d_noise = nullptr;  // (nModels+1, T, N, dim)
+    float* d_noise = nullptr;      // (nBranchPlans, T, N, dim)
 
-    float* d_costs = nullptr;  // (nModels+1, N)  d_costs[0, s] = averaged cost of sample s; d_costs[theta+1, s] = cost of sample s if opp is following theta
-    int* d_branchUsed = nullptr;    // (nModels, N) d_branchUsed[theta, s] = -1 if MPPI did not switch, value of model it switched to otherwise (usually theta, but not necessarily)
-    int* d_branchTime = nullptr;    // (nModels, N) d_branchTime[theta, s] = branching time (or T if no branching)
+    // d_costs[(nom0/theta0, nom1/theta1, ...), s] = cost of sample s, averaged over unknown parameters (i.e. d_costs[(nom0, theta1), s] = cost of sample s under theta1, averaged over theta0)
+    float* d_costs = nullptr;      // (nBranchPlans, N)
 
-    float* d_nominal = nullptr;  // (nModels+1, T, dim)
-    float* d_prevnominal = nullptr;     // (nModels+1, T, dim)
-    float* d_maskedCosts = nullptr;  // (nModels+1, T, nSamples) equal to d_costs for given branch/timestep/sample if it should actually count (coeff = 1.0 in weightedAverageKernel) or +INF otherwise (to do a meaningful min cost reduction)
-    float* d_minCosts = nullptr;  // (nModels+1, T) (min cost for nominal + each branch at each timestep)
-    float* d_nu = nullptr;  // (nModels+1) (sum of weights for nominal + each branch: useful for monitoring & live updating inv temp)
+    // d_costsTrue[trueModel, s] = cost of sample s over true model (it will then be averaged to compute d_costs)
+    float* d_costsTrue = nullptr;   // (nTrueModels, N)
 
-    float* d_trackPts = nullptr;  // cached on device
+    // d_branchUsed[trueTheta, s, k] = 0 if sample s stayed in nominal for parameter k in case of trueTheta, otherwise 1 + value of model it switched to
+    int* d_branchUsed = nullptr;   // (nTrueModels, N, nModelFactors)
+
+    // d_branchTime[trueTheta, s, k] = branching time for parameter k in case of trueTheta (or T if no branching)
+    int* d_branchTime = nullptr;   // (nTrueModels, N, nModelFactors)
+
+    float* d_nominal = nullptr;      // (nBranchPlans, T, dim)
+    float* d_prevnominal = nullptr;  // (nBranchPlans, T, dim)
+
+    // masked row costs used for branch/time-aware min reduction
+    float* d_maskedCosts = nullptr; // (nBranchPlans, T, N)
+
+    // branch/time aware minimums
+    float* d_minCosts = nullptr;    // (nBranchPlans, T)
+
+    // denominator for each branch tuple
+    float* d_nu = nullptr;  // (nBranchPlans)
 
     void* d_temp_storage = nullptr; // for min-reduce
     size_t temp_storage_bytes = 0;  // for min-reduce
@@ -103,8 +96,8 @@ private:
     curandState* d_rng = nullptr;
 
     // Verification side
-    uint* d_failCountNew;  // 2 ints (first is numColl, second is numOutside)
-    uint* d_failCountOld;  // 2 ints
+    uint* d_failCountNew = nullptr;  // 2 ints (first is numColl, second is numOutside)
+    uint* d_failCountOld = nullptr;  // 2 ints
     curandState* d_verif_rng = nullptr;
 
     bool deviceReady = false;
@@ -112,88 +105,6 @@ private:
     void allocDevice();
     void freeDevice();
 
-    void computeEpsilon();  // compute epsilon based on failCount and verifConfig
-    void computeCertifiedLoss();      // compute loss of new plan over old plan
+    void computeEpsilon();       // compute epsilon based on failCount and verifConfig
+    void computeCertifiedLoss(); // compute loss of new plan over old plan
 };
-
-// Shared PID control function. Does not add noise, since this is different on CPU and GPU
-HD INLINE void computePIDAction(
-    int agent,
-    const float* pos,
-    const float* vel,
-    const float* S,
-    const EnvironmentConfig& envConfig,
-    const PIDConfig& pid,
-    const float* trackPoints,
-    float* outAction)
-{
-    float target[MAX_DIM] = {};
-
-    sampleCenterline(trackPoints + envConfig.nTrackSamples * pid.racelineIndex * envConfig.dim, envConfig.nTrackSamples, envConfig.dim, S[agent * envConfig.nRacelines + pid.racelineIndex] + envConfig.targetDistance, target);
-
-    const float* curPos = pos + agent * envConfig.dim;
-    const float* curVel = vel + agent * envConfig.dim;
-
-    float sqError = 0.0f;
-    for (int d = 0; d < envConfig.dim; d++)
-    {
-        float e = target[d] - curPos[d];
-        sqError += e * e;
-    }
-
-    // Match CPU logic
-    float invDist = 1.0f / sqrtf(sqError + 1e-5f);
-
-    float vParallelMag = 0.0f;
-    for (int d = 0; d < envConfig.dim; d++)
-    {
-        float dirD = (target[d] - curPos[d]) * invDist;
-        vParallelMag += curVel[d] * dirD;
-    }
-
-    for (int d = 0; d < envConfig.dim; d++)
-    {
-        float error = (target[d] - curPos[d]) * invDist;
-        float latVelError = curVel[d] - vParallelMag * error;
-        outAction[d] = pid.kp * error + pid.kd * (-latVelError);
-    }
-
-    // PD (no integral)
-    // for (int d = 0; d < envConfig.dim; d++)
-    //     outAction[d] = pid.kp * (target[d] - pos[d]) + pid.kd * (-vel[d]);
-
-    // repulsion
-    if (pid.repulsionDistFact != 0.0f)
-        for (int other = 0; other < envConfig.nAgents; other++)
-        {
-            if (other == agent)
-                continue;
-
-            float diff[MAX_DIM];
-            float dist2 = 0.0f;
-            for (int d = 0; d < envConfig.dim; d++)
-            {
-                diff[d] = pos[other * envConfig.dim + d] - curPos[d];
-                dist2 += diff[d] * diff[d];
-            }
-            float dist = sqrtf(dist2) + 1e-8f;
-            if (dist < pid.repulsionDistFact * envConfig.minDist)
-            {
-                float scale = pid.repulsionFactor / powf(dist / envConfig.minDist, pid.repulsionPower + 1.0f);
-                for (int d = 0; d < envConfig.dim; d++)
-                    outAction[d] -= scale * diff[d];
-            }
-        }
-
-    // normalize
-    float sqAccel = 0.0f;
-    for (int d = 0; d < envConfig.dim; d++)
-        sqAccel += outAction[d] * outAction[d];
-
-    if (sqAccel > envConfig.maxAccel[agent] * envConfig.maxAccel[agent])
-    {
-        float fact = envConfig.maxAccel[agent] / sqrtf(sqAccel);
-        for (int d = 0; d < envConfig.dim; d++)
-            outAction[d] *= fact;
-    }
-}

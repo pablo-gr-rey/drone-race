@@ -19,7 +19,7 @@ void runEngine(zmq::socket_t& sock)
 
     EnvironmentConfig envConfig;
 
-    auto [seed, trackPoints] = envConfig.unpackHeader(msg.data(), msg.size());
+    int seed = envConfig.unpackHeader(msg.data(), msg.size());
 
     res = sock.recv(msg);
     if (!res)
@@ -28,19 +28,16 @@ void runEngine(zmq::socket_t& sock)
     VerifConfig verifConfig;
     verifConfig.unpackHeader(msg.data(), msg.size());
 
-    std::vector<ControllerSpec> specs(envConfig.nAgents);
-    for (int i = 0; i < envConfig.nAgents; i++)
-    {
-        res = sock.recv(msg);
-        if (!res)
-            throw std::runtime_error("Failed to receive agent configuration");
+    res = sock.recv(msg);
+    if (!res)
+        throw std::runtime_error("Failed to receive MPPI configuration");
 
-        specs[i].unpackHeader(msg.data(), msg.size());
-    }
+    MPPIConfig mppiConfig;
+    mppiConfig.unpackHeader(msg.data(), msg.size());
 
     std::cout << "Header unpacked, starting simulation\n";
 
-    SimulationEngine engine(envConfig, trackPoints, verifConfig, specs, seed);
+    SimulationEngine engine(envConfig, verifConfig, mppiConfig, seed);
 
     auto begin = std::chrono::steady_clock::now();
 

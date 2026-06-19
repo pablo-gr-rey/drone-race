@@ -2,7 +2,27 @@
 #include <iostream>
 #include <format>
 
-std::pair<int, std::vector<float>> EnvironmentConfig::unpackHeader(const void* buf, size_t len)
+static PIDConfig unpackPIDConfig(Reader& reader)
+{
+    PIDConfig pidconfig;
+
+    pidconfig.kp = reader.readFloat();
+    pidconfig.kd = reader.readFloat();
+
+    pidconfig.repulsionFactor = reader.readFloat();
+    pidconfig.repulsionPower = reader.readFloat();
+    pidconfig.repulsionDistFact = reader.readFloat();
+
+    pidconfig.racelineIndex = reader.readInt32();
+
+    pidconfig.actionNoise = reader.readFloat();
+
+    std::cout << "loaded PID repulsionFactor " << pidconfig.repulsionFactor << " racelineIndex " << pidconfig.racelineIndex << " noise level " << pidconfig.actionNoise << '\n';
+
+    return pidconfig;
+}
+
+int EnvironmentConfig::unpackHeader(const void* buf, size_t len)
 {
     Reader reader(buf, len);
 
@@ -10,22 +30,22 @@ std::pair<int, std::vector<float>> EnvironmentConfig::unpackHeader(const void* b
     if (kind != MSG_HEADER)
         throw std::runtime_error(std::format("Expected header message type for environment config (type {}) but got type {} instead", static_cast<int>(MSG_HEADER), kind));
 
-    nAgents = (int) reader.readInt32();
-    dim = (int) reader.readInt32();
+    int nAgents = (int) reader.readInt32();
+    int dim = (int) reader.readInt32();
     dt = reader.readFloat();
 
     sendStates = (bool) reader.readInt32();
-    nRacelines = (int) reader.readInt32();
-    nGates = (int) reader.readInt32();
+    int nRacelines = (int) reader.readInt32();
+    int nGates = (int) reader.readInt32();
 
-    if (nAgents > MAX_AGENTS)
-        throw std::runtime_error(std::format("Received config for {} agents but MAX_AGENTS is set to {}. Edit this constant and recompile", nAgents, MAX_AGENTS));
-    if (dim > MAX_DIM)
-        throw std::runtime_error(std::format("Received config for dimension {} but MAX_DIM is set to {}. Edit this constant and recompile", dim, MAX_DIM));
-    if (nRacelines > MAX_RACELINES)
-        throw std::runtime_error(std::format("Received config for {} racelines but MAX_RACELINES is set to {}. Edit this constant and recompile", nRacelines, MAX_RACELINES));
-    if (nGates > MAX_GATES)
-        throw std::runtime_error(std::format("Received config for {} gates but MAX_GATES is set to {}. Edit this constant and recompile", nGates, MAX_GATES));
+    if (nAgents != N_AGENTS)
+        throw std::runtime_error(std::format("Received config for {} agents but N_AGENTS is set to {}. Edit this constant and recompile", nAgents, N_AGENTS));
+    if (dim != DIM)
+        throw std::runtime_error(std::format("Received config for dimension {} but DIM is set to {}. Edit this constant and recompile", dim, DIM));
+    if (nRacelines != N_RACELINES)
+        throw std::runtime_error(std::format("Received config for {} racelines but N_RACELINES is set to {}. Edit this constant and recompile", nRacelines, N_RACELINES));
+    if (nGates != N_GATES)
+        throw std::runtime_error(std::format("Received config for {} gates but N_GATES is set to {}. Edit this constant and recompile", nGates, N_GATES));
 
     reader.readFloatArray(initPos);
     reader.readFloatArray(initSpeed);
@@ -42,7 +62,10 @@ std::pair<int, std::vector<float>> EnvironmentConfig::unpackHeader(const void* b
     reader.readFloatArray(maxSpeed);
     reader.readFloatArray(maxAccel);
 
-    nTrackSamples = (int) reader.readInt32();
+    int nTrackSamples = (int) reader.readInt32();
+    if (nTrackSamples != N_TRACK_SAMPLES)
+        throw std::runtime_error(std::format("Received config for {} track samples but N_TRACK_SAMPLES is set to {}. Edit this constant and recompile", nTrackSamples, N_TRACK_SAMPLES));
+
     nWinLaps = (int) reader.readInt32();
     targetDistance = reader.readFloat();
 
@@ -53,23 +76,59 @@ std::pair<int, std::vector<float>> EnvironmentConfig::unpackHeader(const void* b
     reader.readFloatArray(arenaMin);
     reader.readFloatArray(arenaMax);
 
-    nObstacles = reader.readInt32();
-    if (nObstacles > MAX_OBSTACLES)
-        throw std::runtime_error(std::format("Received config for {} obstacles but MAX_OBSTACLES is set to {}. Edit this constant and recompile", nObstacles, MAX_OBSTACLES));
-    reader.readFloatArray(obstacles);
+    int nObstacles = reader.readInt32();
+    if (nObstacles != N_OBSTACLES)
+        throw std::runtime_error(std::format("Received config for {} rect obstacles but N_OBSTACLES is set to {}. Edit this constant and recompile", nObstacles, N_OBSTACLES));
+
+    int nObsCoords = reader.readFloatArray(obstacles);
+    if (nObsCoords != N_OBSTACLES * DIM * 2)
+        throw std::runtime_error(std::format("Received config for {} rect obstacles coordinates but expected N_OBSTACLES * DIM * 2 = {}", nObsCoords, N_OBSTACLES * DIM * 2));
+
+    int nRoundObs = reader.readInt32();
+    if (nRoundObs != N_ROUND_OBSTACLES)
+        throw std::runtime_error(std::format("Received config for {} round obstacles but N_ROUND_OBSTACLES is set to {}. Edit this constant and recompile", nRoundObs, N_ROUND_OBSTACLES));
+
+    int nRoundObsCoords = reader.readFloatArray(roundObsCenters);
+    if (nRoundObsCoords != N_ROUND_OBSTACLES * DIM)
+        throw std::runtime_error(std::format("Received config for {} round obstacles centers but expected N_ROUND_OBSTACLES * DIM = {}", nRoundObsCoords, N_ROUND_OBSTACLES * DIM));
+    int nRadius = reader.readFloatArray(roundObsRadius);
+    if (nRadius != N_ROUND_OBSTACLES)
+        throw std::runtime_error(std::format("Received config for {} round obstacles radius but expected N_ROUND_OBSTACLES = {}", nRadius, N_ROUND_OBSTACLES));
 
     int seed = reader.readInt32();
 
-    std::vector<float> trackPoints = reader.readFloatArray();
+    int nModelFactors = reader.readInt32();
+    if (nModelFactors != N_MODEL_FACTORS)
+        throw std::runtime_error(std::format("Received MPPI config for {} environment parameters but N_MODEL_FACTORS is set to {}. Edit this constant and recompile", nModelFactors, N_MODEL_FACTORS));
+
+    std::vector<float> modelSizes = reader.readFloatArray();
+    for (int k = 0; k < N_MODEL_FACTORS; k++)
+        if ((int) modelSizes[k] != MODEL_SIZE(k))
+            throw std::runtime_error(std::format("Received invalid model size for parameter {}: got {}, but MODEL_SIZE({}) is set to {}. Edit this constant and recompile", k, (int) modelSizes[k], k, MODEL_SIZE(k)));
+
+    reader.readFloatArray(initBelief);
+
+    for (int i = 0; i < N_TRUE_MODELS; i++)
+        oppPid[i] = unpackPIDConfig(reader);
+
+    iMppi = reader.readInt32();
+    trueTheta = reader.readInt32();
+
+    std::vector<float> vecTrackPoints = reader.readFloatArray();
+    if (vecTrackPoints.size() != N_RACELINES * N_TRACK_SAMPLES * DIM)
+        throw std::runtime_error(std::format("Received {} track samples coordinates but expected N_RACELINES * N_TRACK_SAMPLES * DIM = {}", vecTrackPoints.size(), N_RACELINES * N_TRACK_SAMPLES * DIM));
+
+    trackPoints = (float*) malloc(N_RACELINES * N_TRACK_SAMPLES * DIM * sizeof(float));
+    std::copy(vecTrackPoints.begin(), vecTrackPoints.end(), trackPoints);
 
     reader.assertFinished();
 
-    std::cout << "read nAgents " << nAgents << " nWinLaps " << nWinLaps << " max speed " << maxSpeed[0] << ' ' << maxSpeed[1] << " nTrackSamples" << nTrackSamples << "\ngate vectors:";
+    std::cout << "read nAgents " << nAgents << " nWinLaps " << nWinLaps << " true theta " << trueTheta << " max speed " << maxSpeed[0] << ' ' << maxSpeed[1] << " nTrackSamples" << nTrackSamples << "\ngate vectors:";
     for (int i = 0; i < nGates * dim; i++)
         std::cout << gateVectors[i] << (i % dim ? " " : ";  ");
     std::cout << "\n";
 
-    return { seed, trackPoints };
+    return seed;
 }
 
 void VerifConfig::unpackHeader(const void* buf, size_t len)
@@ -91,111 +150,40 @@ void VerifConfig::unpackHeader(const void* buf, size_t len)
     std::cout << "loaded verification N " << nVerifSamples << " beta " << beta << " horizon " << horizon << " maxEps " << maxEps << "\n";
 }
 
-static PIDConfig unpackPIDConfig(Reader& reader)
-{
-    PIDConfig pidconfig;
-
-    pidconfig.kp = reader.readFloat();
-    pidconfig.kd = reader.readFloat();
-
-    pidconfig.repulsionFactor = reader.readFloat();
-    pidconfig.repulsionPower = reader.readFloat();
-    pidconfig.repulsionDistFact = reader.readFloat();
-
-    pidconfig.racelineIndex = reader.readInt32();
-
-    pidconfig.actionNoise = reader.readFloat();
-
-    std::cout << "loaded PID repulsionFactor " << pidconfig.repulsionFactor << " racelineIndex " << pidconfig.racelineIndex << " noise level " << pidconfig.actionNoise << '\n';
-
-    return pidconfig;
-}
-
-// does not unpack opponents
-static MPPIConfig unpackMPPIConfig(Reader& reader)
-{
-    MPPIConfig mppiconfig;
-
-    mppiconfig.nSamples = (int) reader.readInt32();
-    mppiconfig.nTimesteps = (int) reader.readInt32();
-    mppiconfig.invTemperature = reader.readFloat();
-
-    mppiconfig.samplingNoise = reader.readFloat();
-    mppiconfig.gateTraversalMargin = reader.readFloat();
-
-    mppiconfig.collDistFactor = reader.readFloat();
-
-    mppiconfig.oppDistWeight = reader.readFloat();
-    mppiconfig.oppDistPower = reader.readFloat();
-    mppiconfig.oppDistThresholdFactor = reader.readFloat();
-    mppiconfig.boundaryCost = reader.readFloat();
-    mppiconfig.boundaryThresholdFactor = reader.readFloat();
-    mppiconfig.outsideCost = reader.readFloat();
-    mppiconfig.oppOutsideCost = reader.readFloat();
-    mppiconfig.collisionCost = reader.readFloat();
-    mppiconfig.winCost = reader.readFloat();
-
-    mppiconfig.finalAdvWeight = reader.readFloat();
-    mppiconfig.finalOppAdvWeight = reader.readFloat();
-    mppiconfig.finalSpeedWeight = reader.readFloat();
-
-    mppiconfig.minConfidence = reader.readFloat();
-    mppiconfig.nModels = reader.readInt32();
-    mppiconfig.oppKind = (ControllerKind) reader.readInt32();
-
-    if (mppiconfig.nModels > MAX_MODELS)
-        throw std::runtime_error(std::format("Received MPPI config for %d PID strategies but MAX_MODELS is set to %d. Edit this constant and recompile", mppiconfig.nModels, MAX_MODELS));
-
-    for (int i = 0; i < mppiconfig.nModels; i++)
-    {
-        ControllerKind kind = (ControllerKind) reader.readInt32();
-        if (kind != CONT_PID)
-            throw std::runtime_error(std::format("For opponent %d of MPPI config, received kind %d instead of CONT_PID (%d)", i, (int) kind, (int) CONT_PID));
-
-        mppiconfig.oppPid[i] = unpackPIDConfig(reader);
-    }
-
-    reader.readFloatArray(mppiconfig.initBelief);
-
-    std::cout << "loaded MPPI samples " << mppiconfig.nSamples << " timesteps " << mppiconfig.nTimesteps << " collDistFactor " << mppiconfig.collDistFactor << " with " << mppiconfig.nModels << " opponent strats:\n";
-    for (int i = 0; i < mppiconfig.nModels; i++)
-        std::cout << "\tConfig " << i << ": initBelief " << mppiconfig.initBelief[i] << " repulsionFactor " << mppiconfig.oppPid[i].repulsionFactor << " action noise " << mppiconfig.oppPid[i].actionNoise << "\n";
-
-    return mppiconfig;
-}
-
-void ControllerSpec::unpackHeader(const void* buf, size_t len)
+void MPPIConfig::unpackHeader(const void* buf, size_t len)
 {
     Reader reader(buf, len);
 
-    int msgKind = reader.readInt32();
-    if (msgKind != MSG_HEADER)
-        throw std::runtime_error(std::format("Expected header message type for environment config (type %d) but got type %d instead", static_cast<int>(MSG_HEADER), msgKind));
+    int kind = reader.readInt32();
+    if (kind != MSG_HEADER)
+        throw std::runtime_error(std::format("Expected header message type for MPPI config (type {}) but got type {} instead", static_cast<int>(MSG_HEADER), kind));
 
-    int contKind = reader.readInt32();
+    nSamples = (int) reader.readInt32();
+    nTimesteps = (int) reader.readInt32();
+    invTemperature = reader.readFloat();
 
-    if (contKind == ControllerKind::CONT_DUMMY)
-        config = DummyConfig{};
-    else if (contKind == ControllerKind::CONT_PID)
-        config = unpackPIDConfig(reader);
-    else if (contKind == ControllerKind::CONT_MPPI)
-    {
-        // read scalar parameters
-        MPPIConfig mppiconfig = unpackMPPIConfig(reader);
+    samplingNoise = reader.readFloat();
+    gateTraversalMargin = reader.readFloat();
 
-        // read opponent
-        // mppiconfig.oppKind = (ControllerKind) reader.readInt32();
-        // if (mppiconfig.oppKind == CONT_DUMMY)
-        // {
-        // }
-        // //     mppiconfig.opponent = DummyConfig{};
-        // else if (mppiconfig.oppKind == CONT_PID)
-        //     mppiconfig.oppPid = unpackPIDConfig(reader);
-        // else
-        //     throw std::runtime_error("MPPI opponent kind unsupported");
+    collDistFactor = reader.readFloat();
 
-        config = mppiconfig;
-    }
+    oppDistWeight = reader.readFloat();
+    oppDistPower = reader.readFloat();
+    oppDistThresholdFactor = reader.readFloat();
+    boundaryCost = reader.readFloat();
+    boundaryThresholdFactor = reader.readFloat();
+    outsideCost = reader.readFloat();
+    oppOutsideCost = reader.readFloat();
+    collisionCost = reader.readFloat();
+    winCost = reader.readFloat();
+
+    finalAdvWeight = reader.readFloat();
+    finalOppAdvWeight = reader.readFloat();
+    finalSpeedWeight = reader.readFloat();
+
+    minConfidence = reader.readFloat();
 
     reader.assertFinished();
+
+    std::cout << "loaded MPPI samples " << nSamples << " timesteps " << nTimesteps << " collDistFactor " << collDistFactor << " with " << N_TRUE_MODELS << " opponent strats\n";
 }

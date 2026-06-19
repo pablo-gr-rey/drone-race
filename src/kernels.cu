@@ -11,27 +11,23 @@ __global__ void initRNGKernel(curandState* states, unsigned long long seed, int 
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < N)
-    {
-        // printf("initializing RNG %d\n", i);
         curand_init(seed, i, 0, &states[i]);
-    }
 }
 
 // Noise generation
 __global__ void generateNoiseKernel(float* noise, curandState* rng,
     float stddev,
-    int nTimesteps, int N, int dim, int nModels)
+    int nTimesteps, int N)
 {
     int s = blockIdx.x * blockDim.x + threadIdx.x;
     if (s >= N)
         return;
 
-    // printf("Accessing RNG %d\n", s);
     curandState local = rng[s];
-    for (int theta = 0; theta <= nModels; theta++)      // generate for nominal + 1 for each model
+    for (int theta = 0; theta < N_BRANCH_PLANS; theta++)      // generate for nominal + 1 for each model
         for (int t = 0; t < nTimesteps; t++)
-            for (int d = 0; d < dim; d++)
-                noise[((theta * nTimesteps + t) * N + s) * dim + d] = curand_normal(&local) * stddev;
+            for (int d = 0; d < DIM; d++)
+                noise[((theta * nTimesteps + t) * N + s) * DIM + d] = curand_normal(&local) * stddev;
 
     rng[s] = local;
 }
@@ -40,21 +36,15 @@ __global__ void generateNoiseKernel(float* noise, curandState* rng,
 __global__ void fullRolloutKernel(
     int controlAgent,
     const EnvironmentConfig envConfig,
-    // const DeviceEnvironmentConfig envConfig,
     const MPPIConfig mc,
-    const float* __restrict__ initPos,
-    const float* __restrict__ initVel,
-    const float* __restrict__ initS,
-    const int* __restrict__ initLaps,
-    const int* __restrict__ initGates,
+    SimState initState,
     const float* __restrict__ initBelief,
     const float* __restrict__ nominal,
     const float* __restrict__ noise,
-    float* __restrict__ totalCosts,
-    int* __restrict__ branchesUsed,
-    int* __restrict__ branchesTime,
-    curandState* __restrict__ rngStates,
-    const float* __restrict__ trackPts)
+    float* __restrict__ costsTrue,
+    int* __restrict__ branchUsed,
+    int* __restrict__ branchTime,
+    curandState* __restrict__ rngStates)
 {
     int N = mc.nSamples;
 
@@ -62,349 +52,279 @@ __global__ void fullRolloutKernel(
     if (s >= N)
         return;
 
-    float pos[MAX_AGENTS * MAX_DIM];
-    float vel[MAX_AGENTS * MAX_DIM];
-    float currentS[MAX_AGENTS * MAX_RACELINES];
-    int laps[MAX_AGENTS];
-    int currentGates[MAX_AGENTS];
-    float belief[MAX_MODELS];
-    float prevPos[MAX_AGENTS * MAX_DIM];
+    SimState state;
+    BranchState branchState;
 
-    float nomPidAction[MAX_MODELS * MAX_DIM];
+    float actions[N_AGENTS * DIM];
+    float nomPidAction[N_TRUE_MODELS * DIM];
+    float egoAction[DIM];
 
-    totalCosts[s] = 0.0f;
     curandState rng = rngStates[s];
+    DeviceRNG drng{ &rng };
+
+    // int initPredTheta = findConfident(initBelief, mc.minConfidence); // now, firstBranchState.predTheta
+
+    BranchState firstBranchState;
+    initBranchState(firstBranchState, initBelief, mc.minConfidence, mc.nTimesteps);
 
     // initialize values
-    for (int theta = 0; theta < mc.nModels; theta++)
+    for (int theta = 0; theta < N_TRUE_MODELS; theta++)
     {
-        totalCosts[(theta + 1) * mc.nSamples + s] = INFINITY;
-        branchesUsed[theta * mc.nSamples + s] = -1;
-        branchesTime[theta * mc.nSamples + s] = mc.nTimesteps;
+        costsTrue[theta * mc.nSamples + s] = INFINITY;
+        for (int k = 0; k < N_MODEL_FACTORS; k++)
+        {
+            branchUsed[(theta * mc.nSamples + s) * N_MODEL_FACTORS + k] = 0;
+            branchTime[(theta * mc.nSamples + s) * N_MODEL_FACTORS + k] = mc.nTimesteps;
+        }
     }
+
+    int trueTheta[N_MODEL_FACTORS];
 
     // find out if we are already committed
     // if so, we only consider that plan (switch to normal MPPI); otherwise, cost at the end could incur slight perturbations for the other branches
 
-    for (int thetaT = 0; thetaT < mc.nModels; thetaT++)
-        belief[thetaT] = initBelief[thetaT];
-
-    int initPredTheta = findConfident(belief, mc.nModels, mc.minConfidence);
-
-    for (int theta = 0; theta < mc.nModels; theta++)    // theta is the model the opponent is actually following
+    for (int trueThetaFlat = 0; trueThetaFlat < N_TRUE_MODELS; trueThetaFlat++)    // trueTheta is the model the opponent is actually following
     {
-        if (initPredTheta != -1 && theta != initPredTheta)
+        unflattenTrueModelIndex(trueThetaFlat, trueTheta);
+
+        // if we are already committed to a plan which is incompatible with trueTheta, then skip
+        // this happen if for any k, firstBranchState.predTheta[k] != 0 and firstBranchState.predTheta[k] != trueTheta[k] + 1
+        // otherwise, very high cost on very unlikely models can incur perturbations on the other branches and degrade specialized plan quality
+
+        if (!branchCompatibleWithModel(firstBranchState.predTheta, trueTheta))
             continue;
 
-        // copy initial state
-        for (int a = 0; a < envConfig.nAgents; a++)
-        {
-            for (int d = 0; d < envConfig.dim; d++)
-            {
-                pos[a * envConfig.dim + d] = initPos[a * envConfig.dim + d];
-                vel[a * envConfig.dim + d] = initVel[a * envConfig.dim + d];
-            }
-
-            for (int r = 0; r < envConfig.nRacelines; r++)
-                currentS[a * envConfig.nRacelines + r] = initS[a * envConfig.nRacelines + r];
-
-            laps[a] = initLaps[a];
-            currentGates[a] = initGates[a];
-        }
-
-        for (int thetaT = 0; thetaT < mc.nModels; thetaT++)
-            belief[thetaT] = initBelief[thetaT];
+        state = initState;
+        branchState = firstBranchState;
 
         float cost = 0.0f;
         bool stop = false;
-
-        int predTheta = findConfident(belief, mc.nModels, mc.minConfidence);    // -1 if we have not branched, otherwise the predicted model
-        // hopefully, this will be -1 or theta, but we can't be sure of it so we have to take into account the possibility that we mispredict (since the actual MPPI controller will not know whether it has mispredicted)
-        int branchingTime = 0;      // unused if we have not branched (and set at branching time), we can use 0 in both cases
-
         float decay = 1.0f;
 
-        // ── Main rollout loop ────────────────────────────────────────────
+        // Main rollout loop
         for (int t = 0; t < mc.nTimesteps && !stop; t++)
         {
-            // 0. Update prevPos
-            for (int i = 0; i < envConfig.nAgents * envConfig.dim; i++)
-                prevPos[i] = pos[i];
+            int local_time = t - localBranchTimeOrigin(branchState.predTheta, branchState.branchingTime);
+            int flatBranch = flattenBranchIndex(branchState.predTheta);
 
-            float actions[MAX_AGENTS * MAX_DIM];
-            for (int a = 0; a < envConfig.nAgents; a++)
+            for (int d = 0; d < DIM; d++)
             {
-                // 1. Build actions
-                if (a == controlAgent)
-                {
-                    // nominal actions has shape (nModels+1, nTimesteps, dim) with first part = before branching time, then for theta_0, theta_1, etc
-                    // noise has shape (nModels+1, nTimesteps, nSamples, dim)
-                    // if we have branched, the time origin of the specialized nominal actions is the branching time (otherwise, branchingTime=0)
-                    for (int d = 0; d < envConfig.dim; d++)
-                    {
-                        float nom = nominal[((predTheta + 1) * mc.nTimesteps + t - branchingTime) * envConfig.dim + d];
-                        float noisef = noise[(((predTheta + 1) * mc.nTimesteps + t - branchingTime) * mc.nSamples + s) * envConfig.dim + d];
-                        actions[a * envConfig.dim + d] = nom + noisef;
-                        // actions[a * envConfig.dim + d] = nominal[(predTheta * mc.nModels + t - branchingTime) * envConfig.dim + d] + noise[((predTheta * mc.nModels + t - branchingTime) * mc.nSamples + s) * envConfig.dim + d];
-                    }
-                }
-                else
-                    switch (mc.oppKind)
-                    {
-                    case ControllerKind::CONT_DUMMY: {
-                        for (int d = 0; d < envConfig.dim; d++)
-                            actions[a * envConfig.dim + d] = 0.0f;
-                        break;
-                    }
-
-                    case ControllerKind::CONT_PID: {
-                        // we compute the predicted nominal action (without noise), to update the belief (which we do after sending our own action, this will only be used at the end of the control loop as MPPI does not have an instantaneous information advantage)
-                        // if the nominal action are not too close, then we can get a good idea of which strategy the opponent is using since it will be the one corresponding to the nominal action closest to the actual action
-                        // note: this assumes only 1 other agent!
-                        for (int thetaT = 0; thetaT < mc.nModels; thetaT++)
-                            computePIDAction(a, pos, vel, currentS, envConfig, mc.oppPid[thetaT], trackPts, nomPidAction + thetaT * envConfig.dim);
-
-                        // we use theta for the actual action (which is assumed to be the real model), and add noise (reuse the same PID instead of recomputing it)
-                        // computePIDAction(a, pos, vel, currentS, envConfig, mc.oppPid[theta], trackPts, actions + a * envConfig.dim);
-                        for (int d = 0; d < envConfig.dim; d++)
-                            actions[a * envConfig.dim + d] = nomPidAction[theta * envConfig.dim + d] + mc.oppPid[theta].actionNoise * curand_normal(&rng);
-                        break;
-                    }
-                    }
-
-                // 2. Clamp + action noise
-                float sqNorm = 0.0f;
-                for (int d = 0; d < envConfig.dim; d++)
-                    sqNorm += actions[a * envConfig.dim + d] * actions[a * envConfig.dim + d];
-
-                float factor = 1.0f;
-                if (sqNorm > envConfig.maxAccel[a] * envConfig.maxAccel[a])
-                    factor = envConfig.maxAccel[a] / sqrtf(sqNorm);
-
-                for (int d = 0; d < envConfig.dim; d++)
-                {
-                    float& v = actions[a * envConfig.dim + d];
-                    v *= factor;
-                    v += curand_normal(&rng) * envConfig.actionNoiseLevel;
-                }
-
-                // 3. Integrate position
-                for (int d = 0; d < envConfig.dim; d++)
-                    pos[a * envConfig.dim + d] += envConfig.dt * vel[a * envConfig.dim + d];
-
-                // 4. Integrate velocity
-                for (int d = 0; d < envConfig.dim; d++)
-                    vel[a * envConfig.dim + d] += envConfig.dt * actions[a * envConfig.dim + d];
-
-                // 5. Cap speed
-                float spd = agentSpeed(vel, a, envConfig.dim);
-                if (spd > envConfig.maxSpeed[a])
-                {
-                    float sc = envConfig.maxSpeed[a] / spd;
-                    for (int d = 0; d < envConfig.dim; d++)
-                        vel[a * envConfig.dim + d] = vel[a * envConfig.dim + d] * sc;
-                }
-
-                // 6. State noise
-                for (int d = 0; d < envConfig.dim; d++)
-                {
-                    pos[a * envConfig.dim + d] += curand_normal(&rng) * envConfig.posNoiseLevel;
-                    vel[a * envConfig.dim + d] += curand_normal(&rng) * envConfig.speedNoiseLevel;
-                }
+                // float nom = nominal[((branchState.predTheta + 1) * mc.nTimesteps + t - branchState.branchingTime) * DIM + d];
+                // float noisef = noise[(((branchState.predTheta + 1) * mc.nTimesteps + t - branchState.branchingTime) * mc.nSamples + s) * DIM + d];
+                float nom = nominal[(flatBranch * mc.nTimesteps + local_time) * DIM + d];
+                float noisef = noise[((flatBranch * mc.nTimesteps + local_time) * mc.nSamples + s) * DIM + d];
+                egoAction[d] = nom + noisef;
             }
 
-            updateGates(envConfig, pos, prevPos, currentS, currentGates, laps, trackPts, controlAgent, mc.gateTraversalMargin);
+            TerminalType term = environmentStep(
+                t,
+                controlAgent,
+                trueThetaFlat,
+                envConfig,
+                mc,
+                egoAction,
+                true,              // applyPidNoise
+                state,
+                branchState,
+                actions,
+                nomPidAction,
+                drng,
+                controlAgent,
+                mc.gateTraversalMargin);
 
-            // if agent won or is outside, or if there is a collision, stop rollout
-            for (int iAgent = 0; iAgent < envConfig.nAgents; iAgent++)
-                stop = stop || (laps[iAgent] >= envConfig.nWinLaps) || (isOutside(envConfig, pos + iAgent * envConfig.dim, envConfig.minDist / 2.0f));
+            stop = (term != TERM_NONE);
 
-            // is there a collision?
-            for (int iAgent1 = 0; iAgent1 < envConfig.nAgents; iAgent1++)
-                for (int iAgent2 = iAgent1 + 1; iAgent2 < envConfig.nAgents; iAgent2++)
-                {
-                    float dist2 = 0.f;
-                    for (int d = 0; d < envConfig.dim; ++d)
-                    {
-                        float dx = pos[iAgent1 * envConfig.dim + d] - pos[iAgent2 * envConfig.dim + d];
-                        dist2 += dx * dx;
-                    }
-                    if (dist2 < envConfig.minDist * envConfig.minDist)
-                    {
-                        stop = true;
-                        break;
-                    }
-                }
-
-            // 8. Running cost
-            cost += stateCost(controlAgent, pos, vel, laps, currentGates, t, envConfig, mc) * decay;
+            cost += stateCost(controlAgent, state.pos, state.vel, state.laps, state.gates, t, envConfig, mc) * decay;
             decay *= 0.9f;
-
-            // 9. Update belief & potential branching time
-            updateBelief(belief, actions + (1 - controlAgent) * envConfig.dim, nomPidAction, mc.oppPid, mc.nModels, envConfig.dim, envConfig.maxAccel[1 - controlAgent]);
-
-            if (predTheta == -1 && (predTheta = findConfident(belief, mc.nModels, mc.minConfidence)) != -1)
-                branchingTime = t + 1;
         }
 
         // Terminal cost
-        cost += finalCost(controlAgent, pos, vel, laps, currentGates, envConfig, mc);
+        cost += finalCost(controlAgent, state.pos, state.vel, state.laps, state.gates, envConfig, mc);
 
-        // actual cost is dependent on the probability that the opponent is actually following theta, ie. initBelief[theta], unless we are already committed
-        if (initPredTheta == -1)
+        // actual cost is dependent on the probability that the opponent is actually following trueTheta, ie. initBelief[theta], unless we are already committed
+
+        costsTrue[trueThetaFlat * mc.nSamples + s] = cost;
+
+        for (int k = 0; k < N_MODEL_FACTORS; k++)
         {
-            if (predTheta == -1)
-                branchesTime[theta * mc.nSamples + s] = mc.nTimesteps;
-            else
-                branchesTime[theta * mc.nSamples + s] = branchingTime;
-
-            totalCosts[s] += initBelief[theta] * cost;
+            branchTime[(trueThetaFlat * mc.nSamples + s) * N_MODEL_FACTORS + k] = branchState.branchingTime[k];
+            branchUsed[(trueThetaFlat * mc.nSamples + s) * N_MODEL_FACTORS + k] = branchState.predTheta[k];
         }
-        else
-        {
-            branchesTime[theta * mc.nSamples + s] = 0;
-            totalCosts[s] = cost;
-        }
-
-        branchesUsed[theta * mc.nSamples + s] = predTheta;
-        totalCosts[(theta + 1) * mc.nSamples + s] = cost;
     }
 
     rngStates[s] = rng;
 }
 
-// mask costs as explained in controller.h
-__global__ void buildMaskedCostsKernel(
-    const float* __restrict__ costs,       // (nModels+1, N)
-    const int* __restrict__ branchUsed,    // (nModels, N)
-    const int* __restrict__ branchTime,    // (nModels, N)
-    const float* __restrict__ belief,      // (nModels)
-    float* __restrict__ maskedCosts,       // ((nModels+1) * T, N)
-    int nModels, int N, int T)
+// compute costs from costsTrue, i.e. for a given branchPlan, costs[branchPlan, s] = expectation of all true costs compatible with that tuple
+__global__ void aggregateBranchCostsKernel(
+    const float* __restrict__ costsTrue,   // (N_TRUE_MODELS, N)
+    const float* __restrict__ belief,      // (N_TRUE_MODELS)
+    float* __restrict__ costs,             // (N_BRANCH_PLANS, N)
+    int N)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = (nModels + 1) * T * N;
+    int total = N_BRANCH_PLANS * N;
     if (idx >= total)
         return;
 
     int s = idx % N;
-    int tmp = idx / N;
-    int tLocal = tmp % T;
-    int branchIdx = tmp / T;   // 0 = generic, k+1 = specialized k
+    int branchPlan = idx / N;
 
-    bool eligible = false;
+    int branchTuple[N_MODEL_FACTORS];
+    int thetaTuple[N_MODEL_FACTORS];
 
+    unflattenBranchIndex(branchPlan, branchTuple);
 
-    if (branchIdx == 0)
+    float num = 0.0f;
+    float den = 0.0f;
+
+    for (int m = 0; m < N_TRUE_MODELS; m++)
     {
-        float coeff = 0.0f;
-        for (int theta = 0; theta < nModels; theta++)
-        {
-            int tb = branchTime[theta * N + s];
-            if (tLocal < tb)
-                coeff += belief[theta];
-        }
-        eligible = (coeff > 0.0f);
-    }
-    else
-    {
-        int k = branchIdx - 1;
-        int bu = branchUsed[k * N + s];
-        int tb = branchTime[k * N + s];
-        eligible = (bu == k && tb < T && tb + tLocal < T);
+        unflattenTrueModelIndex(m, thetaTuple);
+
+        if (!branchCompatibleWithModel(branchTuple, thetaTuple))
+            continue;
+
+        float c = costsTrue[m * N + s];
+
+        // if the branch was skipped in rollout (because it was incompatible), then its cost is INFINITY and we should not consider it here
+        if (!isfinite(c))
+            continue;
+
+        float w = belief[m];
+        num += w * c;
+        den += w;
     }
 
-    maskedCosts[idx] = eligible ? costs[branchIdx * N + s] : INFINITY;
+    costs[branchPlan * N + s] = (den > 1e-30f) ? (num / den) : INFINITY;
 }
 
-// cuda reduce min
-void minReduceCUB(const float* __restrict__ d_in, float* __restrict__ d_out, int N, int nRows, void* __restrict__ d_temp_storage, size_t temp_storage_bytes)
+// for each (branchPlan, tLocal), loop over samples, and compute min of costs[branchPlan, s] for eligible samples
+__global__ void computeMaskedMinCostsKernel(
+    const float* __restrict__ costs,       // (N_BRANCH_PLANS, N)
+    const int* __restrict__ branchUsed,    // (N_TRUE_MODELS, N, N_MODEL_FACTORS)
+    const int* __restrict__ branchTime,    // (N_TRUE_MODELS, N, N_MODEL_FACTORS)
+    const float* __restrict__ belief,      // (N_TRUE_MODELS)
+    float* __restrict__ minCosts,          // (N_BRANCH_PLANS, T)
+    int N,
+    int T)
 {
-    // since temporary storage size only depends on N (the size of the array to reduce), we can reuse it just fine
-    for (int r = 0; r < nRows; r++)
-        CUDA_CHECK(cub::DeviceReduce::Min(d_temp_storage, temp_storage_bytes, d_in + r * N, d_out + r, N));
-}
-
-// weighted average
-__global__ void weightedAverageKernel(
-    const float* __restrict__ costs,
-    const float* __restrict__ noise,
-    float* __restrict__ nominal,
-    const float* __restrict__ minCost, float invTemp,
-    int nModels, int N, int T, int dim,
-    float* __restrict__ nu)
-{
-    int mtd = blockIdx.x;
-    if (mtd >= (nModels + 1) * T * dim)
+    int bt = blockIdx.x;
+    if (bt >= N_BRANCH_PLANS * T)
         return;
 
-    int d = mtd % dim;
-    mtd /= dim;
-    int t = mtd % T;
-    int theta = mtd / T;
+    int tLocal = bt % T;
+    int branchPlan = bt / T;
 
-    extern __shared__ float sh[];
-    float* s_wn = sh;
-    float* s_w = sh + blockDim.x;
+    int branchTuple[N_MODEL_FACTORS];
+    int thetaTuple[N_MODEL_FACTORS];
+    unflattenBranchIndex(branchPlan, branchTuple);
 
-    float wSum = 0.0f;
-    float wnSum = 0.0f;
-
-    float minC = *minCost;
+    extern __shared__ float smins[];
+    float threadMin = INFINITY;
 
     for (int s = threadIdx.x; s < N; s += blockDim.x)
     {
-        float w = expf(-(costs[s] - minC) / invTemp);
-        wSum += w;
-        wnSum += w * noise[((theta * T + t) * N + s) * dim + d];
+        float coeff = 0.0f;
+
+        for (int m = 0; m < N_TRUE_MODELS; m++)
+        {
+            if (belief[m] <= 0.0f)
+                continue;
+
+            unflattenTrueModelIndex(m, thetaTuple);
+            if (!branchCompatibleWithModel(branchTuple, thetaTuple))
+                continue;
+
+            const int* used = branchUsed + (m * N + s) * N_MODEL_FACTORS;
+            const int* bTime = branchTime + (m * N + s) * N_MODEL_FACTORS;
+
+            // int tOrigin = localBranchTimeOrigin(branchTuple, bTime);
+            // int tAbs = tOrigin + tLocal;
+
+            // if (tAbs >= T)
+            //     continue;
+
+            // bool active = true;
+            // for (int k = 0; k < N_MODEL_FACTORS; k++)
+            // {
+            //     if (branchTuple[k] == 0)
+            //     {
+            //         // factor k should still be nominal at time tAbs
+            //         if (tAbs >= bTime[k])
+            //         {
+            //             active = false;
+            //             break;
+            //         }
+            //     }
+            //     else
+            //     {
+            //         int requiredModel = branchTuple[k] - 1;
+            //         if (used[k] != requiredModel || tAbs < bTime[k])
+            //         {
+            //             active = false;
+            //             break;
+            //         }
+            //     }
+            // }
+
+            // if (active)
+            //     coeff += belief[m];
+
+            if (branchActiveAtLocalTime(branchTuple, used, bTime, tLocal, T))
+                coeff += belief[m];
+        }
+
+        if (coeff > 0.0f)
+        {
+            float c = costs[branchPlan * N + s];
+            if (c < threadMin)
+                threadMin = c;
+        }
     }
 
-    s_wn[threadIdx.x] = wnSum;
-    s_w[threadIdx.x] = wSum;
+    smins[threadIdx.x] = threadMin;
     __syncthreads();
 
     for (int stride = blockDim.x / 2; stride > 0; stride >>= 1)
     {
         if (threadIdx.x < stride)
-        {
-            s_wn[threadIdx.x] += s_wn[threadIdx.x + stride];
-            s_w[threadIdx.x] += s_w[threadIdx.x + stride];
-        }
+            smins[threadIdx.x] = fminf(smins[threadIdx.x], smins[threadIdx.x + stride]);
         __syncthreads();
     }
 
-    if (threadIdx.x == 0 && s_w[0] > 1e-30f)
-        nominal[(theta * T + t) * dim + d] += s_wn[0] / s_w[0];
-
-    if (threadIdx.x == 0 && blockIdx.x == 0)
-    {
-        *nu = s_w[0];
-    }
+    if (threadIdx.x == 0)
+        minCosts[branchPlan * T + tLocal] = smins[0];
 }
 
-// we want to add the contribution of nominal + each branch based on its actual contribution to the sample
-// for example, if a given branch is never taken in a sample (belief does not get skewed enough), then the noise on that branch should not count towards the corresponding minimal
-// likewise, generic noise at time t should only be considered with a coefficient proportional to how much this noise actually influenced the cost (ie. sum of belief[theta] for theta whose branching time is > t)
+// Weighted average of noise
+// One block per (timestep * dim) entry.
+// Updates nominalAction in-place: nominalAction[t*dim+d] += weightedAvg
 __global__ void weightedAverageKernelUnified(
-    const float* __restrict__ costs,       // (nModels+1, N)
-    const float* __restrict__ minCosts,    // (nModels+1)
-    const float* __restrict__ noise,       // (nModels+1, T, N, dim)
-    const int* __restrict__ branchUsed,    // (nModels, N)
-    const int* __restrict__ branchTime,    // (nModels, N)
-    const float* __restrict__ belief,      // (nModels)
-    float* __restrict__ nominal,           // (nModels+1, T, dim)
+    const float* __restrict__ costs,       // (nBranchPlans, N)
+    const float* __restrict__ minCosts,    // (nBranchPlans, T)
+    const float* __restrict__ noise,       // (nBranchPlans, T, N, dim)
+    const int* __restrict__ branchUsed,    // (nTrueModels, N, nModelFactors)
+    const int* __restrict__ branchTime,    // (nTrueModels, N, nModelFactors)
+    const float* __restrict__ belief,      // (nTrueModels)
+    float* __restrict__ nominal,           // (nBranchPlans, T, dim)
     float invTemp,
-    int nModels, int N, int T, int dim,
-    float* __restrict__ nu)                // nModels: sum of weights for nominal[0], spec[theta, 0]
+    int N,
+    int T,
+    float* __restrict__ nu)                // (nBranchPlans)
 {
     int btd = blockIdx.x;
-    if (btd >= (nModels + 1) * T * dim)
+    if (btd >= N_BRANCH_PLANS * T * DIM)
         return;
 
-    int d = btd % dim;
-    btd /= dim;
+    int d = btd % DIM;
+    btd /= DIM;
     int tLocal = btd % T;
-    int branchIdx = btd / T;   // 0 = generic, k+1 = specialized branch k
+    int branchPlan = btd / T;
+
+    int branchTuple[N_MODEL_FACTORS];
+    int thetaTuple[N_MODEL_FACTORS];
+    unflattenBranchIndex(branchPlan, branchTuple);
 
     extern __shared__ float sh[];
     float* s_num = sh;
@@ -413,42 +333,41 @@ __global__ void weightedAverageKernelUnified(
     float num = 0.0f;
     float den = 0.0f;
 
-    float minC = minCosts[branchIdx * T + tLocal];
+    float minC = minCosts[branchPlan * T + tLocal];
 
-    for (int s = threadIdx.x; s < N; s += blockDim.x)
+    // If no eligible sample existed, minC may be INF
+    // Then den should remain 0 and update should be skipped
+    if (!isinf(minC))
     {
-        float coeff = 0.0f;
-
-        if (branchIdx == 0)
+        for (int s = threadIdx.x; s < N; s += blockDim.x)
         {
-            // Generic branch at absolute time tLocal: used in each true-model rollout theta if tLocal < branchTime[theta, s]
-            for (int theta = 0; theta < nModels; theta++)
+            float coeff = 0.0f;
+
+            for (int m = 0; m < N_TRUE_MODELS; m++)
             {
-                int tb = branchTime[theta * N + s];
-                if (tLocal < tb)
-                    coeff += belief[theta];
+                if (belief[m] <= 0.0f)
+                    continue;
+
+                unflattenTrueModelIndex(m, thetaTuple);
+                if (!branchCompatibleWithModel(branchTuple, thetaTuple))
+                    continue;
+
+                const int* used = branchUsed + (m * N + s) * N_MODEL_FACTORS;
+                const int* bTime = branchTime + (m * N + s) * N_MODEL_FACTORS;
+
+                if (branchActiveAtLocalTime(branchTuple, used, bTime, tLocal, T))
+                    coeff += belief[m];
             }
-        }
-        else
-        {
-            int k = branchIdx - 1;
 
-            int bu = branchUsed[k * N + s];
-            int tb = branchTime[k * N + s];
+            if (coeff > 0.0f)
+            {
+                float cost = costs[branchPlan * N + s];
+                float w = expf(-(cost - minC) / invTemp);
+                float eps = noise[((branchPlan * T + tLocal) * N + s) * DIM + d];
 
-            // Specialized branch k at local time tLocal: used only if rollout under true model k actually branched to k, and local time is still within horizon
-            if (bu == k && tb + tLocal < T)
-                coeff = 1.0f;
-        }
-
-        if (coeff > 0.0f)
-        {
-            float cost = costs[branchIdx * N + s];
-            float w = expf(-(cost - minC) / invTemp);
-            float eps = noise[((branchIdx * T + tLocal) * N + s) * dim + d];
-
-            num += w * coeff * eps;
-            den += w * coeff;
+                num += w * coeff * eps;
+                den += w * coeff;
+            }
         }
     }
 
@@ -469,10 +388,10 @@ __global__ void weightedAverageKernelUnified(
     if (threadIdx.x == 0)
     {
         if (s_den[0] > 1e-30f)
-            nominal[(branchIdx * T + tLocal) * dim + d] += s_num[0] / s_den[0];
+            nominal[(branchPlan * T + tLocal) * DIM + d] += s_num[0] / s_den[0];
 
-        if (threadIdx.x == 0 && tLocal == 0 && d == 0)
-            nu[branchIdx] = s_den[0];
+        if (tLocal == 0 && d == 0)
+            nu[branchPlan] = s_den[0];
     }
 }
 
@@ -480,18 +399,16 @@ __global__ void weightedAverageKernelUnified(
 __global__ void clampNominalKernel(
     float* nominal,
     float maxAccel,
-    int nModels,
-    int T,
-    int dim)
+    int T)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int nVecs = (nModels + 1) * T;
+    int nVecs = N_BRANCH_PLANS * T;
     if (idx >= nVecs)
         return;
 
     float sqNorm = 0.0f;
-    int base = idx * dim;
-    for (int d = 0; d < dim; ++d)
+    int base = idx * DIM;
+    for (int d = 0; d < DIM; ++d)
     {
         float v = nominal[base + d];
         sqNorm += v * v;
@@ -501,7 +418,7 @@ __global__ void clampNominalKernel(
     if (sqNorm > maxSq)
     {
         float scale = maxAccel / sqrtf(sqNorm);
-        for (int d = 0; d < dim; ++d)
+        for (int d = 0; d < DIM; ++d)
             nominal[base + d] *= scale;
     }
 }
@@ -512,14 +429,9 @@ __global__ void verifyNominalFailureKernel(
     EnvironmentConfig envConfig,
     MPPIConfig mc,
     int nTimesteps,
-    const float* __restrict__ initPos,
-    const float* __restrict__ initVel,
-    const float* __restrict__ initS,
-    const int* __restrict__ initLaps,
-    const int* __restrict__ initGates,
+    SimState initState,
     const float* __restrict__ initBelief,
     const float* __restrict__ nominal,     // (nModels+1, T, dim)
-    const float* __restrict__ trackPts,
     curandState* __restrict__ rngStates,
     unsigned int* __restrict__ failCount)
 {
@@ -530,189 +442,59 @@ __global__ void verifyNominalFailureKernel(
     curandState rng = rngStates[s];
 
     // Local rollout state
-    float pos[MAX_AGENTS * MAX_DIM];
-    float vel[MAX_AGENTS * MAX_DIM];
-    float currentS[MAX_AGENTS * MAX_RACELINES];
-    float prevPos[MAX_AGENTS * MAX_DIM];
-    int laps[MAX_AGENTS];
-    int currentGates[MAX_AGENTS];
+    SimState state = initState;
+    BranchState branchState;
+    initBranchState(branchState, initBelief, mc.minConfidence, mc.nTimesteps);
 
-    float belief[MAX_MODELS];
-    float nomPidAction[MAX_MODELS * MAX_DIM];
-    float actions[MAX_AGENTS * MAX_DIM];
-
-    // Copy initial state
-    for (int a = 0; a < envConfig.nAgents; a++)
-    {
-        for (int d = 0; d < envConfig.dim; d++)
-        {
-            pos[a * envConfig.dim + d] = initPos[a * envConfig.dim + d];
-            vel[a * envConfig.dim + d] = initVel[a * envConfig.dim + d];
-        }
-
-        for (int r = 0; r < envConfig.nRacelines; r++)
-            currentS[a * envConfig.nRacelines + r] = initS[a * envConfig.nRacelines + r];
-
-        laps[a] = initLaps[a];
-        currentGates[a] = initGates[a];
-    }
-
-    for (int k = 0; k < mc.nModels; k++)
-        belief[k] = initBelief[k];
+    float actions[N_AGENTS * DIM];
+    float nomPidAction[N_TRUE_MODELS * DIM];
+    float egoAction[DIM];
+    DeviceRNG drng{ &rng };
 
     // Sample actual opponent model according to initial belief
-    int theta = sampleModelFromBelief(initBelief, mc.nModels, &rng);
-
-    int predTheta = findConfident(belief, mc.nModels, mc.minConfidence);
-    int branchingTime = 0;
+    int theta = sampleModelFromBelief(branchState.belief, &rng);
 
     int failed = 0;     // 1 if collision, 2 if outside
 
     // Dynamics rollout
     for (int t = 0; t < nTimesteps && !failed; t++)
     {
-        // Save previous positions for gate update
-        for (int i = 0; i < envConfig.nAgents * envConfig.dim; i++)
-            prevPos[i] = pos[i];
+        // int localTime = t - localBranchTimeOrigin(branchState);
+        // int startInd = ((branchState.predTheta + 1) * mc.nTimesteps + localT) * DIM;
 
-        // Build actions
-        for (int a = 0; a < envConfig.nAgents; a++)
-        {
-            if (a == controlAgent)
-            {
-                int localT = t - branchingTime;
-                int startInd = ((predTheta + 1) * mc.nTimesteps + localT) * envConfig.dim;
+        int local_time = t - localBranchTimeOrigin(branchState.predTheta, branchState.branchingTime);
+        int flatBranch = flattenBranchIndex(branchState.predTheta);
 
-                for (int d = 0; d < envConfig.dim; d++)
-                    actions[a * envConfig.dim + d] = nominal[startInd + d];
-            }
-            else
-            {
-                // predicted nominal PID actions for all models
-                for (int thetaT = 0; thetaT < mc.nModels; thetaT++)
-                    computePIDAction(a, pos, vel, currentS, envConfig, mc.oppPid[thetaT], trackPts, nomPidAction + thetaT * envConfig.dim);
+        for (int d = 0; d < DIM; d++)
+            egoAction[d] = nominal[(flatBranch * mc.nTimesteps + local_time) * DIM + d];
 
-                // actual opponent action = nominal PID + PID model noise
-                for (int d = 0; d < envConfig.dim; d++)
-                    actions[a * envConfig.dim + d] = nomPidAction[theta * envConfig.dim + d] + mc.oppPid[theta].actionNoise * curand_normal(&rng);
-            }
-        }
-
-        // Clamp accelerations and add environment action noise
-        for (int a = 0; a < envConfig.nAgents; a++)
-        {
-            float sqNorm = 0.0f;
-            for (int d = 0; d < envConfig.dim; d++)
-            {
-                float v = actions[a * envConfig.dim + d];
-                sqNorm += v * v;
-            }
-
-            float factor = 1.0f;
-            float maxSq = envConfig.maxAccel[a] * envConfig.maxAccel[a];
-            if (sqNorm > maxSq)
-                factor = envConfig.maxAccel[a] / sqrtf(sqNorm);
-
-            for (int d = 0; d < envConfig.dim; d++)
-            {
-                float& v = actions[a * envConfig.dim + d];
-                v *= factor;
-                v += envConfig.actionNoiseLevel * curand_normal(&rng);
-            }
-        }
-
-        // Integrate position
-        for (int a = 0; a < envConfig.nAgents; a++)
-            for (int d = 0; d < envConfig.dim; d++)
-                pos[a * envConfig.dim + d] += envConfig.dt * vel[a * envConfig.dim + d];
-
-        // Integrate velocity
-        for (int a = 0; a < envConfig.nAgents; a++)
-            for (int d = 0; d < envConfig.dim; d++)
-                vel[a * envConfig.dim + d] += envConfig.dt * actions[a * envConfig.dim + d];
-
-        // Speed cap
-        for (int a = 0; a < envConfig.nAgents; a++)
-        {
-            float spd = agentSpeed(vel, a, envConfig.dim);
-            if (spd > envConfig.maxSpeed[a])
-            {
-                float sc = envConfig.maxSpeed[a] / spd;
-                for (int d = 0; d < envConfig.dim; d++)
-                    vel[a * envConfig.dim + d] *= sc;
-            }
-        }
-
-        // State noise
-        for (int a = 0; a < envConfig.nAgents; a++)
-            for (int d = 0; d < envConfig.dim; d++)
-            {
-                pos[a * envConfig.dim + d] += envConfig.posNoiseLevel * curand_normal(&rng);
-                vel[a * envConfig.dim + d] += envConfig.speedNoiseLevel * curand_normal(&rng);
-            }
-
-        // Update gates / laps / S
-        updateGates(envConfig, pos, prevPos, currentS, currentGates, laps, trackPts);
-
-        // Update belief from observed opponent action
-        int oppAgent = 1 - controlAgent;
-        updateBelief(
-            belief,
-            actions + oppAgent * envConfig.dim,
+        TerminalType term = environmentStep(
+            t,
+            controlAgent,
+            theta,
+            envConfig,
+            mc,
+            egoAction,
+            true,          // applyPidNoise in real verification
+            state,
+            branchState,
+            actions,
             nomPidAction,
-            mc.oppPid,
-            mc.nModels,
-            envConfig.dim,
-            envConfig.maxAccel[oppAgent]);
-
-        if (predTheta == -1)
-        {
-            int conf = findConfident(belief, mc.nModels, mc.minConfidence);
-            if (conf != -1)
-            {
-                predTheta = conf;
-                branchingTime = t + 1;
-            }
-        }
+            drng);
 
         // Failure checks
 
-        // 1. MPPI goes outside
-        if (isOutside(envConfig, pos + controlAgent * envConfig.dim, envConfig.minDist / 2.0f))
+        if (term == TERM_EGO_OUTSIDE)
         {
             failed = 2;
             break;
         }
-
-        // 2. Collision
-        for (int a1 = 0; a1 < envConfig.nAgents && !failed; a1++)
-            for (int a2 = a1 + 1; a2 < envConfig.nAgents; a2++)
-            {
-                float dist2 = 0.0f;
-                for (int d = 0; d < envConfig.dim; d++)
-                {
-                    float dx = pos[a1 * envConfig.dim + d] - pos[a2 * envConfig.dim + d];
-                    dist2 += dx * dx;
-                }
-
-                if (dist2 < envConfig.minDist * envConfig.minDist)
-                {
-                    failed = 1;
-                    break;
-                }
-            }
-
-        // If MPPI wins, end rollout (but it does not count as a failure)
-
-        if (isOutside(envConfig, pos + (1 - controlAgent) * envConfig.dim, envConfig.minDist / 2.0f))
+        if (term == TERM_COLLISION)
+        {
+            failed = 1;
             break;
-
-        bool shouldBreak = false;
-        for (int a = 0; a < envConfig.nAgents; a++)
-            if (laps[a] >= envConfig.nWinLaps)
-                shouldBreak = true;
-
-        if (shouldBreak)
+        }
+        if (term == TERM_OPP_OUTSIDE || term == TERM_WIN || term == TERM_OPP_WIN)
             break;
     }
 

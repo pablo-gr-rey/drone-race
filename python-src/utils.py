@@ -66,23 +66,6 @@ class EVENT_TYPE(IntEnum):
     EVT_TRUNCATED = 3
 
 
-class CONTROLLER_TYPE(IntEnum):
-    CONT_DUMMY = 0
-    CONT_PID = 1
-    CONT_MPPI = 2
-
-    @classmethod
-    def fromConfig(cls, config: "ControllerConfig") -> "CONTROLLER_TYPE":
-        if isinstance(config, DummyConfig):
-            return CONTROLLER_TYPE.CONT_DUMMY
-        elif isinstance(config, PIDConfig):
-            return CONTROLLER_TYPE.CONT_PID
-        elif isinstance(config, MPPIConfig):
-            return CONTROLLER_TYPE.CONT_MPPI
-
-        raise ValueError("Unknown controller config")
-
-
 @dataclass
 class GateEnvironmentConfig:
     nAgents: int = 2
@@ -124,7 +107,20 @@ class GateEnvironmentConfig:
     nObstacles: int = 0
     obstacles: np.ndarray = field(default_factory=lambda: np.array([]))
 
+    nRoundObstacles: int = 0
+    roundObsCenters: np.ndarray = field(default_factory=lambda: np.array([]))
+    roundObsRadius: np.ndarray = field(default_factory=lambda: np.array([]))
+
     seed: int = 42  # if -1, then it will be set to a random value
+
+    nModelFactors: int = 1
+    nTrueModels: int = field(init=False)
+    modelSizes: np.ndarray = field(default_factory=lambda: np.array([]))
+    initBelief: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    opponentPidConfigs: tuple["PIDConfig", ...] = ()
+    iMppi: int = 0
+    trueTheta: int = 0
 
     trackPoints: Optional[np.ndarray] = None
 
@@ -165,6 +161,40 @@ class GateEnvironmentConfig:
         if self.seed == -1:
             self.seed = random.randrange(2**31)
 
+        self.modelSizes = self.modelSizes.astype(np.int32)
+        self.nTrueModels = int(np.prod(self.modelSizes))
+
+        if self.initBelief.size == 0:
+            self.initBelief = np.full(self.nTrueModels, 1.0 / self.nTrueModels)
+
+    def flattenTheta(self, thetaTuple: list[int]) -> int:
+        "Flatten thetaTuple (0 <= theta[k] < modelSize[k]) into 0 <= trueTheta < nTrueModels"
+        trueTheta, stride = 0, 1
+
+        for k in range(self.nModelFactors - 1, -1, -1):
+            trueTheta += thetaTuple[k] * stride
+            stride *= self.modelSizes[k]
+
+        return trueTheta
+
+    def unflattenTheta(self, theta: int) -> list[int]:
+        "Unflatten 0 <= trueTheta < nTrueModels into thetaTuple (0 <= theta[k] < modelSize[k])"
+        ans: list[int] = [0] * self.nModelFactors
+        for k in range(self.nModelFactors - 1, -1, -1):
+            ans[k] = theta % self.modelSizes[k]
+            theta //= self.modelSizes[k]
+
+        return ans
+
+    def computeMarginal(self, belief: np.ndarray, k: int) -> np.ndarray:
+        "Compute belief marginalized over parameter k"
+        marginal = np.zeros(self.modelSizes[k])
+
+        for theta in range(self.nTrueModels):
+            marginal[self.unflattenTheta(theta)[k]] += belief[theta]
+
+        return marginal
+
 
 @dataclass
 class VerifConfig:
@@ -175,27 +205,16 @@ class VerifConfig:
     maxEps: float = 0.01
 
 
+# TODO: this is now useless
 @dataclass
 class ControllerConfig:
-    kind: CONTROLLER_TYPE = CONTROLLER_TYPE.CONT_DUMMY
-
-    def __post_init__(self):
-        self.kind = CONTROLLER_TYPE.fromConfig(self)
-
     def getDefaultName(self) -> str:
-        if isinstance(self, DummyConfig):
-            return "Dummy"
-        elif isinstance(self, PIDConfig):
+        if isinstance(self, PIDConfig):
             return "PID"
         elif isinstance(self, MPPIConfig):
             return "MPPI"
 
         raise ValueError("Unknown controller config")
-
-
-@dataclass
-class DummyConfig(ControllerConfig):
-    pass
 
 
 @dataclass
@@ -246,24 +265,14 @@ class MPPIConfig(ControllerConfig):
 
     minConfidence: float = 0.9
 
-    nModels: int = 1
-    oppKind: CONTROLLER_TYPE = CONTROLLER_TYPE.CONT_DUMMY
-    # obviously, should not be MPPIConfig
-    opponentPidConfigs: tuple[PIDConfig, ...] = ()
-    initBelief: np.ndarray = field(default_factory=lambda: np.array([]))
-
-    def __post_init__(self) -> None:
-        if self.initBelief.size == 0:
-            self.initBelief = np.full(self.nModels, 1.0 / self.nModels)
-
-        super().__post_init__()
-
 
 @dataclass
 class MPPIStatePredInfo:
-    branchTime: int
-    predTheta: int
+    initPredTheta: np.ndarray
+    branchTime: np.ndarray
+    predTheta: np.ndarray
     fullPos: np.ndarray
+    egoActions: np.ndarray
     stopReason: EVENT_TYPE
     stopTime: int
     stopAgent: int
@@ -271,7 +280,6 @@ class MPPIStatePredInfo:
 
 @dataclass
 class MPPIStateInfo:
-    iCont: int
     belief: np.ndarray
     failCount: np.ndarray
 
@@ -293,8 +301,9 @@ class FullStateInfo:
     nLaps: np.ndarray
     currentGates: np.ndarray
 
-    nMppiCont: int
-    mppiInfo: list[MPPIStateInfo] = field(metadata={"len": "nMppiCont"})
+    egoAction: np.ndarray
+
+    mppiInfo: MPPIStateInfo
 
     #     int,
 

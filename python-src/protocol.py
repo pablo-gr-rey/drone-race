@@ -7,7 +7,7 @@ import typing
 import numpy as np
 import zmq
 from renderer import EnvironmentRenderer
-from utils import EVENT_TYPE, MSG_TYPE, ControllerConfig, FullStateInfo, GateEnvironmentConfig, PIDConfig, MPPIConfig, VerifConfig
+from utils import EVENT_TYPE, MSG_TYPE, FullStateInfo, GateEnvironmentConfig, MPPIConfig, VerifConfig
 
 
 class BytePacker:
@@ -45,6 +45,11 @@ class BytePacker:
                     return False
         elif dataclasses.is_dataclass(val) and not isinstance(val, type):
             for field in dataclasses.fields(val):
+                if (
+                    not field.init
+                ):  # usually, these fields are computed afterwards for ease of implementation and should not be sent
+                    continue
+
                 n_val = getattr(val, field.name)
                 # avoid numeric issues: it's important to send the correct type! (ie. trackWidth=2 instead of 2.0 is wrongly sent as int and reinterpreted as messy float)
                 if field.type is float:
@@ -179,55 +184,37 @@ class ZMQRecv:
 
     def runSim(
         self,
-        config: GateEnvironmentConfig,
+        envConfig: GateEnvironmentConfig,
         verifConfig: VerifConfig,
-        contConfigs: list[ControllerConfig],
+        mppiConfig: MPPIConfig,
         render: bool = True,
         contNames: Optional[list[str]] = None,
-        oppNames: Optional[list[str] | list[list[str]]] = None,
+        oppNames: Optional[list[list[str]]] = None,
     ) -> tuple[EVENT_TYPE, int]:
         if render:
             # only display the racelines which are actually used
-            used = [False] * config.nRaceLines
-            nMppi = 0
-            for cfg in contConfigs:
-                if isinstance(cfg, PIDConfig):
-                    used[cfg.racelineIndex] = True
-                elif isinstance(cfg, MPPIConfig):
-                    nMppi += 1
-                    for opp in cfg.opponentPidConfigs:
-                        used[opp.racelineIndex] = True
-
-            mppiConfig = None
-
-            for cont in contConfigs:
-                if isinstance(cont, MPPIConfig):
-                    mppiConfig = cont
-
-            if mppiConfig is None:
-                print("Warning: did not find any MPPIConfig, proceeding with default")
-                mppiConfig = MPPIConfig()
+            used = [False] * envConfig.nRaceLines
+            for cfg in envConfig.opponentPidConfigs:
+                used[cfg.racelineIndex] = True
 
             if contNames is None:
-                contNames = [cfg.getDefaultName() for cfg in contConfigs]
-
-            completedOppNames: list[list[str]] = []
+                # contNames = [cfg.getDefaultName() for cfg in contConfigs]
+                contNames = [
+                    mppiConfig.getDefaultName()
+                    if i == envConfig.iMppi
+                    else envConfig.opponentPidConfigs[envConfig.trueTheta].getDefaultName()
+                    for i in range(2)
+                ]
 
             if oppNames is None:
-                for cont in contConfigs:
-                    if isinstance(cont, MPPIConfig):
-                        completedOppNames.append([f"Model {i}" for i in range(cont.nModels)])
-            elif oppNames and isinstance(oppNames[0], str):
-                completedOppNames = [oppNames for i in range(nMppi)]  # type: ignore
-            else:
-                completedOppNames = oppNames  # type: ignore
+                oppNames = [[f"Param {k}={i}" for i in range(envConfig.modelSizes[k])] for k in range(envConfig.nModelFactors)]
 
             renderer = EnvironmentRenderer(
-                config,
-                contConfigs,
+                envConfig,
+                mppiConfig,
                 contNames,
                 verifConfig,
-                completedOppNames,
+                oppNames,
                 interval=0,
                 frameSkipWaiting=2,
                 frameSkipPlayback=2,
@@ -242,13 +229,12 @@ class ZMQRecv:
         # send header
         print("Sending header...")
 
-        header = encodeConfig(config, MSG_TYPE.MSG_HEADER).toBytes()
+        header = encodeConfig(envConfig, MSG_TYPE.MSG_HEADER).toBytes()
         self.sock.send(header)
 
         self.sock.send(encodeConfig(verifConfig, MSG_TYPE.MSG_HEADER, log=True).toBytes())
 
-        for cont in contConfigs:
-            self.sock.send(encodeConfig(cont, MSG_TYPE.MSG_HEADER).toBytes())
+        self.sock.send(encodeConfig(mppiConfig, MSG_TYPE.MSG_HEADER).toBytes())
 
         print("header sent OK, waiting for first state...")
 
@@ -273,14 +259,14 @@ class ZMQRecv:
                 if state.step == 0:
                     # we confirm that the first state is equal to the initial state we sent (to detect early potential transmission bugs)
                     if (
-                        not np.all(np.isclose(state.pos, config.init_pos))
-                        or not np.all(np.isclose(state.speed, config.init_vel))
+                        not np.all(np.isclose(state.pos, envConfig.init_pos))
+                        or not np.all(np.isclose(state.speed, envConfig.init_vel))
                         # or not np.all(np.isclose(state.currentS, config.initS))     # for non-PID agents, engine sets S to -1
-                        or not np.all(np.isclose(state.nLaps, config.initnLaps))
-                        or not np.all(np.isclose(state.currentGates, config.initGates))
+                        or not np.all(np.isclose(state.nLaps, envConfig.initnLaps))
+                        or not np.all(np.isclose(state.currentGates, envConfig.initGates))
                     ):
                         print(state.pos, state.speed, state.currentS, state.nLaps, state.currentGates)
-                        print(config.init_pos, config.init_vel, config.initS, config.initnLaps, config.initGates)
+                        print(envConfig.init_pos, envConfig.init_vel, envConfig.initS, envConfig.initnLaps, envConfig.initGates)
                         raise ValueError("First state sent back by C++ backend did not match expected first state")
 
                 self.stateLog.append(state)

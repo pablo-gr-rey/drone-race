@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <vector>
+#include <span>
 #include <zmq.hpp>
 
 enum MsgType : uint32_t
@@ -38,8 +39,8 @@ struct Reader
     std::vector<float> readFloatArray();
     std::vector<int> readIntArray();
 
-    void readFloatArray(float* arr);    // assumes array is allocated and has the right size
-    void readIntArray(int* arr);        // assumes array is allocated and has the right size
+    int readFloatArray(float* arr);    // returns length. assumes array is allocated and has the right size
+    int readIntArray(int* arr);        // returns length. assumes array is allocated and has the right size
 
     void assertFinished();
 };
@@ -54,18 +55,18 @@ struct Writer
 
     void pushInt32(int32_t v);
     void pushFloat(float v);
-    void pushFloatArray(const std::vector<float>& arr);
 
-    template <typename T>
-    void pushIntArray(const std::vector<T>& arr);
+    void pushFloatArray(std::span<const float> arr);
+
+    template<typename T>
+    void pushIntArray(std::span<const T> arr);
 
     const uint8_t* bytes() const { return data.data(); }
     size_t size() const { return data.size(); }
 };
 
-
-template <typename T>
-void Writer::pushIntArray(const std::vector<T>& arr)
+template<typename T>
+void Writer::pushIntArray(std::span<const T> arr)
 {
     std::vector<float> n(arr.size());
 

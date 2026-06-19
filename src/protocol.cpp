@@ -47,7 +47,7 @@ std::vector<int> Reader::readIntArray()
 }
 
 
-void Reader::readFloatArray(float* arr)
+int Reader::readFloatArray(float* arr)
 {
     int32_t n = readInt32();
     if (n < 0)
@@ -59,14 +59,18 @@ void Reader::readFloatArray(float* arr)
 
     std::memcpy(arr, data + offset, nBytes);
     offset += nBytes;
+
+    return n;
 }
 
-void Reader::readIntArray(int* arr)
+int Reader::readIntArray(int* arr)
 {
     std::vector<float> temp = readFloatArray();
 
     for (size_t i = 0; i < temp.size(); i++)
         arr[i] = std::round(temp[i]);
+
+    return temp.size();
 }
 
 
@@ -93,7 +97,7 @@ void Writer::pushFloat(float v)
     pushPod<float>(v);
 }
 
-void Writer::pushFloatArray(const std::vector<float>& arr)
+void Writer::pushFloatArray(std::span<const float> arr)
 {
     pushInt32(static_cast<int32_t>(arr.size()));
     if (!arr.empty())
