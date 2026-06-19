@@ -110,8 +110,12 @@ class EnvironmentRenderer:
             top=0.96,
         )
 
-        self.ax = self.fig.add_subplot(gs[0, 0])  # track ax
+        gs_plot = gs[0, 0].subgridspec(3, 1, height_ratios=[2, 1, 1], hspace=0.1)
+
+        self.ax = self.fig.add_subplot(gs_plot[0])  # track ax
         self.ax.set_aspect("equal", adjustable="box")
+
+        self.axs_action_plot = [self.fig.add_subplot(gs_plot[i + 1]) for i in range(envConfig.dim)]
 
         gs_status = gs[0, 1].subgridspec(4, 1, height_ratios=[1, 1, 3, 3], hspace=0.1)
 
@@ -210,6 +214,24 @@ class EnvironmentRenderer:
         self.ax.legend()
 
         self.zoom_radius = 6
+
+        # action plots
+        self.actions_plot: list[tuple[Line2D, Line2D]] = []  # plot & vline
+        for dim in range(self.envConfig.dim):
+            self.actions_plot.append(
+                (
+                    self.axs_action_plot[dim].plot(
+                        [],
+                        [],
+                        color=self.colors[envConfig.iMppi % len(self.colors)],
+                        label=f"{contNames[envConfig.iMppi]} ({envConfig.iMppi + 1})",
+                    )[0],
+                    self.axs_action_plot[dim].axvline(x=0, color="green", linestyle="--", linewidth=1, alpha=0.5),
+                )
+            )
+
+            self.axs_action_plot[dim].set_xlabel("Time")
+            self.axs_action_plot[dim].set_ylabel("Action on " + ["x", "y"][dim])
 
         # status text
         self.status_text = self.ax_status.text(
@@ -583,6 +605,16 @@ class EnvironmentRenderer:
             pt.set_data([px], [py])
             self.circles[idx].center = (px, py)
 
+        # update action plots
+        for dim, ((plot, vline), ax) in enumerate(zip(self.actions_plot, self.axs_action_plot)):
+            vline.set_xdata([i, i])
+            if len(plot.get_xdata()) != len(self.stateLog):  # type: ignore
+                plot.set_xdata(np.arange(len(self.stateLog)))
+                plot.set_ydata(np.array([state.egoAction[dim] for state in self.stateLog]))
+
+                ax.relim()
+                ax.autoscale_view()
+
         # update zoom or full view
         if self.zoomed:
             cx, cy = self.getPos(i, self.zoomAgent)
@@ -812,7 +844,9 @@ class EnvironmentRenderer:
             self.updateDisplay(i)
             self.fig.canvas.draw()
 
-            axes_to_capture = [self.ax, self.ax_status, self.ax_joint_belief, self.ax_failcount] + self.axs_marg_belief
+            axes_to_capture = (
+                [self.ax, self.ax_status, self.ax_joint_belief, self.ax_failcount] + self.axs_marg_belief + self.axs_action_plot
+            )
             bboxes = [a.get_window_extent().transformed(self.fig.dpi_scale_trans.inverted()) for a in axes_to_capture]
             full_bbox = Bbox.union(bboxes).padded(0.5)
 

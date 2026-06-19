@@ -74,7 +74,7 @@ void SimulationEngine::allocTrack()
     CUDA_CHECK(cudaMemcpy(d_trackPoints, envConfig.trackPoints, bytes, cudaMemcpyHostToDevice));
 }
 
-void SimulationEngine::sendState(zmq::socket_t& sock, int step)
+void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array<float, DIM>& egoAction)
 {
     if (!envConfig.sendStates)
         return;
@@ -90,6 +90,8 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
 
     writer.pushIntArray<int>(state.laps);
     writer.pushIntArray<int>(state.gates);
+
+    writer.pushFloatArray(egoAction);
 
     std::cout << "controller " << envConfig.iMppi << " is MPPI controller" << std::endl;
 
@@ -107,7 +109,6 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
     MPPIConfig mppiConfig = mppiCont.mppiConfig;
 
     std::vector<float> fullPos(mppiConfig.nTimesteps * N_AGENTS * DIM);
-    std::vector<float> fullActions(N_AGENTS * DIM);
 
     HostRNG hrng{ &nd, &rng };
 
@@ -124,7 +125,7 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
 
         float scratchActions[N_AGENTS * DIM];
         float nomPidAction[N_TRUE_MODELS * DIM];
-        float egoAction[DIM];
+        std::vector<float> egoActions(mppiConfig.nTimesteps * DIM);
 
         writer.pushIntArray<int>(bstate.predTheta);
 
@@ -136,7 +137,7 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
             int startInd = (flattenBranchIndex(bstate.predTheta) * mppiConfig.nTimesteps + t - localBranchTimeOrigin(bstate.predTheta, bstate.branchingTime)) * DIM;
 
             for (int d = 0; d < DIM; d++)
-                egoAction[d] = mppiCont.h_nominal[startInd + d];
+                egoActions[t * DIM + d] = mppiCont.h_nominal[startInd + d];
 
             TerminalType term = environmentStep(
                 t,
@@ -144,7 +145,7 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
                 theta,
                 envConfig,
                 mppiConfig,
-                egoAction,
+                egoActions.data() + t * DIM,
                 false,                  // no PID noise for reproducible display
                 predState,
                 bstate,
@@ -191,6 +192,7 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step)
         writer.pushIntArray<int>(bstate.branchingTime);
         writer.pushIntArray<int>(bstate.predTheta);
         writer.pushFloatArray(fullPos);
+        writer.pushFloatArray(egoActions);
         writer.pushInt32(stopReason);
         writer.pushInt32(stopTime);
         writer.pushInt32(stopAgent);
@@ -252,7 +254,8 @@ std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::ar
 
 void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
 {
-    sendState(sock, 0);
+    std::array<float, DIM> dummyAction{};
+    sendState(sock, 0, dummyAction);
 
     int step;
 
@@ -267,7 +270,7 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
 
         stopInfo = dynStep(action, step, mppiCont.h_belief);
 
-        sendState(sock, step);
+        sendState(sock, step, action);
 
         std::cout << std::fixed << std::setprecision(2);
         std::cout << "Current state at step " << step << ":\n";

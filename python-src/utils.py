@@ -272,6 +272,7 @@ class MPPIStatePredInfo:
     branchTime: np.ndarray
     predTheta: np.ndarray
     fullPos: np.ndarray
+    egoActions: np.ndarray
     stopReason: EVENT_TYPE
     stopTime: int
     stopAgent: int
@@ -299,6 +300,8 @@ class FullStateInfo:
     currentS: np.ndarray
     nLaps: np.ndarray
     currentGates: np.ndarray
+
+    egoAction: np.ndarray
 
     mppiInfo: MPPIStateInfo
 

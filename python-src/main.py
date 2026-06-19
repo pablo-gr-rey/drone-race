@@ -833,8 +833,8 @@ def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig
 
 def mainGate():
     # envConfig, mppiconfig, pid0, pid1, oppNames = standardGateEnv()  # pid0 = afraid; pid1 = bold
-    envConfig, mppiconfig, pids, oppNames = tinyGateEnv(afraid=False)  # pid0 = top; pid1 = bottom
-    # envConfig, mppiconfig, pids, oppNames = tinyGateEnv2Models(roundObs=True)
+    # envConfig, mppiconfig, pids, oppNames = tinyGateEnv(afraid=False)  # pid0 = top; pid1 = bottom
+    envConfig, mppiconfig, pids, oppNames = tinyGateEnv2Models(roundObs=True)
     # envConfig, mppiconfig, pid0, pid1, oppNames = activeEnv()  # pid0 = afraid; pid1 = bold
 
     envConfig.trueTheta = 1
