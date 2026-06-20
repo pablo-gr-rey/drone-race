@@ -623,4 +623,24 @@ HD INLINE bool branchActiveAtLocalTime(
     }
 
     return true;
+
+}
+HD INLINE bool branchActiveAtAbsoluteTime(
+    const int* branchTuple,      // N_MODEL_FACTORS
+    const int* used,             // N_MODEL_FACTORS
+    const int* branchingTime,    // N_MODEL_FACTORS
+    int tAbs,
+    int T)
+{
+    if (tAbs >= T)
+        return false;
+
+    for (int k = 0; k < N_MODEL_FACTORS; k++)
+    {
+        if ((branchTuple[k] == 0 && tAbs >= branchingTime[k]) ||
+            (branchTuple[k] != 0 && (used[k] != branchTuple[k] || tAbs < branchingTime[k])))
+            return false;
+    }
+
+    return true;
 }

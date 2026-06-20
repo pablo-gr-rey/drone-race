@@ -52,9 +52,9 @@ public:
     float min_nu = 0.0005f;    // in terms of proportion of nSamples
     float max_nu = 0.001f;
 
-private:
     std::vector<float> buildSplineMatrix();     // return a T*M matrix B such that for u spline control points, B*u computes the (natural) spline for each value of 0 <= t < T (in particular, if tau_i is integer, (Bu)_(tau_i) = u_i)
 
+private:
     std::vector<float> h_B;     // spline matrix
 
     float* h_trackPoints;
@@ -94,6 +94,7 @@ private:
 
     // branch/time aware minimums
     float* d_minCosts = nullptr;    // (nBranchPlans, T)
+    float* d_minSplineCosts = nullptr;   // size N_BRANCH_PLANS * M
 
     // denominator for each branch tuple
     float* d_nu = nullptr;  // (nBranchPlans)

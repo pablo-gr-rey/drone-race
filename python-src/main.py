@@ -528,8 +528,8 @@ def tinyGateEnv(
 
     if useSplines:
         mppiconfig = MPPIConfig(
-            nSamples=2**15,
-            # nSamples=1,
+            nSamples=2**16,
+            # nSamples=3,
             nTimesteps=60,
             inv_temperature=10,
             # samplingNoise=3,

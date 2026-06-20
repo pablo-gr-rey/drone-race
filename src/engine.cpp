@@ -48,6 +48,14 @@ SimulationEngine::SimulationEngine(
     mppiCont = MPPIController(envConfig, mppiConfig, verifConfig, d_trackPoints, seed);
     mppiCont.engine = this;
 
+    std::vector<float> B = mppiCont.buildSplineMatrix();
+    for (float b : B)
+    {
+        if (!isfinite(b))
+            std::cout << "\n\nWARNING WARNING" << b << "\n\n";
+    }
+    std::cout << '\n';
+
     // we only need the S of the opponent
     // this could be faster if we only assume 1 opponent)
     for (int r = 0; r < N_RACELINES; r++)

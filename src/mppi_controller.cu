@@ -167,6 +167,7 @@ void MPPIController::allocDevice()
     CUDA_CHECK(cudaMalloc(&d_noise, N_BRANCH_PLANS * M * N * DIM * sizeof(float)));
 
     // Costs
+    CUDA_CHECK(cudaMalloc(&d_minSplineCosts, N_BRANCH_PLANS * M * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_costs, N_BRANCH_PLANS * N * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_costsTrue, N_TRUE_MODELS * N * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_branchUsed, N_TRUE_MODELS * N * N_MODEL_FACTORS * sizeof(int)));
@@ -360,39 +361,50 @@ void MPPIController::getControl(
 
     // 4. Compute the minimum cost for each sample (with masking ie. only considering valid samples)
 
-    int nMinBlocks = N_BRANCH_PLANS * T;
-    computeMaskedMinCostsKernel << <nMinBlocks, blk, blk * sizeof(float) >> > (
-        d_costs,
-        d_branchUsed,
-        d_branchTime,
-        d_belief,
-        d_minCosts,
-        N,
-        T);
-
-#ifdef DEBUG
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
-#endif
-
     // 5. Weighted average update
     if (USE_SPLINES)
     {
+        int nMinBlocks = N_BRANCH_PLANS * T;
+        computeMaskedMinSplineCostsKernel << <nMinBlocks, blk, blk * sizeof(float) >> > (
+            d_costs,
+            d_branchUsed,
+            d_branchTime,
+            d_belief,
+            d_B,
+            d_minSplineCosts,
+            mppiConfig);
+
         int wGrid = N_BRANCH_PLANS * M * DIM;
         weightedAverageSplineKernelUnified << <wGrid, blk, 2 * blk * sizeof(float) >> > (
             d_costs,
-            d_minCosts,
+            d_minSplineCosts,
             d_noise,
             d_branchUsed,
             d_branchTime,
             d_belief,
             d_splineNominal,
             mppiConfig,
+            d_B,
             d_nu
             );
     }
     else
     {
+        int nMinBlocks = N_BRANCH_PLANS * T;
+        computeMaskedMinCostsKernel << <nMinBlocks, blk, blk * sizeof(float) >> > (
+            d_costs,
+            d_branchUsed,
+            d_branchTime,
+            d_belief,
+            d_minCosts,
+            N,
+            T);
+
+#ifdef DEBUG
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+
         int wGrid = N_BRANCH_PLANS * T * DIM;
         weightedAverageKernelUnified << <wGrid, blk, 2 * blk * sizeof(float) >> > (
             d_costs,

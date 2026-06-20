@@ -44,6 +44,15 @@ __global__ void computeMaskedMinCostsKernel(
     int N,
     int T);
 
+__global__ void computeMaskedMinSplineCostsKernel(
+    const float* __restrict__ costs,       // (N_BRANCH_PLANS, N)
+    const int* __restrict__ branchUsed,    // (N_TRUE_MODELS, N, N_MODEL_FACTORS)
+    const int* __restrict__ branchTime,    // (N_TRUE_MODELS, N, N_MODEL_FACTORS)
+    const float* __restrict__ belief,      // (N_TRUE_MODELS)
+    const float* __restrict__ B,           // (T, M)
+    float* __restrict__ minSplineCosts,    // (N_BRANCH_PLANS, M)
+    const MPPIConfig mppiConfig);
+
 // Weighted average of noise
 // One block per (timestep * dim) entry.
 // Updates nominalAction in-place: nominalAction[t*dim+d] += weightedAvg
@@ -62,13 +71,14 @@ __global__ void weightedAverageKernelUnified(
 
 __global__ void weightedAverageSplineKernelUnified(
     const float* __restrict__ costs,       // (nBranchPlans, N)
-    const float* __restrict__ minCosts,    // (nBranchPlans, T)
+    const float* __restrict__ minSplineCosts,    // (nBranchPlans, M)
     const float* __restrict__ noise,       // (nBranchPlans, M, N, dim)
     const int* __restrict__ branchUsed,    // (nTrueModels, N, nModelFactors)
     const int* __restrict__ branchTime,    // (nTrueModels, N, nModelFactors)
     const float* __restrict__ belief,      // (nTrueModels)
     float* __restrict__ splineNominal,           // (nBranchPlans, M, dim)
     const MPPIConfig mppiConfig,
+    const float* __restrict__ B,
     float* __restrict__ nu);                // (nBranchPlans)
 
 

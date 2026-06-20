@@ -283,6 +283,93 @@ __global__ void computeMaskedMinCostsKernel(
         minCosts[branchPlan * T + tLocal] = smins[0];
 }
 
+__global__ void computeMaskedMinSplineCostsKernel(
+    const float* __restrict__ costs,       // (N_BRANCH_PLANS, N)
+    const int* __restrict__ branchUsed,    // (N_TRUE_MODELS, N, N_MODEL_FACTORS)
+    const int* __restrict__ branchTime,    // (N_TRUE_MODELS, N, N_MODEL_FACTORS)
+    const float* __restrict__ belief,      // (N_TRUE_MODELS)
+    const float* __restrict__ B,           // (T, M)
+    float* __restrict__ minSplineCosts,    // (N_BRANCH_PLANS, M)
+    const MPPIConfig mppiConfig)
+{
+    int M = mppiConfig.nKnots;
+    int T = mppiConfig.nTimesteps;
+    int N = mppiConfig.nSamples;
+
+    float coeffThreshold = 0.05f;
+
+    int bm = blockIdx.x;
+    if (bm >= N_BRANCH_PLANS * M)
+        return;
+
+    int m = bm % M;
+    int branchPlan = bm / M;
+
+    int branchTuple[N_MODEL_FACTORS];
+    int thetaTuple[N_MODEL_FACTORS];
+    unflattenBranchIndex(branchPlan, branchTuple);
+
+    // total absolute basis mass of knot m
+    float basisMass = 0.0f;
+    for (int t = 0; t < T; t++)
+        basisMass += fabsf(B[t * M + m]);
+
+    extern __shared__ float smins[];
+    float threadMin = INFINITY;
+
+    if (basisMass > 1e-12f)
+    {
+        for (int s = threadIdx.x; s < N; s += blockDim.x)
+        {
+            float coeff = 0.0f;
+
+            for (int thetaFlat = 0; thetaFlat < N_TRUE_MODELS; thetaFlat++)
+            {
+                float p = belief[thetaFlat];
+                if (p <= 0.0f)
+                    continue;
+
+                unflattenTrueModelIndex(thetaFlat, thetaTuple);
+                if (!branchCompatibleWithModel(branchTuple, thetaTuple))
+                    continue;
+
+                const int* used = branchUsed + (thetaFlat * N + s) * N_MODEL_FACTORS;
+                const int* bTime = branchTime + (thetaFlat * N + s) * N_MODEL_FACTORS;
+
+                float activeMass = 0.0f;
+                for (int t = 0; t < T; t++)
+                {
+                    if (branchActiveAtAbsoluteTime(branchTuple, used, bTime, t, T))
+                        // if (branchActiveAtLocalTime(branchTuple, used, bTime, t, T))
+                        activeMass += fabsf(B[t * M + m]);
+                }
+
+                coeff += p * (activeMass / basisMass);
+            }
+
+            if (coeff >= coeffThreshold)
+            {
+                float c = costs[branchPlan * N + s];
+                if (isfinite(c) && c < threadMin)
+                    threadMin = c;
+            }
+        }
+    }
+
+    smins[threadIdx.x] = threadMin;
+    __syncthreads();
+
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1)
+    {
+        if (threadIdx.x < stride)
+            smins[threadIdx.x] = fminf(smins[threadIdx.x], smins[threadIdx.x + stride]);
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0)
+        minSplineCosts[branchPlan * M + m] = smins[0];
+}
+
 // Weighted average of noise
 // One block per (timestep * dim) entry.
 // Updates nominalAction in-place: nominalAction[t*dim+d] += weightedAvg
@@ -382,37 +469,36 @@ __global__ void weightedAverageKernelUnified(
     }
 }
 
-// Weighted average of noise
-// One block per (branch * M * dim) entry.
-// Updates nominalAction in-place: splineNominal[m*dim+d] += weightedAvg
 __global__ void weightedAverageSplineKernelUnified(
     const float* __restrict__ costs,       // (nBranchPlans, N)
-    const float* __restrict__ minCosts,    // (nBranchPlans, T)
-    const float* __restrict__ noise,       // (nBranchPlans, M, N, dim)
+    const float* __restrict__ minSplineCosts,    // (nBranchPlans, M)
+    const float* __restrict__ noise,       // (nBranchPlans, M, N, DIM)
     const int* __restrict__ branchUsed,    // (nTrueModels, N, nModelFactors)
     const int* __restrict__ branchTime,    // (nTrueModels, N, nModelFactors)
     const float* __restrict__ belief,      // (nTrueModels)
-    float* __restrict__ splineNominal,           // (nBranchPlans, M, dim)
+    float* __restrict__ splineNominal,     // (nBranchPlans, M, DIM)
     const MPPIConfig mppiConfig,
+    const float* __restrict__ B,           // (T, M)
     float* __restrict__ nu)                // (nBranchPlans)
 {
-    int M = mppiConfig.nKnots, T = mppiConfig.nTimesteps, N = mppiConfig.nSamples;
+    float coeffThreshold = 0.05f;
 
-    int btd = blockIdx.x;
-    if (btd >= N_BRANCH_PLANS * M * DIM)
+    int M = mppiConfig.nKnots;
+    int T = mppiConfig.nTimesteps;
+    int N = mppiConfig.nSamples;
+
+    int bmd = blockIdx.x;
+    if (bmd >= N_BRANCH_PLANS * M * DIM)
         return;
 
-    int d = btd % DIM;
-    btd /= DIM;
-    int m = btd % M;        // local time is tau[m]
-    int branchPlan = btd / M;
+    int d = bmd % DIM;
+    bmd /= DIM;
+    int m = bmd % M;
+    int branchPlan = bmd / M;
 
     int branchTuple[N_MODEL_FACTORS];
     int thetaTuple[N_MODEL_FACTORS];
     unflattenBranchIndex(branchPlan, branchTuple);
-
-    // TODO: better update rule
-    int tLocal = mppiConfig.knots[m];
 
     extern __shared__ float sh[];
     float* s_num = sh;
@@ -421,11 +507,18 @@ __global__ void weightedAverageSplineKernelUnified(
     float num = 0.0f;
     float den = 0.0f;
 
-    float minC = minCosts[branchPlan * T + tLocal];
+    // int tKnot = mppiConfig.knots[m];
+    float minC = minSplineCosts[branchPlan * M + m];
 
-    // If no eligible sample existed, minC may be INF
-    // Then den should remain 0 and update should be skipped
-    if (!isinf(minC))
+    // total basis mass of knot m
+    float basisMass = 0.0f;
+    for (int t = 0; t < T; t++)
+        basisMass += fabsf(B[t * M + m]);
+
+    if (isnan(minC))
+        printf("wtf??\n");
+
+    if (isfinite(minC) && basisMass > 1e-12f)
     {
         for (int s = threadIdx.x; s < N; s += blockDim.x)
         {
@@ -433,7 +526,8 @@ __global__ void weightedAverageSplineKernelUnified(
 
             for (int thetaFlat = 0; thetaFlat < N_TRUE_MODELS; thetaFlat++)
             {
-                if (belief[thetaFlat] <= 0.0f)
+                float p = belief[thetaFlat];
+                if (p <= 0.0f)
                     continue;
 
                 unflattenTrueModelIndex(thetaFlat, thetaTuple);
@@ -443,16 +537,45 @@ __global__ void weightedAverageSplineKernelUnified(
                 const int* used = branchUsed + (thetaFlat * N + s) * N_MODEL_FACTORS;
                 const int* bTime = branchTime + (thetaFlat * N + s) * N_MODEL_FACTORS;
 
-                // TODO: rule should be better (used interval has non-negligible weight? or multiply coeff by weight of active interval?)
-                if (branchActiveAtLocalTime(branchTuple, used, bTime, tLocal, T))       // TODO TODO TODO
-                    coeff += belief[thetaFlat];
+                float activeMass = 0.0f;
+                for (int t = 0; t < T; t++)
+                {
+                    if (branchActiveAtAbsoluteTime(branchTuple, used, bTime, t, T))
+                        // if (branchActiveAtLocalTime(branchTuple, used, bTime, t, T))
+                        activeMass += fabsf(B[t * M + m]);
+                }
+
+                if (!isfinite(activeMass))
+                    printf("EWWW 1\n");
+
+                coeff += p * (activeMass / basisMass);
+                // coeff += p * activeMass;
+
+                // int tLocal = mppiConfig.knots[m];
+
+                // if (branchActiveAtLocalTime(branchTuple, used, bTime, tLocal, T))
+                //     coeff += belief[thetaFlat];
             }
 
-            if (coeff > 0.0f)
+            if (coeff > coeffThreshold)
             {
                 float cost = costs[branchPlan * N + s];
+
+                if (!isfinite(cost) || cost < minC)
+                    continue;
+
                 float w = expf(-(cost - minC) / mppiConfig.invTemperature);
                 float eps = noise[((branchPlan * M + m) * N + s) * DIM + d];
+
+                if (!isfinite(w))
+                {
+                    printf("EWWW 2 %f %f %f %f\n", w, cost, minC, mppiConfig.invTemperature);
+                    continue;
+                }
+                if (!isfinite(coeff))
+                    printf("EWWW 3\n");
+                if (!isfinite(eps))
+                    printf("EWWW 4\n");
 
                 num += w * coeff * eps;
                 den += w * coeff;
@@ -559,8 +682,13 @@ __global__ void shiftSplineKernel(
     int newm = idx / DIM;
 
     float sum = 0.0f;
+
+    int tEval = mppiConfig.knots[newm] + 1;
+    if (tEval >= mppiConfig.nTimesteps)
+        tEval = mppiConfig.nTimesteps - 1;
+
     for (int m = 0; m < M; m++)
-        sum += B[(mppiConfig.knots[newm] + 1) * M + m] * splineNominal[(branchIdx * M + m) * DIM + dim];
+        sum += B[tEval * M + m] * splineNominal[(branchIdx * M + m) * DIM + dim];
 
     newSplineNominal[(branchIdx * M + newm) * DIM + dim] = sum;
 }
