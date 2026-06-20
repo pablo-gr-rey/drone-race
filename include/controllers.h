@@ -53,6 +53,10 @@ public:
     float max_nu = 0.001f;
 
 private:
+    std::vector<float> buildSplineMatrix();     // return a T*M matrix B such that for u spline control points, B*u computes the (natural) spline for each value of 0 <= t < T (in particular, if tau_i is integer, (Bu)_(tau_i) = u_i)
+
+    std::vector<float> h_B;     // spline matrix
+
     float* h_trackPoints;
     EnvironmentConfig envConfig;    // this contains the device track points
     VerifConfig verifConfig;
@@ -61,10 +65,12 @@ private:
 
     // Device memory
 
+    float* d_B = nullptr;       // spline matrix (T, M)
+
     // Rollout side
     float* d_belief = nullptr;     // (nTrueModels)
 
-    float* d_noise = nullptr;      // (nBranchPlans, T, N, dim)
+    float* d_noise = nullptr;      // (nBranchPlans, M, N, dim)
 
     // d_costs[(nom0/theta0, nom1/theta1, ...), s] = cost of sample s, averaged over unknown parameters (i.e. d_costs[(nom0, theta1), s] = cost of sample s under theta1, averaged over theta0)
     float* d_costs = nullptr;      // (nBranchPlans, N)
@@ -78,8 +84,10 @@ private:
     // d_branchTime[trueTheta, s, k] = branching time for parameter k in case of trueTheta (or T if no branching)
     int* d_branchTime = nullptr;   // (nTrueModels, N, nModelFactors)
 
-    float* d_nominal = nullptr;      // (nBranchPlans, T, dim)
-    float* d_prevnominal = nullptr;  // (nBranchPlans, T, dim)
+    float* d_splineNominal = nullptr;       // (nBranchPlans, M, dim): spline nominal
+    float* d_tempSplineNominal = nullptr;       // (nBranchPlans, M, dim): temp spline nominal (for shifting)
+    float* d_nominal = nullptr;      // (nBranchPlans, T, dim): dense time nominal
+    float* d_prevnominal = nullptr;  // (nBranchPlans, T, dim): dense time prev nominal
 
     // masked row costs used for branch/time-aware min reduction
     float* d_maskedCosts = nullptr; // (nBranchPlans, T, N)

@@ -160,6 +160,17 @@ void MPPIConfig::unpackHeader(const void* buf, size_t len)
 
     nSamples = (int) reader.readInt32();
     nTimesteps = (int) reader.readInt32();
+    nKnots = (int) reader.readInt32();
+    if (nKnots > MAX_N_KNOTS)
+        throw std::runtime_error(std::format("Received invalid number of knots: got {}, but MAX_N_KNOTS is set to {}. Edit this constant and recompile", nKnots, MAX_N_KNOTS));
+
+    int nRecv = reader.readIntArray(knots);
+    if (nRecv != nKnots)
+        throw std::runtime_error(std::format("Received invalid number of knots: got {} elements, but received nKnots={}", nRecv, nKnots));
+
+    if (!USE_SPLINES)
+        nKnots = nTimesteps;        // for MPPI device array allocationsmy
+
     invTemperature = reader.readFloat();
 
     samplingNoise = reader.readFloat();

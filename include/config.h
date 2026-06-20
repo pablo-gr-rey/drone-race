@@ -17,6 +17,8 @@
 #define INLINE inline
 #endif
 
+constexpr bool USE_SPLINES = true;
+
 // ── compile-time limits ──────────────────────────────────────────────
 constexpr int N_AGENTS = 2;
 constexpr int DIM = 2;
@@ -24,18 +26,19 @@ constexpr int N_GATES = 2;
 constexpr int N_TRACK_SAMPLES = 512;
 constexpr int N_OBSTACLES = 0;
 
+constexpr int MAX_N_KNOTS = 20;
+
 // 1 agent
-// constexpr int N_ROUND_OBSTACLES = 1;
-// constexpr int N_RACELINES = 2;
-// constexpr int N_MODEL_FACTORS = 1;
+constexpr int N_ROUND_OBSTACLES = 1;
+constexpr int N_RACELINES = 2;
+constexpr int N_MODEL_FACTORS = 1;
 
 // 2 agents
-constexpr int N_ROUND_OBSTACLES = 2;
-constexpr int N_RACELINES = 4;
-constexpr int N_MODEL_FACTORS = 2;
+// constexpr int N_ROUND_OBSTACLES = 2;
+// constexpr int N_RACELINES = 4;
+// constexpr int N_MODEL_FACTORS = 2;
 
 // CUDA does not like constexpr arrays, so we use constexpr inline functions
-
 
 HD INLINE constexpr int MODEL_SIZE(int /* k */)
 {
@@ -90,8 +93,14 @@ struct PIDConfig
 // MPPI configuration
 struct MPPIConfig
 {
-    int   nSamples = 100;
-    int   nTimesteps = 20;
+    int nSamples = 100;
+
+    int nTimesteps = 20;
+
+    // spline configuration
+    int nKnots;     // M
+    int knots[MAX_N_KNOTS];       // tau_i for 0 <= i < M
+
     float invTemperature = 10.0f;
 
     float samplingNoise = 0.1f;

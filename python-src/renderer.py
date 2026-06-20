@@ -768,6 +768,8 @@ class EnvironmentRenderer:
         i = int(val)
         self.current_index = min(len(self.stateLog), i)
         self.updateDisplay(i)
+        if not self.isFinished:
+            self.playing = False
         self.show()
 
     def timerTick(self) -> None:
