@@ -48,11 +48,106 @@ MPPIController::MPPIController(
         h_nominal.assign(N_BRANCH_PLANS * mc.nTimesteps * DIM, 0.0f);
 
     failCountNew = failCountOld = failCount = { 0u, 0u };
+
+    if (USE_SPLINES)
+        h_B = buildSplineMatrix();
+    else
+        h_B = std::vector<float>(mppiConfig.nTimesteps * mppiConfig.nKnots, 0.0f);
 }
 
 MPPIController::~MPPIController()
 {
     freeDevice();
+}
+
+std::vector<float> MPPIController::buildSplineMatrix()
+{
+    int M = mppiConfig.nKnots, T = mppiConfig.nTimesteps;
+
+    std::vector<float> B(T * M, 0.0f);
+
+    std::vector<int> tau(mppiConfig.knots, mppiConfig.knots + mppiConfig.nKnots);
+
+    // precompute h(j) = tau_(j+1) - tau_j
+    std::vector<float> h(M - 1);
+    for (int j = 0; j < M - 1; j++)
+        h[j] = float(tau[j + 1] - tau[j]);
+
+    // for each basis vector e_i, compute the spline, and evaluate it to get the i-th column of B
+    for (int basis = 0; basis < M; basis++)
+    {
+        std::vector<float> y(M, 0.0f);
+        y[basis] = 1.0f;
+
+        // Natural cubic spline second derivatives m[0...M-1] with m[0]=m[M-1]=0
+        std::vector<float> m(M, 0.0f);
+
+        if (M > 2)
+        {
+            const int N = M - 2; // number of interior unknowns
+
+            std::vector<float> a(N), b(N), c(N), d(N);      // coefficients of the polynomials
+
+            for (int i = 0; i < N; ++i)
+            {
+                const int j = i + 1; // interior knot index
+                a[i] = h[j - 1];
+                b[i] = 2.0f * (h[j - 1] + h[j]);
+                c[i] = h[j];
+                d[i] = 6.0f * ((y[j + 1] - y[j]) / h[j] - (y[j] - y[j - 1]) / h[j - 1]);
+            }
+
+            // Thomas algorithm
+            for (int i = 1; i < N; ++i)
+            {
+                float w = a[i] / b[i - 1];
+                b[i] -= w * c[i - 1];
+                d[i] -= w * d[i - 1];
+            }
+
+            std::vector<float> x(N);
+            x[N - 1] = d[N - 1] / b[N - 1];
+            for (int i = N - 2; i >= 0; --i)
+                x[i] = (d[i] - c[i] * x[i + 1]) / b[i];
+
+            for (int i = 0; i < N; ++i)
+                m[i + 1] = x[i];
+        }
+
+        // Evaluate spline at each dense time t = 0..T-1
+        // Outside [tau_0, tau_{M-1}] we do simple endpoint hold
+        int seg = 0;
+        for (int t = 0; t < T; ++t)
+        {
+            float val = 0.0f;
+
+            if (t <= tau.front())
+                val = y.front();
+            else if (t >= tau.back())
+                val = y.back();
+            else
+            {
+                while (!(tau[seg] <= t && t <= tau[seg + 1]))
+                    ++seg;
+
+                const float x0 = float(tau[seg]);
+                const float x1 = float(tau[seg + 1]);
+                const float hh = x1 - x0;
+                const float A = (x1 - t) / hh;
+                const float BB = (t - x0) / hh;
+
+                val =
+                    m[seg] * (A * A * A - A) * (hh * hh) / 6.0f +
+                    m[seg + 1] * (BB * BB * BB - BB) * (hh * hh) / 6.0f +
+                    y[seg] * A +
+                    y[seg + 1] * BB;
+            }
+
+            B[t * M + basis] = val;
+        }
+    }
+
+    return B;
 }
 
 void MPPIController::allocDevice()
@@ -62,12 +157,17 @@ void MPPIController::allocDevice()
 
     int N = mppiConfig.nSamples;
     int T = mppiConfig.nTimesteps;
+    int M = mppiConfig.nKnots;
+
+    // Spline matrix
+    CUDA_CHECK(cudaMalloc(&d_B, T * M * sizeof(float)));
+    CUDA_CHECK(cudaMemcpy(d_B, h_B.data(), h_B.size() * sizeof(float), cudaMemcpyHostToDevice));
 
     // Single authoritative state (uploaded each call)
     CUDA_CHECK(cudaMalloc(&d_belief, N_TRUE_MODELS * sizeof(float)));
 
     // Noise
-    CUDA_CHECK(cudaMalloc(&d_noise, N_BRANCH_PLANS * T * N * DIM * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_noise, N_BRANCH_PLANS * M * N * DIM * sizeof(float)));
 
     // Costs
     CUDA_CHECK(cudaMalloc(&d_costs, N_BRANCH_PLANS * N * sizeof(float)));
@@ -76,12 +176,13 @@ void MPPIController::allocDevice()
     CUDA_CHECK(cudaMalloc(&d_branchTime, N_TRUE_MODELS * N * N_MODEL_FACTORS * sizeof(int)));
 
     // Nominal action
+    CUDA_CHECK(cudaMalloc(&d_splineNominal, N_BRANCH_PLANS * M * DIM * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_tempSplineNominal, N_BRANCH_PLANS * M * DIM * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_nominal, N_BRANCH_PLANS * T * DIM * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_prevnominal, N_BRANCH_PLANS * T * DIM * sizeof(float)));
 
     // Min-reduction / masked costs / nu
-    CUDA_CHECK(cudaMalloc(&d_minCosts, N_BRANCH_PLANS * T * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_maskedCosts, N_BRANCH_PLANS * T * N * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_minCosts, N_BRANCH_PLANS * (USE_SPLINES ? M : T) * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_nu, N_BRANCH_PLANS * sizeof(float)));
 
     // Per-sample RNG states
@@ -111,6 +212,7 @@ void MPPIController::allocDevice()
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Upload initial nominal
+    CUDA_CHECK(cudaMemset(d_splineNominal, 0, N_BRANCH_PLANS * M * DIM * sizeof(float)));       // TODO: initialize this properly
     CUDA_CHECK(cudaMemcpy(
         d_nominal,
         h_nominal.data(),
@@ -147,6 +249,8 @@ void MPPIController::freeDevice()
             }
         };
 
+    safe_free(d_B);
+
     safe_free(d_belief);
 
     safe_free(d_noise);
@@ -155,11 +259,12 @@ void MPPIController::freeDevice()
     safe_free(d_branchUsed);
     safe_free(d_branchTime);
 
+    safe_free(d_splineNominal);
+    safe_free(d_tempSplineNominal);
     safe_free(d_nominal);
     safe_free(d_prevnominal);
 
     safe_free(d_minCosts);
-    safe_free(d_maskedCosts);
     safe_free(d_nu);
 
     safe_free(d_rng);
@@ -188,9 +293,7 @@ void MPPIController::getControl(
 
     int N = mppiConfig.nSamples;
     int T = mppiConfig.nTimesteps;
-
-    int blk = 256;
-    int grd = (N + blk - 1) / blk;
+    int M = mppiConfig.nKnots;
 
     // now, belief update is done in engine
 
@@ -206,12 +309,16 @@ void MPPIController::getControl(
     CUDA_CHECK(cudaMemset(d_failCountNew, 0, 2 * sizeof(uint)));
     CUDA_CHECK(cudaMemset(d_nu, 0, N_BRANCH_PLANS * sizeof(float)));
 
-    // 2. generate all noise at once: (nModels+1, T, N, dim)
+    int blk = 256;
+    int grd = (N + blk - 1) / blk;
+
+    // 2. generate all noise at once: (nModels+1, M or T, N, dim)
     generateNoiseKernel << <grd, blk >> > (
         d_noise,
         d_rng,
         mppiConfig.samplingNoise,
-        T, N);
+        USE_SPLINES ? M : T,
+        N);
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
@@ -225,8 +332,9 @@ void MPPIController::getControl(
         mppiConfig,
         state,
         d_belief,
-        d_nominal,
+        USE_SPLINES ? d_splineNominal : d_nominal,
         d_noise,
+        d_B,
         d_costsTrue,
         d_branchUsed,
         d_branchTime,
@@ -253,15 +361,14 @@ void MPPIController::getControl(
 
     // 4. Compute the minimum cost for each sample (with masking ie. only considering valid samples)
 
-    int nMinBlocks = N_BRANCH_PLANS * T;
+    int nMinBlocks = N_BRANCH_PLANS * (USE_SPLINES ? M : T);
     computeMaskedMinCostsKernel << <nMinBlocks, blk, blk * sizeof(float) >> > (
         d_costs,
         d_branchUsed,
         d_branchTime,
         d_belief,
         d_minCosts,
-        N,
-        T);
+        mppiConfig);
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
@@ -269,7 +376,8 @@ void MPPIController::getControl(
 #endif
 
     // 5. Weighted average update
-    int wGrid = N_BRANCH_PLANS * T * DIM;
+
+    int wGrid = N_BRANCH_PLANS * (USE_SPLINES ? M : T) * DIM;
     weightedAverageKernelUnified << <wGrid, blk, 2 * blk * sizeof(float) >> > (
         d_costs,
         d_minCosts,
@@ -277,23 +385,32 @@ void MPPIController::getControl(
         d_branchUsed,
         d_branchTime,
         d_belief,
-        d_nominal,
-        mppiConfig.invTemperature,
-        N, T,
+        USE_SPLINES ? d_splineNominal : d_nominal,
+        mppiConfig,
         d_nu);
+    // }
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 #endif
 
-    // 5.5 Clamp nominal action sequences
-    int nVecs = N_BRANCH_PLANS * T;
-    int clampGrd = (nVecs + blk - 1) / blk;
-    clampNominalKernel << <clampGrd, blk >> > (
-        d_nominal,
-        envConfig.maxAccel[agent],
-        T);
+    // 5.25 If we use splines, then re-compute actual nominal
+    // 5.5 Clamp nominal
+    // 5.626 If we use splines, then shift spline nominal for next step warm-start
+    if (USE_SPLINES)
+    {
+        int interpGrd = (N_BRANCH_PLANS * T * DIM + blk - 1) / blk;
+        interpolateSplineKernel << < interpGrd, blk >> > (d_splineNominal, d_nominal, d_B, T, M);
+
+#ifdef DEBUG
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+    }
+
+    int clampGrd = (N_BRANCH_PLANS * (USE_SPLINES ? M : T) + blk - 1) / blk;
+    clampNominalKernel << <clampGrd, blk >> > (USE_SPLINES ? d_splineNominal : d_nominal, envConfig.maxAccel[agent], (USE_SPLINES ? M : T));
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
@@ -373,11 +490,11 @@ void MPPIController::getControl(
             cudaMemcpyDeviceToHost));
     }
 
-    std::vector<float> hostMin(N_BRANCH_PLANS * T), nu(N_BRANCH_PLANS);
+    std::vector<float> hostMin(N_BRANCH_PLANS * (USE_SPLINES ? M : T)), nu(N_BRANCH_PLANS);
     CUDA_CHECK(cudaMemcpy(
         hostMin.data(),
         d_minCosts,
-        N_BRANCH_PLANS * T * sizeof(float),
+        N_BRANCH_PLANS * (USE_SPLINES ? M : T) * sizeof(float),
         cudaMemcpyDeviceToHost));
 
     CUDA_CHECK(cudaMemcpy(
@@ -407,7 +524,7 @@ void MPPIController::getControl(
     float usedNu = nu[branchIdx];
 
     std::cout << "Minimum cost (for submitted action): "
-        << hostMin[branchIdx * T]
+        << hostMin[branchIdx * (USE_SPLINES ? M : T)]
         << std::endl;
 
     std::cout << "Sum of computed sample costs w_k (nu) (for submitted action): "
@@ -447,6 +564,21 @@ void MPPIController::getControl(
     for (int d = 0; d < DIM; d++)
         h_nominal[base + (T - 1) * DIM + d] = 0.0f;
 
+    // 8. If we use splines, also shift the corresponding branch (while keeping the other)
+
+    if (USE_SPLINES)
+    {
+        int shiftGrd = (M * DIM + blk - 1) / blk;
+
+        CUDA_CHECK(cudaMemcpy(d_tempSplineNominal, d_splineNominal, N_BRANCH_PLANS * M * DIM * sizeof(float), cudaMemcpyDeviceToDevice));
+
+        shiftSplineKernel << <shiftGrd, blk >> > (d_splineNominal, d_tempSplineNominal, d_B, mppiConfig, branchIdx);
+
+        std::swap(d_tempSplineNominal, d_splineNominal);        // we don't need to copy, we can just alternatively use the buffers!
+
+        // TODO: we probably should keep d_oldSplineNominal as well (well, it is just d_tempSplineNominal!)
+    }
+
     // Upload shifted nominal back to device and keep prevnominal in sync
     CUDA_CHECK(cudaMemcpy(
         d_nominal,
@@ -464,6 +596,8 @@ void MPPIController::getControl(
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 #endif
+
+    CUDA_CHECK(cudaGetLastError());
 
     std::cout << "MPPI DONE" << std::endl;
 }

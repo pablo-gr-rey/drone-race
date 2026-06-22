@@ -235,6 +235,8 @@ class PIDConfig(ControllerConfig):
 class MPPIConfig(ControllerConfig):
     nSamples: int = 100
     nTimesteps: int = 20
+    nKnots: int = 6
+    knots: np.ndarray = field(default_factory=lambda: np.array([]))
     inv_temperature: float = 10
 
     samplingNoise: float = 1.0
@@ -264,6 +266,11 @@ class MPPIConfig(ControllerConfig):
     # )
 
     minConfidence: float = 0.9
+
+    def __post_init__(self):
+        if len(self.knots) == 0:
+            self.knots = np.arange(0, self.nKnots) * int((self.nTimesteps - 2) / (self.nKnots - 1))  # we need tau_(M-1) <= T-2
+            print(self.knots, self.nKnots)
 
 
 @dataclass

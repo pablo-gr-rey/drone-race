@@ -41,6 +41,12 @@ if(CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA")
     )
 endif()
 
+if(CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA")
+    target_compile_options(drone_race PRIVATE 
+        $<$<COMPILE_LANGUAGE:CUDA>:--threads 4>
+    )
+endif()
+
 target_compile_features(drone_race PRIVATE cxx_std_20)
 target_compile_definitions(drone_race PRIVATE
     $<$<CONFIG:Debug>:DEBUG>
@@ -65,5 +71,5 @@ set_target_properties(drone_race PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED YES
-    CUDA_ARCHITECTURES "80;86;89;90"
+    CUDA_ARCHITECTURES "native"
 )

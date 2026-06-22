@@ -11,7 +11,7 @@ __global__ void initRNGKernel(curandState* states, unsigned long long seed, int 
 
 __global__ void generateNoiseKernel(float* noise, curandState* rng,
     float stddev,
-    int nTimesteps, int N);
+    int M, int N);
 
 __global__ void fullRolloutKernel(
     int controlAgent,
@@ -22,6 +22,7 @@ __global__ void fullRolloutKernel(
     const float* __restrict__ initBelief,
     const float* __restrict__ nominal,
     const float* __restrict__ noise,
+    const float* __restrict__ B,
     float* __restrict__ costsTrue,
     int* __restrict__ branchUsed,
     int* __restrict__ branchTime,
@@ -39,31 +40,46 @@ __global__ void computeMaskedMinCostsKernel(
     const int* __restrict__ branchUsed,    // (N_TRUE_MODELS, N, N_MODEL_FACTORS)
     const int* __restrict__ branchTime,    // (N_TRUE_MODELS, N, N_MODEL_FACTORS)
     const float* __restrict__ belief,      // (N_TRUE_MODELS)
-    float* __restrict__ minCosts,          // (N_BRANCH_PLANS, T)
-    int N,
-    int T);
+    float* __restrict__ minCosts,          // (N_BRANCH_PLANS, T or M)
+    const MPPIConfig mppiConfig);
 
 // Weighted average of noise
 // One block per (timestep * dim) entry.
 // Updates nominalAction in-place: nominalAction[t*dim+d] += weightedAvg
 __global__ void weightedAverageKernelUnified(
     const float* __restrict__ costs,       // (nBranchPlans, N)
-    const float* __restrict__ minCosts,    // (nBranchPlans, T)
-    const float* __restrict__ noise,       // (nBranchPlans, T, N, dim)
-    const int* __restrict__ branchUsed,    // (N_TRUE_MODELS, N, nModelFactors)
-    const int* __restrict__ branchTime,    // (N_TRUE_MODELS, N, nModelFactors)
-    const float* __restrict__ belief,      // (N_TRUE_MODELS)
-    float* __restrict__ nominal,           // (nBranchPlans, T, dim)
-    float invTemp,
-    int N,
+    const float* __restrict__ minCosts,    // (nBranchPlans, T or M)
+    const float* __restrict__ noise,       // (nBranchPlans, T or M, N, dim)
+    const int* __restrict__ branchUsed,    // (nTrueModels, N, nModelFactors)
+    const int* __restrict__ branchTime,    // (nTrueModels, N, nModelFactors)
+    const float* __restrict__ belief,      // (nTrueModels)
+    float* __restrict__ nominal,           // (nBranchPlans, T or M, dim)
+    const MPPIConfig mppiConfig,
+    float* __restrict__ nu);                // (nBranchPlans)
+
+// interpolate splineNominal into nominal, one thread per (branchplan, t, dim)
+__global__ void interpolateSplineKernel(
+    const float* __restrict__ splineNominal,    // (nBranchPlans, M, dim)
+    float* __restrict__ nominal,            // (nBranchPlans, T, dim)
+    const float* __restrict__ B,          // (T, M),
     int T,
-    float* __restrict__ nu);               // (nBranchPlans)
+    int M
+);
 
 // Clamp nominal actions to maxAccel (avoids them drifting to high-magnitude areas from which it's difficult to recover)
 __global__ void clampNominalKernel(
-    float* nominal,
+    float* __restrict__ nominal,
     float maxAccel,
     int T);
+
+// Shift splineNominal into newSplineNominal (such that newSplineNominal[i] = interpolate(splineNominal)(tau_i + 1), i.e. simulate shifting by one timestep). one thread per (m, dim). ASSUMES tau[m-1] + 1 < T
+__global__ void shiftSplineKernel(
+    const float* __restrict__ splineNominal,    // (nBranchPlans, M, dim)
+    float* __restrict__ newSplineNominal,    // (nBranchPlans, M, dim)
+    const float* __restrict__ B,          // (T, M),
+    const MPPIConfig mppiConfig,
+    int branchIdx
+);
 
 // Sample opponent models & dyamics ; if failed, atomicAdd 1 to failCount
 __global__ void verifyNominalFailureKernel(

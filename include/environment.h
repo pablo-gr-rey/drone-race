@@ -101,6 +101,7 @@ HD INLINE TerminalType environmentStep(
     float* actions,                  // scratch: (nAgents, dim)
     float* nomPidAction,             // scratch: (nModels, dim)
     RNG& rng,
+    bool& branched,                 // true if we branched at this step. must be previously initialized to false
     int gateMarginAgent = -1,
     float gateMargin = 0.0f)
 {
@@ -222,6 +223,7 @@ HD INLINE TerminalType environmentStep(
         {
             branchState.predTheta[k] = newPredTheta[k];
             branchState.branchingTime[k] = t + 1;
+            branched = true;
         }
 
     // 10. Check for collisions, outside, or win
