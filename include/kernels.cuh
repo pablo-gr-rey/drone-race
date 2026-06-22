@@ -40,17 +40,7 @@ __global__ void computeMaskedMinCostsKernel(
     const int* __restrict__ branchUsed,    // (N_TRUE_MODELS, N, N_MODEL_FACTORS)
     const int* __restrict__ branchTime,    // (N_TRUE_MODELS, N, N_MODEL_FACTORS)
     const float* __restrict__ belief,      // (N_TRUE_MODELS)
-    float* __restrict__ minCosts,          // (N_BRANCH_PLANS, T)
-    int N,
-    int T);
-
-__global__ void computeMaskedMinSplineCostsKernel(
-    const float* __restrict__ costs,       // (N_BRANCH_PLANS, N)
-    const int* __restrict__ branchUsed,    // (N_TRUE_MODELS, N, N_MODEL_FACTORS)
-    const int* __restrict__ branchTime,    // (N_TRUE_MODELS, N, N_MODEL_FACTORS)
-    const float* __restrict__ belief,      // (N_TRUE_MODELS)
-    const float* __restrict__ B,           // (T, M)
-    float* __restrict__ minSplineCosts,    // (N_BRANCH_PLANS, M)
+    float* __restrict__ minCosts,          // (N_BRANCH_PLANS, T or M)
     const MPPIConfig mppiConfig);
 
 // Weighted average of noise
@@ -58,29 +48,14 @@ __global__ void computeMaskedMinSplineCostsKernel(
 // Updates nominalAction in-place: nominalAction[t*dim+d] += weightedAvg
 __global__ void weightedAverageKernelUnified(
     const float* __restrict__ costs,       // (nBranchPlans, N)
-    const float* __restrict__ minCosts,    // (nBranchPlans, T)
-    const float* __restrict__ noise,       // (nBranchPlans, T, N, dim)
-    const int* __restrict__ branchUsed,    // (N_TRUE_MODELS, N, nModelFactors)
-    const int* __restrict__ branchTime,    // (N_TRUE_MODELS, N, nModelFactors)
-    const float* __restrict__ belief,      // (N_TRUE_MODELS)
-    float* __restrict__ nominal,           // (nBranchPlans, T, dim)
-    float invTemp,
-    int N,
-    int T,
-    float* __restrict__ nu);               // (nBranchPlans)
-
-__global__ void weightedAverageSplineKernelUnified(
-    const float* __restrict__ costs,       // (nBranchPlans, N)
-    const float* __restrict__ minSplineCosts,    // (nBranchPlans, M)
-    const float* __restrict__ noise,       // (nBranchPlans, M, N, dim)
+    const float* __restrict__ minCosts,    // (nBranchPlans, T or M)
+    const float* __restrict__ noise,       // (nBranchPlans, T or M, N, dim)
     const int* __restrict__ branchUsed,    // (nTrueModels, N, nModelFactors)
     const int* __restrict__ branchTime,    // (nTrueModels, N, nModelFactors)
     const float* __restrict__ belief,      // (nTrueModels)
-    float* __restrict__ splineNominal,           // (nBranchPlans, M, dim)
+    float* __restrict__ nominal,           // (nBranchPlans, T or M, dim)
     const MPPIConfig mppiConfig,
-    const float* __restrict__ B,
     float* __restrict__ nu);                // (nBranchPlans)
-
 
 // interpolate splineNominal into nominal, one thread per (branchplan, t, dim)
 __global__ void interpolateSplineKernel(

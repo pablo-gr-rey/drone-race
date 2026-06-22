@@ -49,7 +49,10 @@ MPPIController::MPPIController(
 
     failCountNew = failCountOld = failCount = { 0u, 0u };
 
-    h_B = buildSplineMatrix();
+    if (USE_SPLINES)
+        h_B = buildSplineMatrix();
+    else
+        h_B = std::vector<float>(mppiConfig.nTimesteps * mppiConfig.nKnots, 0.0f);
 }
 
 MPPIController::~MPPIController()
@@ -157,7 +160,7 @@ void MPPIController::allocDevice()
     int M = mppiConfig.nKnots;
 
     // Spline matrix
-    CUDA_CHECK(cudaMalloc(&d_B, M * T * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_B, T * M * sizeof(float)));
     CUDA_CHECK(cudaMemcpy(d_B, h_B.data(), h_B.size() * sizeof(float), cudaMemcpyHostToDevice));
 
     // Single authoritative state (uploaded each call)
@@ -167,7 +170,6 @@ void MPPIController::allocDevice()
     CUDA_CHECK(cudaMalloc(&d_noise, N_BRANCH_PLANS * M * N * DIM * sizeof(float)));
 
     // Costs
-    CUDA_CHECK(cudaMalloc(&d_minSplineCosts, N_BRANCH_PLANS * M * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_costs, N_BRANCH_PLANS * N * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_costsTrue, N_TRUE_MODELS * N * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_branchUsed, N_TRUE_MODELS * N * N_MODEL_FACTORS * sizeof(int)));
@@ -180,8 +182,7 @@ void MPPIController::allocDevice()
     CUDA_CHECK(cudaMalloc(&d_prevnominal, N_BRANCH_PLANS * T * DIM * sizeof(float)));
 
     // Min-reduction / masked costs / nu
-    CUDA_CHECK(cudaMalloc(&d_minCosts, N_BRANCH_PLANS * T * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_maskedCosts, N_BRANCH_PLANS * T * N * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_minCosts, N_BRANCH_PLANS * (USE_SPLINES ? M : T) * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_nu, N_BRANCH_PLANS * sizeof(float)));
 
     // Per-sample RNG states
@@ -264,7 +265,6 @@ void MPPIController::freeDevice()
     safe_free(d_prevnominal);
 
     safe_free(d_minCosts);
-    safe_free(d_maskedCosts);
     safe_free(d_nu);
 
     safe_free(d_rng);
@@ -361,63 +361,34 @@ void MPPIController::getControl(
 
     // 4. Compute the minimum cost for each sample (with masking ie. only considering valid samples)
 
-    // 5. Weighted average update
-    if (USE_SPLINES)
-    {
-        int nMinBlocks = N_BRANCH_PLANS * T;
-        computeMaskedMinSplineCostsKernel << <nMinBlocks, blk, blk * sizeof(float) >> > (
-            d_costs,
-            d_branchUsed,
-            d_branchTime,
-            d_belief,
-            d_B,
-            d_minSplineCosts,
-            mppiConfig);
-
-        int wGrid = N_BRANCH_PLANS * M * DIM;
-        weightedAverageSplineKernelUnified << <wGrid, blk, 2 * blk * sizeof(float) >> > (
-            d_costs,
-            d_minSplineCosts,
-            d_noise,
-            d_branchUsed,
-            d_branchTime,
-            d_belief,
-            d_splineNominal,
-            mppiConfig,
-            d_B,
-            d_nu
-            );
-    }
-    else
-    {
-        int nMinBlocks = N_BRANCH_PLANS * T;
-        computeMaskedMinCostsKernel << <nMinBlocks, blk, blk * sizeof(float) >> > (
-            d_costs,
-            d_branchUsed,
-            d_branchTime,
-            d_belief,
-            d_minCosts,
-            N,
-            T);
+    int nMinBlocks = N_BRANCH_PLANS * (USE_SPLINES ? M : T);
+    computeMaskedMinCostsKernel << <nMinBlocks, blk, blk * sizeof(float) >> > (
+        d_costs,
+        d_branchUsed,
+        d_branchTime,
+        d_belief,
+        d_minCosts,
+        mppiConfig);
 
 #ifdef DEBUG
-        CUDA_CHECK(cudaGetLastError());
-        CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
 #endif
 
-        int wGrid = N_BRANCH_PLANS * T * DIM;
-        weightedAverageKernelUnified << <wGrid, blk, 2 * blk * sizeof(float) >> > (
-            d_costs,
-            d_minCosts,
-            d_noise,
-            d_branchUsed,
-            d_branchTime,
-            d_belief,
-            d_nominal,
-            mppiConfig.invTemperature,
-            N, T,
-            d_nu);
-    }
+    // 5. Weighted average update
+
+    int wGrid = N_BRANCH_PLANS * (USE_SPLINES ? M : T) * DIM;
+    weightedAverageKernelUnified << <wGrid, blk, 2 * blk * sizeof(float) >> > (
+        d_costs,
+        d_minCosts,
+        d_noise,
+        d_branchUsed,
+        d_branchTime,
+        d_belief,
+        USE_SPLINES ? d_splineNominal : d_nominal,
+        mppiConfig,
+        d_nu);
+    // }
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
@@ -436,18 +407,10 @@ void MPPIController::getControl(
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaDeviceSynchronize());
 #endif
+    }
 
-        int clampGrd = (N_BRANCH_PLANS * T + blk - 1) / blk;
-        clampNominalKernel << <clampGrd, blk >> > (d_splineNominal, envConfig.maxAccel[agent], M);
-    }
-    else
-    {
-        int clampGrd = (N_BRANCH_PLANS * T + blk - 1) / blk;
-        clampNominalKernel << <clampGrd, blk >> > (
-            d_nominal,
-            envConfig.maxAccel[agent],
-            T);
-    }
+    int clampGrd = (N_BRANCH_PLANS * (USE_SPLINES ? M : T) + blk - 1) / blk;
+    clampNominalKernel << <clampGrd, blk >> > (USE_SPLINES ? d_splineNominal : d_nominal, envConfig.maxAccel[agent], (USE_SPLINES ? M : T));
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
@@ -527,11 +490,11 @@ void MPPIController::getControl(
             cudaMemcpyDeviceToHost));
     }
 
-    std::vector<float> hostMin(N_BRANCH_PLANS * T), nu(N_BRANCH_PLANS);
+    std::vector<float> hostMin(N_BRANCH_PLANS * (USE_SPLINES ? M : T)), nu(N_BRANCH_PLANS);
     CUDA_CHECK(cudaMemcpy(
         hostMin.data(),
         d_minCosts,
-        N_BRANCH_PLANS * T * sizeof(float),
+        N_BRANCH_PLANS * (USE_SPLINES ? M : T) * sizeof(float),
         cudaMemcpyDeviceToHost));
 
     CUDA_CHECK(cudaMemcpy(
@@ -561,7 +524,7 @@ void MPPIController::getControl(
     float usedNu = nu[branchIdx];
 
     std::cout << "Minimum cost (for submitted action): "
-        << hostMin[branchIdx * T]
+        << hostMin[branchIdx * (USE_SPLINES ? M : T)]
         << std::endl;
 
     std::cout << "Sum of computed sample costs w_k (nu) (for submitted action): "
@@ -633,6 +596,8 @@ void MPPIController::getControl(
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 #endif
+
+    CUDA_CHECK(cudaGetLastError());
 
     std::cout << "MPPI DONE" << std::endl;
 }

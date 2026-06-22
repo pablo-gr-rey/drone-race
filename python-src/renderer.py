@@ -221,10 +221,7 @@ class EnvironmentRenderer:
             self.actions_plot.append(
                 (
                     self.axs_action_plot[dim].plot(
-                        [],
-                        [],
-                        color=self.colors[envConfig.iMppi % len(self.colors)],
-                        label=f"{contNames[envConfig.iMppi]} ({envConfig.iMppi + 1})",
+                        [], [], color="red", label=f"{contNames[envConfig.iMppi]} ({envConfig.iMppi + 1})"
                     )[0],
                     self.axs_action_plot[dim].axvline(x=0, color="green", linestyle="--", linewidth=1, alpha=0.5),
                 )
@@ -557,8 +554,10 @@ class EnvironmentRenderer:
 
             initPredTheta = [int(round(t)) for t in pred.initPredTheta]
             predTheta = [int(round(t)) for t in pred.predTheta]
-            branchTime = [int(round(b)) if pT == 0 else 0 for (b, pT) in zip(pred.branchTime, initPredTheta)]
-            # from a rendering point of view, if we're already committed at beginning, then it's as if we committed at time t=0 (but for MPPI computations, it is conceptually different and in this case branchingTime=T)
+            branchTime = [
+                int(round(b)) if pT != 0 else self.mppiConfig.nTimesteps + 1 for (b, pT) in zip(pred.branchTime, pred.predTheta)
+            ]
+            # from a rendering point of view, if we're already committed at beginning, then it's as if we committed at time t=0; if we never commit, then it's as if we committed at time T+1 (but it is stored as 0)
 
             sides = np.arange(-self.envConfig.nModelFactors + 1, self.envConfig.nModelFactors, 2)
 

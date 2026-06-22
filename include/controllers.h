@@ -78,10 +78,10 @@ private:
     // d_costsTrue[trueModel, s] = cost of sample s over true model (it will then be averaged to compute d_costs)
     float* d_costsTrue = nullptr;   // (nTrueModels, N)
 
-    // d_branchUsed[trueTheta, s, k] = 0 if sample s stayed in nominal for parameter k in case of trueTheta, otherwise 1 + value of model it switched to
+    // d_branchUsed[trueTheta, s, k] = 0 if sample s stayed in nominal for parameter k in case of trueTheta (and corresponding branchTime = -1), otherwise 1 + value of model it switched to. if we are already committed at time 0, then equal to 1 + theta (and corresponding branchTime = 0)
     int* d_branchUsed = nullptr;   // (nTrueModels, N, nModelFactors)
 
-    // d_branchTime[trueTheta, s, k] = branching time for parameter k in case of trueTheta (or T if no branching)
+    // d_branchTime[trueTheta, s, k] = branching time for parameter k in case of trueTheta (or -1 if no branching, 0 if we are already branched at time 0). note that this is ABSOLUTE time, and that it corresponds to the first time in the new branch (i.e. if we become certain on the first step, then branchingTime=1)
     int* d_branchTime = nullptr;   // (nTrueModels, N, nModelFactors)
 
     float* d_splineNominal = nullptr;       // (nBranchPlans, M, dim): spline nominal
@@ -89,12 +89,8 @@ private:
     float* d_nominal = nullptr;      // (nBranchPlans, T, dim): dense time nominal
     float* d_prevnominal = nullptr;  // (nBranchPlans, T, dim): dense time prev nominal
 
-    // masked row costs used for branch/time-aware min reduction
-    float* d_maskedCosts = nullptr; // (nBranchPlans, T, N)
-
     // branch/time aware minimums
-    float* d_minCosts = nullptr;    // (nBranchPlans, T)
-    float* d_minSplineCosts = nullptr;   // size N_BRANCH_PLANS * M
+    float* d_minCosts = nullptr;    // (nBranchPlans, T or M)
 
     // denominator for each branch tuple
     float* d_nu = nullptr;  // (nBranchPlans)

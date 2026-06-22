@@ -48,13 +48,15 @@ SimulationEngine::SimulationEngine(
     mppiCont = MPPIController(envConfig, mppiConfig, verifConfig, d_trackPoints, seed);
     mppiCont.engine = this;
 
-    std::vector<float> B = mppiCont.buildSplineMatrix();
-    for (float b : B)
+    if (USE_SPLINES)
     {
-        if (!isfinite(b))
-            std::cout << "\n\nWARNING WARNING" << b << "\n\n";
+        std::vector<float> B = mppiCont.buildSplineMatrix();
+        for (float b : B)
+        {
+            if (!isfinite(b))
+                std::cout << "\n\nWARNING WARNING: invalid value detected in spline matrix:" << b << "\n\n";
+        }
     }
-    std::cout << '\n';
 
     // we only need the S of the opponent
     // this could be faster if we only assume 1 opponent)
@@ -125,7 +127,7 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
         SimState predState = initState;
 
         BranchState bstate;
-        initBranchState(bstate, mppiCont.h_belief.data(), mppiConfig.minConfidence, mppiConfig.nTimesteps);
+        initBranchState(bstate, mppiCont.h_belief.data(), mppiConfig.minConfidence);
 
         int stopTime = -1;
         EventType stopReason = EVT_TRUNCATED;
@@ -139,13 +141,18 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
         // std::cout << "sending initPredTheta: " << bstate.predTheta[0] << "\n";
 
+        int tOrigin = 0;
+
         for (int t = 0; t < mppiConfig.nTimesteps; t++)
         {
             // int startInd = ((bstate.predTheta + 1) * mppiConfig.nTimesteps + t - bstate.branchingTime) * DIM;
-            int startInd = (flattenBranchIndex(bstate.predTheta) * mppiConfig.nTimesteps + t - localBranchTimeOrigin(bstate.predTheta, bstate.branchingTime)) * DIM;
+            // int startInd = (flattenBranchIndex(bstate.predTheta) * mppiConfig.nTimesteps + t - localBranchTimeOrigin(bstate.predTheta, bstate.branchingTime)) * DIM;
+            int startInd = (flattenBranchIndex(bstate.predTheta) * mppiConfig.nTimesteps + t - tOrigin) * DIM;
 
             for (int d = 0; d < DIM; d++)
                 egoActions[t * DIM + d] = mppiCont.h_nominal[startInd + d];
+
+            bool branched = false;
 
             TerminalType term = environmentStep(
                 t,
@@ -159,7 +166,11 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
                 bstate,
                 scratchActions,
                 nomPidAction,
-                hrng);
+                hrng,
+                branched);
+
+            if (branched)
+                tOrigin = t + 1;
 
             for (int i = 0; i < N_AGENTS * DIM; i++)
                 fullPos[t * N_AGENTS * DIM + i] = predState.pos[i];
@@ -238,7 +249,9 @@ std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::ar
     HostRNG hrng{ &nd, &rng };
 
     BranchState branchState;
-    initBranchState(branchState, belief.data(), 2.0f, mppiCont.mppiConfig.nTimesteps);       // here, we only care about belief, branching time/theta is unused anyway (it is recomputed by MPPI)
+    initBranchState(branchState, belief.data(), 2.0f);       // here, we only care about belief, branching time/theta is unused anyway (it is recomputed by MPPI)
+
+    bool branched = false;
 
     TerminalType term = environmentStep(
         t,
@@ -252,7 +265,8 @@ std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::ar
         branchState,
         actBuf.data(),
         nomPidBuf.data(),
-        hrng
+        hrng,
+        branched
     );
 
     std::copy(std::begin(branchState.belief), std::end(branchState.belief), belief.begin());

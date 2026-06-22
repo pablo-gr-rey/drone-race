@@ -556,7 +556,7 @@ def tinyGateEnv(
             winCost=1e6,
             minConfidence=0.95,
             # initBelief=np.array([0.7, 0.3]),
-            nKnots=15,
+            nKnots=10,
         )
 
     else:
@@ -575,11 +575,11 @@ def tinyGateEnv(
             # finalSpeedWeight=50,
             finalSpeedWeight=0,
             # oppDistWeight=0,
-            oppDistWeight=1,
+            oppDistWeight=0,
             oppDistThresholdFactor=3,
             finalOppAdvWeight=0,
             # finalOppAdvWeight=500,
-            boundaryCost=10,
+            boundaryCost=0,
             # boundaryCost=0.0,
             boundaryThresholdFactor=1,
             oppOutsideCost=0,
@@ -905,6 +905,7 @@ def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig
 def mainGate():
     # envConfig, mppiconfig, pid0, pid1, oppNames = standardGateEnv()  # pid0 = afraid; pid1 = bold
     envConfig, mppiconfig, pids, oppNames = tinyGateEnv(afraid=False, useSplines=True)  # pid0 = top; pid1 = bottom
+    # envConfig, mppiconfig, pids, oppNames = tinyGateEnv(afraid=False, useSplines=False)  # pid0 = top; pid1 = bottom
     # envConfig, mppiconfig, pids, oppNames = tinyGateEnv2Models(roundObs=True)
     # envConfig, mppiconfig, pid0, pid1, oppNames = activeEnv()  # pid0 = afraid; pid1 = bold
 

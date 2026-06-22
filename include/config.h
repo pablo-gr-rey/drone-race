@@ -26,7 +26,7 @@ constexpr int N_GATES = 2;
 constexpr int N_TRACK_SAMPLES = 512;
 constexpr int N_OBSTACLES = 0;
 
-constexpr int MAX_N_KNOTS = 20;
+constexpr int MAX_N_KNOTS = 60;
 
 // 1 agent
 constexpr int N_ROUND_OBSTACLES = 1;
@@ -37,6 +37,8 @@ constexpr int N_MODEL_FACTORS = 1;
 // constexpr int N_ROUND_OBSTACLES = 2;
 // constexpr int N_RACELINES = 4;
 // constexpr int N_MODEL_FACTORS = 2;
+
+constexpr float MIN_COEFF_THRESHOLD = 0.01f;        // minimum probability threshold for samples to contribute
 
 // CUDA does not like constexpr arrays, so we use constexpr inline functions
 
