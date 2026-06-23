@@ -189,5 +189,8 @@ struct VerifConfig
     int horizon;
     float maxEps;
 
+    float prMppiDelta;
+    int prMppiP;
+
     void unpackHeader(const void* buf, size_t len);
 };

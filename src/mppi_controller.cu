@@ -26,7 +26,6 @@ MPPIController::MPPIController(
     std::optional<std::vector<float>> nominal)
 {
     std::cout << "MPPI INIT" << std::endl;
-    name = "MPPI";
     envConfig = c;
     mppiConfig = mc;
     verifConfig = vC;
@@ -40,7 +39,7 @@ MPPIController::MPPIController(
     if (nominal)
     {
         if ((int) nominal->size() != N_BRANCH_PLANS * mc.nTimesteps * DIM)
-            throw std::runtime_error(std::format("Invalid MPPI construction: expected nominal size %d, got %d", N_BRANCH_PLANS * mc.nTimesteps * DIM, nominal->size()));
+            throw std::runtime_error(std::format("Invalid MPPI construction: expected nominal size {}, got {}", N_BRANCH_PLANS * mc.nTimesteps * DIM, nominal->size()));
 
         h_nominal = nominal.value();
     }
@@ -225,16 +224,6 @@ void MPPIController::allocDevice()
         cudaMemcpyHostToDevice
     ));
 
-    // Temp storage size for reducing N elements
-    cub::DeviceReduce::Min(
-        nullptr,
-        temp_storage_bytes,
-        (const float*) nullptr,
-        (float*) nullptr,
-        N);
-
-    CUDA_CHECK(cudaMalloc(&d_temp_storage, temp_storage_bytes));
-
     deviceReady = true;
 }
 
@@ -268,13 +257,11 @@ void MPPIController::freeDevice()
     safe_free(d_nu);
 
     safe_free(d_rng);
-    safe_free(d_temp_storage);
 
     safe_free(d_failCountOld);
     safe_free(d_failCountNew);
     safe_free(d_verif_rng);
 
-    temp_storage_bytes = 0;
     deviceReady = false;
 }
 

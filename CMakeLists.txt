@@ -24,7 +24,9 @@ add_executable(drone_race
     src/engine.cpp
     src/config.cpp
     src/mppi_controller.cu
+    src/prmppi_controller.cu
     src/kernels.cu
+    src/prmppi_kernels.cu
     src/protocol.cpp
 )
 

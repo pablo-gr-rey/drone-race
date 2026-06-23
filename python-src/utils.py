@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from enum import IntEnum
+import math
 import random
 from typing import TYPE_CHECKING, Optional
 
@@ -203,6 +204,13 @@ class VerifConfig:
     horizon: int = 40
 
     maxEps: float = 0.01
+
+    prMppiDelta: float = 0.1
+    prMppiP: int = 0
+
+    def __post_init__(self):
+        if self.prMppiP == 0:
+            self.prMppiP = math.ceil((1 - self.prMppiDelta) / self.prMppiDelta)
 
 
 # TODO: this is now useless

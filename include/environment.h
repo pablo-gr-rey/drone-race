@@ -86,22 +86,22 @@ HD INLINE void computePIDAction(
     }
 }
 
-// compute opp. nominal actions, PID noise, env dynamics, belief update and branch update. if we become specialized, set corresponding branching time to t+1
-template <typename RNG>
+// compute opp. nominal actions, PID noise, env dynamics, belief update (only if shouldUpdateBelief) and branch update (only if considerBranching is true; if we become specialized, set corresponding branching time to t+1)
+template <bool shouldUpdateBelief, bool considerBranching, typename RNG>
 HD INLINE TerminalType environmentStep(
     int t,
     int controlAgent,
     int trueTheta,
     const EnvironmentConfig& envConfig,
     const MPPIConfig& mppiConfig,
-    const float* egoAction,          // (dim)
+    const float* __restrict__ egoAction,          // (dim)
     bool applyPidNoise,
     SimState& state,
-    BranchState& branchState,
-    float* actions,                  // scratch: (nAgents, dim)
-    float* nomPidAction,             // scratch: (nModels, dim)
+    BranchState& branchState,                       // belief is updated in-place. branchingTime and branchUsed are updated if considerBranching is true
+    float* __restrict__ actions,                  // scratch: (nAgents, dim)
+    float* __restrict__ nomPidAction,             // scratch: (nModels, dim)
     RNG& rng,
-    bool& branched,                 // true if we branched at this step. must be previously initialized to false
+    bool& branched,                 // true if we branched at this step. must be previously initialized to false. unused if considerBranching is false
     int gateMarginAgent = -1,
     float gateMargin = 0.0f)
 {
@@ -206,25 +206,32 @@ HD INLINE TerminalType environmentStep(
         gateMarginAgent,
         gateMargin);
 
-    // 9. Update belief & branching time
     int oppAgent = 1 - controlAgent;
-    updateBelief(
-        branchState.belief,
-        actions + oppAgent * DIM,
-        nomPidAction,
-        envConfig.oppPid,
-        envConfig.maxAccel[oppAgent]);
 
-    int newPredTheta[N_MODEL_FACTORS];
-    findConfident(branchState.belief, mppiConfig.minConfidence, newPredTheta);
+    // 9. Update belief & branching time
+    if constexpr (shouldUpdateBelief)
+    {
+        updateBelief(
+            branchState.belief,
+            actions + oppAgent * DIM,
+            nomPidAction,
+            envConfig.oppPid,
+            envConfig.maxAccel[oppAgent]);
+    }
 
-    for (int k = 0; k < N_MODEL_FACTORS; k++)
-        if (branchState.predTheta[k] == 0 && newPredTheta[k] != 0)
-        {
-            branchState.predTheta[k] = newPredTheta[k];
-            branchState.branchingTime[k] = t + 1;
-            branched = true;
-        }
+    if constexpr (considerBranching)
+    {
+        int newPredTheta[N_MODEL_FACTORS];
+        findConfident(branchState.belief, mppiConfig.minConfidence, newPredTheta);
+
+        for (int k = 0; k < N_MODEL_FACTORS; k++)
+            if (branchState.predTheta[k] == 0 && newPredTheta[k] != 0)
+            {
+                branchState.predTheta[k] = newPredTheta[k];
+                branchState.branchingTime[k] = t + 1;
+                branched = true;
+            }
+    }
 
     // 10. Check for collisions, outside, or win
     bool collision = false;

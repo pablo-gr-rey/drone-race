@@ -154,7 +154,7 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
             bool branched = false;
 
-            TerminalType term = environmentStep(
+            TerminalType term = environmentStep<true, true>(
                 t,
                 envConfig.iMppi,
                 theta,
@@ -253,7 +253,7 @@ std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::ar
 
     bool branched = false;
 
-    TerminalType term = environmentStep(
+    TerminalType term = environmentStep<true, true>(
         t,
         envConfig.iMppi,
         envConfig.trueTheta,

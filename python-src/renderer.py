@@ -669,7 +669,7 @@ class EnvironmentRenderer:
         failCount, eps = mppiState.failCount, mppiState.epsilon
 
         self.verif_text.set_text(
-            f"Fail: {sum(failCount) / self.verifConfig.N * 100:.2f}% (coll {failCount[0] / self.verifConfig.N * 100:.2f}%, out {failCount[1] / self.verifConfig.N * 100:.2f}%)\n"
+            f"Fail: {sum(failCount) / self.verifConfig.N * 100:.3f}% (coll {failCount[0] / self.verifConfig.N * 100:.3f}%, out {failCount[1] / self.verifConfig.N * 100:.3f}%)\n"
             + (f"Failure rate: {eps:.5f} (partial {mppiState.epsilonPartial:.5f})\n" if i > 0 else "Failure rate: --\n")
             + (
                 f"Use new plan: {'YES' if mppiState.useNewPlan else 'NO'} (loss: {mppiState.certifiedLoss:.5f})"

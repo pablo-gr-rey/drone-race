@@ -145,6 +145,9 @@ void VerifConfig::unpackHeader(const void* buf, size_t len)
 
     maxEps = reader.readFloat();
 
+    prMppiDelta = reader.readFloat();
+    prMppiP = reader.readInt32();
+
     reader.assertFinished();
 
     std::cout << "loaded verification N " << nVerifSamples << " beta " << beta << " horizon " << horizon << " maxEps " << maxEps << "\n";

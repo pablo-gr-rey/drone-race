@@ -454,8 +454,8 @@ def tinyGateEnv(
     )
 
     repulsion = 30 if afraid else 0
-    pid0 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=0, actionNoise=2)
-    pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=1, actionNoise=2)
+    pid0 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=0, actionNoise=1)
+    pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=1, actionNoise=1)
 
     config = GateEnvironmentConfig(
         nAgents=nAgents,
@@ -912,8 +912,8 @@ def mainGate():
     envConfig.trueTheta = 1
     envConfig.iMppi = 1
 
-    # verifConfig = VerifConfig(N=2**17, beta=1e-6, horizon=40, maxEps=0.001)
-    verifConfig = VerifConfig(N=2**17, beta=1e-6, horizon=40, maxEps=10)
+    verifConfig = VerifConfig(N=2**17, beta=1e-6, horizon=40, maxEps=0.001)
+    # verifConfig = VerifConfig(N=2**17, beta=1e-6, horizon=40, maxEps=10)
 
     envConfig.sendStates = True
 

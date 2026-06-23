@@ -33,7 +33,6 @@ public:
         const SimState& state,
         float* outAction);
 
-    std::string name;
     SimulationEngine* engine = nullptr;
 
     MPPIConfig mppiConfig;
@@ -95,9 +94,6 @@ private:
     // denominator for each branch tuple
     float* d_nu = nullptr;  // (nBranchPlans)
 
-    void* d_temp_storage = nullptr; // for min-reduce
-    size_t temp_storage_bytes = 0;  // for min-reduce
-
     curandState* d_rng = nullptr;
 
     // Verification side
@@ -112,4 +108,83 @@ private:
 
     void computeEpsilon();       // compute epsilon based on failCount and verifConfig
     void computeCertifiedLoss(); // compute loss of new plan over old plan
+};
+
+// controller of the paper "Parameter-Robust MPPI for Safe Online Learning of Unknown Parameters"
+class PRMPPIController
+{
+public:
+    // if nominal (size (nModels+1) * T * dim) is not given, assumed 0
+    PRMPPIController() {};
+
+    PRMPPIController(
+        const EnvironmentConfig& c,
+        const MPPIConfig& mc,
+        const VerifConfig& vConfig,
+        float* d_trackPoints,
+        int s,
+        std::optional<std::vector<float>> nominal = std::nullopt);
+
+    ~PRMPPIController();
+
+    void getControl(
+        int agent,
+        const SimState& state,
+        float* outAction);
+
+    SimulationEngine* engine = nullptr;
+
+    MPPIConfig mppiConfig;
+
+    std::vector<float> h_nom_nominal;   // host mirror (T, dim)
+    std::vector<float> h_rob_nominal;   // host mirror (T, dim)
+    std::array<float, N_TRUE_MODELS> h_belief;    // host belief (nTrueModels). this is updated by the engine
+
+    bool useNomPlan;
+
+    float min_nu = 0.0005f;    // in terms of proportion of nSamples
+    float max_nu = 0.001f;
+
+private:
+    float* h_trackPoints;
+    EnvironmentConfig envConfig;    // this contains the device track points
+    VerifConfig verifConfig;
+
+    float invTempNomFull;
+    float invTempRobFull;
+    float invTempRobSafe;
+
+    int seed;
+
+    // Device memory
+
+    // Rollout side
+    float* d_belief = nullptr;     // (nTrueModels)
+
+    float* d_noise = nullptr;      // (T, N, dim)
+
+    float* d_cost_nom = nullptr;      // (P, N, 2) (stores cost, safetyCost)
+    float* d_cost_rob = nullptr;      // (P, N, 2) (stores cost, safetyCost)
+
+    float* d_nom_nominal = nullptr;      // (T, dim)
+    float* d_rob_nominal = nullptr;  // (T, dim)
+
+    float* d_cand1_nominal = nullptr;   // (T, dim) candidate nom_nominal (computed from d_nom_nominal and d_cost_nom_full)
+    float* d_cand2_nominal = nullptr;   // (T, dim) candidate nom_nominal (computed from d_rob_nominal and d_cost_rob_full)
+
+    float* d_minCosts = nullptr;    // (3): nom_full, rob_full, rob_safe
+    float* d_candCosts = nullptr;   // (2*P): full cost of cand1, cand2
+
+    int* d_thetas = nullptr;    // (P)
+
+    // denominator for each branch tuple
+    float* d_nu = nullptr;  // (3): nom_full, rob_full, rob_safe
+
+    curandState* d_rng = nullptr;   // (P, N)
+    curandState* d_theta_rng = nullptr;     // (P)
+
+    bool deviceReady = false;
+
+    void allocDevice();
+    void freeDevice();
 };

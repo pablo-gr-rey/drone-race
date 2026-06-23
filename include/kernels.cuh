@@ -93,3 +93,93 @@ __global__ void verifyNominalFailureKernel(
     const float* __restrict__ nominal,     // (nModels+1, T, dim)
     curandState* __restrict__ rngStates,
     unsigned int* __restrict__ failCount);
+
+__global__ void PRMPPIgenerateNoiseKernel(float* noise, curandState* rng,
+    float stddev,
+    int T, int N);
+
+// Sample values of theta according to belief, one thread per p
+__global__ void PRMPPIsampleThetaValues(
+    const float* __restrict__ belief,     // (nTrueModels)
+    int* __restrict__ thetas,     // (P)
+    curandState* __restrict__ theta_rng,  // (P)
+    int P
+);
+
+// Full rollout for PRMPPI, one thread per (rob/nom, sample, theta). note that each 
+__global__ void PRMPPIfullRolloutKernel(
+    int agent,
+    const EnvironmentConfig envConfig,
+    const MPPIConfig mppiConfig,
+    int P,
+    SimState initState,
+    const float* __restrict__ nom_nominal,    // (T, dim)
+    const float* __restrict__ rob_nominal,    // (T, dim)
+    const float* __restrict__ noise,      // (T, N, dim)
+    float* __restrict__ cost_nom,    // (P, N, 2)
+    float* __restrict__ cost_rob,    // (P, N, 2)
+    const int* __restrict__ thetas,       // (P)
+    curandState* __restrict__ rngStates         // (P, N)
+);
+
+// For each sample s, compute expCost := avg(cost[p, s, 0]) and safeCost := min(cost[p, s, 1]); stores cost[0, s, 0] := expCost + weight * (1 if safeCost < 0), cost[0, s, 1] = safeCost. 2*N threads (1st part for nom, 2nd part for rob)
+__global__ void PRMPPIcostAvgKernel(
+    float* __restrict__ cost_nom,   // (P, N, 2)
+    float* __restrict__ cost_rob,   // (P, N, 2)
+    int N,
+    int P,
+    float safetyWeight
+);
+
+// Compute min costs (3 blocks: nom_full, rob_full, rob_safe). blk*sizeof(float) shared memory
+__global__ void PRMPPIcomputeMinCostsKernel(
+    const float* __restrict__ cost_nom,    // (P, N) (only first N are considered)
+    const float* __restrict__ cost_rob,    // (P, N) (only first N are considered)
+    float* __restrict__ minCosts,         // 3
+    int N);
+
+// Compute weights, and update nominals (nom_nominal + cost_nom[0, s, 0] with minCosts[0] -> cand1; rob_nominal + cost_rob[0, s, 0] with mincosts[1] -> cand2; rob_nominal + cost_rob[0, s, 1] with mincosts[2] -> rob_nominal), 3*T*DIM blocks. also writes into nu. 2*blk*sizeof(float) shared memory
+__global__ void PRMPPIWeightedAverageKernel(
+    const float* __restrict__ nom_nominal,    // (T, dim)
+    float* __restrict__ rob_nominal,      // (T, dim)
+    const float* __restrict__ noise,      // (T, N, dim)
+    const float* __restrict__ cost_nom,      // (P, N, 2) (only first (N, 0/1) are considered)
+    const float* __restrict__ cost_rob,      // (P, N, 2) (only first (N, 1) are considered)
+    const float* __restrict__ minCosts,   // 3
+    float* __restrict__ cand1_nominal,    // (T, dim)
+    float* __restrict__ cand2_nominal,    // (T, dim)
+    int N,
+    int T,
+    float invTempNomFull,
+    float invTempRobFull,
+    float invTempRobSafe,
+    float* __restrict__ nu      // 3
+);
+
+// Compute full cost for the 2 candidates nominals and all models, 2 * P threads (using the rng of the first 2 rollouts)
+__global__ void PRMPPIcomputeCandidateCostKernel(
+    int agent,
+    EnvironmentConfig envConfig,
+    MPPIConfig mppiConfig,
+    SimState initState,
+    const float* __restrict__ cand1_nominal,      // (T, dim)
+    const float* __restrict__ cand2_nominal,      // (T, dim)
+    const int* __restrict__ thetas,     // (P)
+    float* __restrict__ candCosts,        // (2, P)
+    curandState* __restrict__ rngStates,          // (2*P at least)
+    int P,
+    float safetyWeight
+);
+
+// Compute safe cost for the nominal and all models, P threads (using the rng of the first P rollouts). writes into candCosts[0:P]
+__global__ void PRMPPIcomputeSafeCostKernel(
+    int agent,
+    EnvironmentConfig envConfig,
+    MPPIConfig mppiConfig,
+    SimState initState,
+    const float* __restrict__ nom_nominal,    // (T, dim)
+    const int* __restrict__ thetas,     // (P)
+    float* __restrict__ candCosts,        // (P at least)
+    curandState* __restrict__ rngStates,     // (P at least)
+    int P
+);

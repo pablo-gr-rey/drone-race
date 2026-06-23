@@ -138,7 +138,7 @@ __global__ void fullRolloutKernel(
 
             bool branched = false;
 
-            TerminalType term = environmentStep(
+            TerminalType term = environmentStep<true, true>(
                 t,
                 controlAgent,
                 trueThetaFlat,
@@ -160,12 +160,12 @@ __global__ void fullRolloutKernel(
 
             stop = (term != TERM_NONE);
 
-            cost += stateCost(controlAgent, state.pos, state.vel, state.laps, state.gates, t, envConfig, mc) * decay;
+            cost += stateCost(controlAgent, state, t, envConfig, mc) * decay;
             decay *= 0.9f;
         }
 
         // Terminal cost
-        cost += finalCost(controlAgent, state.pos, state.vel, state.laps, state.gates, envConfig, mc);
+        cost += finalCost(controlAgent, state, envConfig, mc);
 
         // actual cost is dependent on the probability that the opponent is actually following trueTheta, ie. initBelief[theta], unless we are already committed
 
@@ -548,7 +548,7 @@ __global__ void verifyNominalFailureKernel(
 
         bool branched = false;
 
-        TerminalType term = environmentStep(
+        TerminalType term = environmentStep<true, true>(
             t,
             controlAgent,
             theta,
