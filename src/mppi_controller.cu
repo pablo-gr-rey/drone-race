@@ -20,7 +20,6 @@
 MPPIController::MPPIController(
     const EnvironmentConfig& c,
     const MPPIConfig& mc,
-    const VerifConfig& vC,
     float* d_trackPoints,
     int s,
     std::optional<std::vector<float>> nominal)
@@ -28,7 +27,6 @@ MPPIController::MPPIController(
     std::cout << "MPPI INIT" << std::endl;
     envConfig = c;
     mppiConfig = mc;
-    verifConfig = vC;
     seed = s;
 
     h_trackPoints = c.trackPoints;
@@ -49,7 +47,12 @@ MPPIController::MPPIController(
     failCountNew = failCountOld = failCount = { 0u, 0u };
 
     if (USE_SPLINES)
+    {
         h_B = buildSplineMatrix();
+        for (float b : h_B)
+            if (!isfinite(b))
+                std::cout << "WARNING: invalid value detected in spline matrix:" << b << "\n\n";
+    }
     else
         h_B = std::vector<float>(mppiConfig.nTimesteps * mppiConfig.nKnots, 0.0f);
 }
@@ -192,16 +195,16 @@ void MPPIController::allocDevice()
     CUDA_CHECK(cudaMalloc(&d_failCountOld, 2 * sizeof(uint)));
     CUDA_CHECK(cudaMalloc(&d_failCountNew, 2 * sizeof(uint)));
 
-    CUDA_CHECK(cudaMalloc(&d_verif_rng, verifConfig.nVerifSamples * sizeof(curandState)));
-    CUDA_CHECK(cudaMemset(d_verif_rng, 0, verifConfig.nVerifSamples * sizeof(curandState)));
+    CUDA_CHECK(cudaMalloc(&d_verif_rng, mppiConfig.nVerifSamples * sizeof(curandState)));
+    CUDA_CHECK(cudaMemset(d_verif_rng, 0, mppiConfig.nVerifSamples * sizeof(curandState)));
 
     // Initialise RNG
     int blk = 256;
     int grd = (N + blk - 1) / blk;
     initRNGKernel << <grd, blk >> > (d_rng, seed, N);
 
-    int grdVerif = (verifConfig.nVerifSamples + blk - 1) / blk;
-    initRNGKernel << <grdVerif, blk >> > (d_verif_rng, seed + 1, verifConfig.nVerifSamples);
+    int grdVerif = (mppiConfig.nVerifSamples + blk - 1) / blk;
+    initRNGKernel << <grdVerif, blk >> > (d_verif_rng, seed + 1, mppiConfig.nVerifSamples);
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
@@ -405,14 +408,12 @@ void MPPIController::getControl(
 #endif
 
     // 5.75 Verification
-    int verifGrd = (verifConfig.nVerifSamples + blk - 1) / blk;
+    int verifGrd = (mppiConfig.nVerifSamples + blk - 1) / blk;
 
     verifyNominalFailureKernel << <verifGrd, blk >> > (
         agent,
-        verifConfig.nVerifSamples,
         envConfig,
         mppiConfig,
-        verifConfig.horizon,
         state,
         d_belief,
         d_nominal,
@@ -427,10 +428,8 @@ void MPPIController::getControl(
 
     verifyNominalFailureKernel << <verifGrd, blk >> > (
         agent,
-        verifConfig.nVerifSamples,
         envConfig,
         mppiConfig,
-        verifConfig.horizon,
         state,
         d_belief,
         d_prevnominal,
@@ -444,7 +443,7 @@ void MPPIController::getControl(
         cudaMemcpyDeviceToHost));
 
     computeCertifiedLoss();
-    useNewPlan = certifiedLoss < verifConfig.maxEps;
+    useNewPlan = certifiedLoss < mppiConfig.maxVerifEps;
 
     if (useNewPlan)
         std::cout << "USING NEW PLAN\n";
@@ -534,7 +533,7 @@ void MPPIController::getControl(
 
     std::cout << "Verification samples: failed "
         << failCountNew[0] + failCountNew[1]
-        << " out of " << verifConfig.nVerifSamples
+        << " out of " << mppiConfig.nVerifSamples
         << " (collision: " << failCountNew[0]
         << "; outside: " << failCountNew[1]
         << ")" << std::endl;
@@ -594,10 +593,10 @@ void MPPIController::computeCertifiedLoss()
     uint totFailOld = failCountOld[0] + failCountOld[1];
     uint totFailNew = failCountNew[0] + failCountNew[1];
 
-    int n = verifConfig.nVerifSamples;
+    int n = mppiConfig.nVerifSamples;
 
-    double eps1 = clopperPearsonUpperBound(totFailNew, n, verifConfig.beta / 2.0);
-    double eps2 = clopperPearsonLowerBound(totFailOld, n, verifConfig.beta / 2.0);
+    double eps1 = clopperPearsonUpperBound(totFailNew, n, mppiConfig.beta / 2.0);
+    double eps2 = clopperPearsonLowerBound(totFailOld, n, mppiConfig.beta / 2.0);
 
     certifiedLoss = eps1 - eps2;
 
@@ -612,10 +611,10 @@ void MPPIController::computeCertifiedLoss()
 void MPPIController::computeEpsilon()
 {
     uint totFail = failCount[0] + failCount[1];
-    int n = verifConfig.nVerifSamples;
+    int n = mppiConfig.nVerifSamples;
 
-    epsilonPartial = clopperPearsonUpperBound(totFail, n, verifConfig.beta);
-    epsilon = epsilonPartial + verifConfig.horizon * verifConfig.maxEps;
+    epsilonPartial = clopperPearsonUpperBound(totFail, n, mppiConfig.beta);
+    epsilon = epsilonPartial + mppiConfig.verifHorizon * mppiConfig.maxVerifEps;
 
     std::cout << std::fixed << std::setprecision(5)
         << "For fail count " << totFail

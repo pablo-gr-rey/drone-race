@@ -12,7 +12,18 @@
 // forward
 class SimulationEngine;
 
-class MPPIController
+class Controller
+{
+public:
+    virtual ~Controller() = default;
+
+    virtual void getControl(int agent, const SimState& state, float* outAction) = 0;
+
+    SimulationEngine* engine = nullptr;
+    std::array<float, N_TRUE_MODELS> h_belief;    // host belief (nTrueModels). this is updated by the engine
+};
+
+class MPPIController : public Controller
 {
 public:
     // if nominal (size (nModels+1) * T * dim) is not given, assumed 0
@@ -21,24 +32,17 @@ public:
     MPPIController(
         const EnvironmentConfig& c,
         const MPPIConfig& mc,
-        const VerifConfig& vConfig,
         float* d_trackPoints,
         int s,
         std::optional<std::vector<float>> nominal = std::nullopt);
 
     ~MPPIController();
 
-    void getControl(
-        int agent,
-        const SimState& state,
-        float* outAction);
-
-    SimulationEngine* engine = nullptr;
+    void getControl(int agent, const SimState& state, float* outAction) override;
 
     MPPIConfig mppiConfig;
 
     std::vector<float> h_nominal;   // host mirror (nBranchPlans, T, dim)
-    std::array<float, N_TRUE_MODELS> h_belief;    // host belief (nTrueModels). this is updated by the engine
 
     std::array<uint, 2> failCountOld;    // size 2: nColl, nOutside (previous nominal, only MPPI outside is counted)
     std::array<uint, 2> failCountNew;    // size 2: nColl, nOutside (candidate new nominal, only MPPI outside is counted)
@@ -58,7 +62,6 @@ private:
 
     float* h_trackPoints;
     EnvironmentConfig envConfig;    // this contains the device track points
-    VerifConfig verifConfig;
 
     int seed;
 
@@ -111,7 +114,7 @@ private:
 };
 
 // controller of the paper "Parameter-Robust MPPI for Safe Online Learning of Unknown Parameters"
-class PRMPPIController
+class PRMPPIController : public Controller
 {
 public:
     // if nominal (size (nModels+1) * T * dim) is not given, assumed 0
@@ -119,26 +122,19 @@ public:
 
     PRMPPIController(
         const EnvironmentConfig& c,
-        const MPPIConfig& mc,
-        const VerifConfig& vConfig,
+        const PRMPPIConfig& mc,
         float* d_trackPoints,
         int s,
         std::optional<std::vector<float>> nominal = std::nullopt);
 
     ~PRMPPIController();
 
-    void getControl(
-        int agent,
-        const SimState& state,
-        float* outAction);
+    void getControl(int agent, const SimState& state, float* outAction) override;
 
-    SimulationEngine* engine = nullptr;
-
-    MPPIConfig mppiConfig;
+    PRMPPIConfig mppiConfig;
 
     std::vector<float> h_nom_nominal;   // host mirror (T, dim)
     std::vector<float> h_rob_nominal;   // host mirror (T, dim)
-    std::array<float, N_TRUE_MODELS> h_belief;    // host belief (nTrueModels). this is updated by the engine
 
     bool useNomPlan;
 
@@ -148,7 +144,6 @@ public:
 private:
     float* h_trackPoints;
     EnvironmentConfig envConfig;    // this contains the device track points
-    VerifConfig verifConfig;
 
     float invTempNomFull;
     float invTempRobFull;

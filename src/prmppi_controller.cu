@@ -19,8 +19,7 @@
 // Construction
 PRMPPIController::PRMPPIController(
     const EnvironmentConfig& c,
-    const MPPIConfig& mc,
-    const VerifConfig& vC,
+    const PRMPPIConfig& mc,
     float* d_trackPoints,
     int s,
     std::optional<std::vector<float>> nominal)
@@ -28,7 +27,6 @@ PRMPPIController::PRMPPIController(
     std::cout << "PRMPPI INIT" << std::endl;
     envConfig = c;
     mppiConfig = mc;
-    verifConfig = vC;
     seed = s;
 
     h_trackPoints = c.trackPoints;
@@ -65,7 +63,7 @@ void PRMPPIController::allocDevice()
 
     int N = mppiConfig.nSamples;
     int T = mppiConfig.nTimesteps;
-    int P = verifConfig.prMppiP;
+    int P = mppiConfig.P;
 
     // Single authoritative state (uploaded each call)
     CUDA_CHECK(cudaMalloc(&d_belief, N_TRUE_MODELS * sizeof(float)));
@@ -175,7 +173,7 @@ void PRMPPIController::getControl(
 
     int N = mppiConfig.nSamples;
     int T = mppiConfig.nTimesteps;
-    int P = verifConfig.prMppiP;
+    int P = mppiConfig.P;
 
     // now, belief update is done in engine
 
@@ -220,7 +218,6 @@ void PRMPPIController::getControl(
         agent,
         envConfig,
         mppiConfig,
-        P,
         state,
         d_nom_nominal,
         d_rob_nominal,
@@ -242,7 +239,7 @@ void PRMPPIController::getControl(
         d_cost_rob,
         N,
         P,
-        mppiConfig.collisionCost);
+        mppiConfig.safetyWeight);
 
     // 6. compute min costs (3 blocks for nom_full, rob_full, rob_safe)
     PRMPPIcomputeMinCostsKernel << <3, blk, blk * sizeof(float) >> > (
@@ -279,9 +276,7 @@ void PRMPPIController::getControl(
         d_cand2_nominal,
         d_thetas,
         d_candCosts,
-        d_rng,
-        P,
-        mppiConfig.collisionCost
+        d_rng
         );
 
     // 9. Compare the averaged cost of the two candidates, and copy the best one into d_nom_nominal (or rather swap the pointers)
@@ -320,8 +315,7 @@ void PRMPPIController::getControl(
         d_nom_nominal,
         d_thetas,
         d_candCosts,
-        d_rng,
-        P
+        d_rng
         );
 
     // 11. Check safety: if any averaged over p safety costs is negative, then nominal model is unsafe, and copy d_rob_nominal into d_nom_nominal (and set useNomPlan to false, otherwise true)

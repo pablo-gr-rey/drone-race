@@ -123,7 +123,7 @@ int EnvironmentConfig::unpackHeader(const void* buf, size_t len)
 
     reader.assertFinished();
 
-    std::cout << "read nAgents " << nAgents << " nWinLaps " << nWinLaps << " true theta " << trueTheta << " max speed " << maxSpeed[0] << ' ' << maxSpeed[1] << " nTrackSamples" << nTrackSamples << "\ngate vectors:";
+    std::cout << "loaded envConfig, nAgents " << nAgents << " nWinLaps " << nWinLaps << " true theta " << trueTheta << " max speed " << maxSpeed[0] << ' ' << maxSpeed[1] << " nTrackSamples" << nTrackSamples << " gate vectors:";
     for (int i = 0; i < nGates * dim; i++)
         std::cout << gateVectors[i] << (i % dim ? " " : ";  ");
     std::cout << "\n";
@@ -131,36 +131,8 @@ int EnvironmentConfig::unpackHeader(const void* buf, size_t len)
     return seed;
 }
 
-void VerifConfig::unpackHeader(const void* buf, size_t len)
+void MPPIConfig::unpackHeader(Reader& reader)
 {
-    Reader reader(buf, len);
-
-    int kind = reader.readInt32();
-    if (kind != MSG_HEADER)
-        throw std::runtime_error(std::format("Expected header message type for environment config (type {}) but got type {} instead", static_cast<int>(MSG_HEADER), kind));
-
-    nVerifSamples = reader.readInt32();
-    beta = reader.readFloat();
-    horizon = reader.readInt32();
-
-    maxEps = reader.readFloat();
-
-    prMppiDelta = reader.readFloat();
-    prMppiP = reader.readInt32();
-
-    reader.assertFinished();
-
-    std::cout << "loaded verification N " << nVerifSamples << " beta " << beta << " horizon " << horizon << " maxEps " << maxEps << "\n";
-}
-
-void MPPIConfig::unpackHeader(const void* buf, size_t len)
-{
-    Reader reader(buf, len);
-
-    int kind = reader.readInt32();
-    if (kind != MSG_HEADER)
-        throw std::runtime_error(std::format("Expected header message type for MPPI config (type {}) but got type {} instead", static_cast<int>(MSG_HEADER), kind));
-
     nSamples = (int) reader.readInt32();
     nTimesteps = (int) reader.readInt32();
     nKnots = (int) reader.readInt32();
@@ -193,11 +165,75 @@ void MPPIConfig::unpackHeader(const void* buf, size_t len)
 
     finalAdvWeight = reader.readFloat();
     finalOppAdvWeight = reader.readFloat();
-    finalSpeedWeight = reader.readFloat();
 
     minConfidence = reader.readFloat();
 
-    reader.assertFinished();
+    nVerifSamples = reader.readInt32();
+    beta = reader.readFloat();
+    verifHorizon = reader.readInt32();
+    maxVerifEps = reader.readFloat();
 
     std::cout << "loaded MPPI samples " << nSamples << " timesteps " << nTimesteps << " collDistFactor " << collDistFactor << " with " << N_TRUE_MODELS << " opponent strats\n";
+}
+
+void PRMPPIConfig::unpackHeader(Reader& reader)
+{
+    nSamples = (int) reader.readInt32();
+    nTimesteps = (int) reader.readInt32();
+
+    invTemperature = reader.readFloat();
+
+    samplingNoise = reader.readFloat();
+    gateTraversalMargin = reader.readFloat();
+
+    collDistFactor = reader.readFloat();
+
+    oppDistWeight = reader.readFloat();
+    oppDistPower = reader.readFloat();
+    oppDistThresholdFactor = reader.readFloat();
+    boundaryCost = reader.readFloat();
+    boundaryThresholdFactor = reader.readFloat();
+    oppOutsideCost = reader.readFloat();
+    winCost = reader.readFloat();
+
+    finalAdvWeight = reader.readFloat();
+    finalOppAdvWeight = reader.readFloat();
+
+    safetyWeight = reader.readFloat();
+    minSafeDist = reader.readFloat();
+
+    delta = reader.readFloat();
+    P = reader.readInt32();
+
+    std::cout << "loaded PRMPPI samples " << nSamples << " timesteps " << nTimesteps << " safetyWeight " << safetyWeight << " with delta = " << delta << " P = " << P << "\n";
+}
+
+AnyControllerConfig loadControllerConfig(const void* buf, size_t len)
+{
+    Reader reader(buf, len);
+
+    int msg_kind = reader.readInt32();
+    if (msg_kind != MSG_HEADER)
+        throw std::runtime_error(std::format("Expected header message type for controller config (type {}) but got type {} instead", static_cast<int>(MSG_HEADER), msg_kind));
+
+    int cont_kind = reader.readInt32();
+
+    if (cont_kind == CONT_MPPI)
+    {
+        MPPIConfig mppiConfig;
+        mppiConfig.unpackHeader(reader);
+        reader.assertFinished();
+
+        return mppiConfig;
+    }
+    else if (cont_kind == CONT_PRMPPI)
+    {
+        PRMPPIConfig mppiConfig;
+        mppiConfig.unpackHeader(reader);
+        reader.assertFinished();
+
+        return mppiConfig;
+    }
+    else
+        throw std::runtime_error(std::format("Received invalid controller kind {}", cont_kind));
 }

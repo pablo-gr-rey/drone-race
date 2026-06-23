@@ -143,15 +143,15 @@ __global__ void fullRolloutKernel(
                 controlAgent,
                 trueThetaFlat,
                 envConfig,
-                mc,
                 egoAction,
                 true,              // applyPidNoise
                 state,
                 branchState,
+                branched,
+                mc.minConfidence,
                 actions,
                 nomPidAction,
                 drng,
-                branched,
                 controlAgent,
                 mc.gateTraversalMargin);
 
@@ -504,16 +504,17 @@ __global__ void shiftSplineKernel(
 
 __global__ void verifyNominalFailureKernel(
     int controlAgent,
-    int nVerif,
     EnvironmentConfig envConfig,
     MPPIConfig mc,
-    int nTimesteps,
     SimState initState,
     const float* __restrict__ initBelief,
     const float* __restrict__ nominal,     // (nModels+1, T, dim)
     curandState* __restrict__ rngStates,
     unsigned int* __restrict__ failCount)
 {
+    int nVerif = mc.nVerifSamples;
+    int nTimesteps = mc.verifHorizon;
+
     int s = blockIdx.x * blockDim.x + threadIdx.x;
     if (s >= nVerif)
         return;
@@ -553,15 +554,15 @@ __global__ void verifyNominalFailureKernel(
             controlAgent,
             theta,
             envConfig,
-            mc,
             egoAction,
             true,          // applyPidNoise in real verification
             state,
             branchState,
+            branched,
+            mc.minConfidence,
             actions,
             nomPidAction,
-            drng,
-            branched);
+            drng);
 
         if (branched)
             tOrigin = t + 1;

@@ -75,9 +75,9 @@ constexpr int MAX_MODEL_SIZE = N_MODEL_FACTORS == 1 ? MODEL_SIZE(0) : (MODEL_SIZ
 #define CUDA_CHECK(call) (call)
 #endif
 
+enum CONTROLLER_KIND : int32_t { CONT_MPPI, CONT_PRMPPI };
 
-
-// PID parameters (also used for opponent modelling on GPU)
+// PID parameters (used for opponent modelling)
 struct PIDConfig
 {
     float kp = 10.0f;
@@ -124,12 +124,59 @@ struct MPPIConfig
     // terminal costs
     float finalAdvWeight = 10.0f;
     float finalOppAdvWeight = 5.0f;
-    float finalSpeedWeight = 5.0f;
 
     float minConfidence = 0.9f;
 
-    void unpackHeader(const void* buf, size_t len);
+    int nVerifSamples = 10000;
+    float beta = 1e-6f;
+    int verifHorizon = 40;
+
+    float maxVerifEps = 0.01;
+
+    void unpackHeader(Reader& reader);
 };
+
+// PRMPPI configuration
+struct PRMPPIConfig
+{
+    int nSamples = 100;
+
+    int nTimesteps = 20;
+
+    float invTemperature = 10.0f;
+
+    float samplingNoise = 0.1f;
+    float gateTraversalMargin = 0.95f;
+
+    float collDistFactor = 1.0f;
+
+    // running costs
+    float oppDistWeight = 1.0f;
+    float oppDistPower = 2.0f;
+    float oppDistThresholdFactor = 3.0f;
+    float boundaryCost = 10.0f;
+    float boundaryThresholdFactor = 1.5f;
+    float oppOutsideCost = 100.0f;
+    float winCost = 1000.0f;
+
+    // terminal costs
+    float finalAdvWeight = 10.0f;
+    float finalOppAdvWeight = 5.0f;
+
+    // safety cost
+    float safetyWeight = 10000.0f;
+    float minSafeDist = 0.0f;      // safety cost is lessened by this amount (i.e. we must be at distance at least minSafeDist from obstacles & opponents)
+
+    // safety assurance (delta), and number of model samples P (=ceil((1-delta)/delta))
+    float delta = 0.1f;
+    float P = 10;
+
+    void unpackHeader(Reader& reader);
+};
+
+using AnyControllerConfig = std::variant<MPPIConfig, PRMPPIConfig>;
+
+AnyControllerConfig loadControllerConfig(const void* buf, size_t len);
 
 // Environment configuration
 // this should have the same layout as GateEnvironmentConfig in the Python side
@@ -180,17 +227,4 @@ struct EnvironmentConfig
     {}
 
     int unpackHeader(const void* buf, size_t len);   // returns (seed, trackPoints)
-};
-
-struct VerifConfig
-{
-    int nVerifSamples;
-    float beta;
-    int horizon;
-    float maxEps;
-
-    float prMppiDelta;
-    int prMppiP;
-
-    void unpackHeader(const void* buf, size_t len);
 };

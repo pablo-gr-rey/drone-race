@@ -23,21 +23,13 @@ void runEngine(zmq::socket_t& sock)
 
     res = sock.recv(msg);
     if (!res)
-        throw std::runtime_error("Failed to receive verif configuration");
-
-    VerifConfig verifConfig;
-    verifConfig.unpackHeader(msg.data(), msg.size());
-
-    res = sock.recv(msg);
-    if (!res)
         throw std::runtime_error("Failed to receive MPPI configuration");
 
-    MPPIConfig mppiConfig;
-    mppiConfig.unpackHeader(msg.data(), msg.size());
+    AnyControllerConfig contConfig = loadControllerConfig(msg.data(), msg.size());
 
     std::cout << "Header unpacked, starting simulation\n";
 
-    SimulationEngine engine(envConfig, verifConfig, mppiConfig, seed);
+    SimulationEngine engine(envConfig, contConfig, seed);
 
     auto begin = std::chrono::steady_clock::now();
 

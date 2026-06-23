@@ -55,12 +55,11 @@ __global__ void PRMPPIsampleThetaValues(
     theta_rng[p] = local;
 }
 
-// Full rollout for PRMPPI, one thread per (rob/nom, sample, theta). note that each 
+// Full rollout for PRMPPI, one thread per (rob/nom, sample, theta)
 __global__ void PRMPPIfullRolloutKernel(
     int agent,
     const EnvironmentConfig envConfig,
-    const MPPIConfig mppiConfig,
-    int P,
+    const PRMPPIConfig mppiConfig,
     SimState initState,
     const float* __restrict__ nom_nominal,    // (T, dim)
     const float* __restrict__ rob_nominal,    // (T, dim)
@@ -73,6 +72,7 @@ __global__ void PRMPPIfullRolloutKernel(
 {
     int N = mppiConfig.nSamples;
     int T = mppiConfig.nTimesteps;
+    int P = mppiConfig.P;
 
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -119,27 +119,27 @@ __global__ void PRMPPIfullRolloutKernel(
             agent,
             theta,
             envConfig,
-            mppiConfig,
             egoAction,
             true,
             state,
             branchState,
+            branched,
+            0.0f,
             actions,
             nomPidAction,
             drng,
-            branched,
             agent,
             mppiConfig.gateTraversalMargin);
 
         stop = (term != TERM_NONE);
 
-        runningCost += decay * stateCost(agent, state, t, envConfig, mppiConfig);
-        safeCost = min(safeCost, safetyCost(agent, state, t, envConfig, mppiConfig));
+        runningCost += decay * PRMPPIstateCost(agent, state, t, envConfig, mppiConfig);
+        safeCost = min(safeCost, PRMPPIsafetyCost(agent, state, t, envConfig, mppiConfig));
 
         decay *= 0.9f;
     }
 
-    runningCost += finalCost(agent, state, envConfig, mppiConfig);
+    runningCost += PRMPPIfinalCost(agent, state, envConfig, mppiConfig);
 
     float* out = robust ? cost_rob : cost_nom;
 
@@ -205,19 +205,7 @@ __global__ void PRMPPIcomputeMinCostsKernel(
     const float* cost_arr = which == 0 ? cost_nom : (which == 1 ? cost_rob : cost_rob + 1);
 
     for (int i = tid; i < N; i += blockDim.x)
-    {
-        // float v;
-        // if (which == 0)
-        //     v = cost_nom[i * 2 + 0];
-        // else if (which == 1)
-        //     v = cost_rob[i * 2 + 0];
-        // else
-        //     v = cost_rob[i * 2 + 1];
-
-        float v = cost_arr[i * 2];
-
-        val = fminf(val, v);
-    }
+        val = fminf(val, cost_arr[i * 2]);
 
     s[tid] = val;
     __syncthreads();
@@ -278,13 +266,6 @@ __global__ void PRMPPIWeightedAverageKernel(
 
     for (int i = tid; i < N; i += blockDim.x)
     {
-        // float cost;
-        // switch (which)
-        // {
-        // case 0:  cost = cost_nom[2 * i];     break;
-        // case 1:  cost = cost_rob[2 * i];     break;
-        // default: cost = cost_rob[2 * i + 1]; break;
-        // }
         float cost = cost_arr[2 * i];
 
         float w = __expf(-invTemp * (cost - minCost));
@@ -329,17 +310,16 @@ __global__ void PRMPPIWeightedAverageKernel(
 __global__ void PRMPPIcomputeCandidateCostKernel(
     int agent,
     EnvironmentConfig envConfig,
-    MPPIConfig mppiConfig,
+    PRMPPIConfig mppiConfig,
     SimState initState,
     const float* __restrict__ cand1_nominal,      // (T, dim)
     const float* __restrict__ cand2_nominal,      // (T, dim)
     const int* __restrict__ thetas,     // (P)
     float* __restrict__ candCosts,        // (2, P)
-    curandState* __restrict__ rngStates,         // (2*P at least)
-    int P,
-    float safetyWeight
+    curandState* __restrict__ rngStates         // (2*P at least)
 )
 {
+    int P = mppiConfig.P;
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (tid >= 2 * P)
@@ -378,30 +358,30 @@ __global__ void PRMPPIcomputeCandidateCostKernel(
             agent,
             thetas[p],
             envConfig,
-            mppiConfig,
             egoAction,
             true,
             state,
             branchState,
+            branched,
+            0.0f,
             actions,
             nomPidAction,
             drng,
-            branched,
             agent,
             mppiConfig.gateTraversalMargin);
 
         stop = (term != TERM_NONE);
 
-        cost += decay * stateCost(agent, state, t, envConfig, mppiConfig);
+        cost += decay * PRMPPIstateCost(agent, state, t, envConfig, mppiConfig);
 
         decay *= 0.9f;
 
-        safeCost = min(safeCost, safetyCost(agent, state, t, envConfig, mppiConfig));
+        safeCost = min(safeCost, PRMPPIsafetyCost(agent, state, t, envConfig, mppiConfig));
     }
 
-    cost += finalCost(agent, state, envConfig, mppiConfig);
+    cost += PRMPPIfinalCost(agent, state, envConfig, mppiConfig);
     if (safeCost < 0.0f)
-        cost += safetyWeight;
+        cost += mppiConfig.safetyWeight;
 
     candCosts[second * P + p] = cost;
 
@@ -412,15 +392,15 @@ __global__ void PRMPPIcomputeCandidateCostKernel(
 __global__ void PRMPPIcomputeSafeCostKernel(
     int agent,
     EnvironmentConfig envConfig,
-    MPPIConfig mppiConfig,
+    PRMPPIConfig mppiConfig,
     SimState initState,
     const float* __restrict__ nom_nominal,    // (T, dim)
     const int* __restrict__ thetas,     // (P)
     float* __restrict__ candCosts,        // (P at least)
-    curandState* __restrict__ rngStates,     // (P at least)
-    int P
+    curandState* __restrict__ rngStates     // (P at least)
 )
 {
+    int P = mppiConfig.P;
     int p = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (p >= P)
@@ -451,19 +431,19 @@ __global__ void PRMPPIcomputeSafeCostKernel(
             agent,
             thetas[p],
             envConfig,
-            mppiConfig,
             egoAction,
             true,
             state,
             branchState,
+            branched,
+            0.0f,
             actions,
             nomPidAction,
             drng,
-            branched,
             agent,
             mppiConfig.gateTraversalMargin);
 
-        safeCost = min(safeCost, safetyCost(agent, state, t, envConfig, mppiConfig));
+        safeCost = min(safeCost, PRMPPIsafetyCost(agent, state, t, envConfig, mppiConfig));
 
         stop = (term != TERM_NONE);
     }

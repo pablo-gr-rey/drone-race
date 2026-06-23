@@ -84,10 +84,8 @@ __global__ void shiftSplineKernel(
 // Sample opponent models & dyamics ; if failed, atomicAdd 1 to failCount
 __global__ void verifyNominalFailureKernel(
     int controlAgent,
-    int nVerif,
     EnvironmentConfig envConfig,
     MPPIConfig mc,
-    int nTimesteps,
     SimState initState,
     const float* __restrict__ initBelief,
     const float* __restrict__ nominal,     // (nModels+1, T, dim)
@@ -106,12 +104,11 @@ __global__ void PRMPPIsampleThetaValues(
     int P
 );
 
-// Full rollout for PRMPPI, one thread per (rob/nom, sample, theta). note that each 
+// Full rollout for PRMPPI, one thread per (rob/nom, sample, theta)
 __global__ void PRMPPIfullRolloutKernel(
     int agent,
     const EnvironmentConfig envConfig,
-    const MPPIConfig mppiConfig,
-    int P,
+    const PRMPPIConfig mppiConfig,
     SimState initState,
     const float* __restrict__ nom_nominal,    // (T, dim)
     const float* __restrict__ rob_nominal,    // (T, dim)
@@ -160,26 +157,23 @@ __global__ void PRMPPIWeightedAverageKernel(
 __global__ void PRMPPIcomputeCandidateCostKernel(
     int agent,
     EnvironmentConfig envConfig,
-    MPPIConfig mppiConfig,
+    PRMPPIConfig mppiConfig,
     SimState initState,
     const float* __restrict__ cand1_nominal,      // (T, dim)
     const float* __restrict__ cand2_nominal,      // (T, dim)
     const int* __restrict__ thetas,     // (P)
     float* __restrict__ candCosts,        // (2, P)
-    curandState* __restrict__ rngStates,          // (2*P at least)
-    int P,
-    float safetyWeight
+    curandState* __restrict__ rngStates          // (2*P at least)
 );
 
 // Compute safe cost for the nominal and all models, P threads (using the rng of the first P rollouts). writes into candCosts[0:P]
 __global__ void PRMPPIcomputeSafeCostKernel(
     int agent,
     EnvironmentConfig envConfig,
-    MPPIConfig mppiConfig,
+    PRMPPIConfig mppiConfig,
     SimState initState,
     const float* __restrict__ nom_nominal,    // (T, dim)
     const int* __restrict__ thetas,     // (P)
     float* __restrict__ candCosts,        // (P at least)
-    curandState* __restrict__ rngStates,     // (P at least)
-    int P
+    curandState* __restrict__ rngStates     // (P at least)
 );

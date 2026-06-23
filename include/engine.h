@@ -15,8 +15,7 @@ class SimulationEngine
 public:
     SimulationEngine(
         const EnvironmentConfig& cfg,
-        const VerifConfig& verifConfig,
-        const MPPIConfig& mppiConfig,
+        const AnyControllerConfig& contConfig,
         int seed);
 
     ~SimulationEngine();
@@ -30,7 +29,6 @@ public:
 
     // public config & track data
     EnvironmentConfig envConfig;
-    VerifConfig verifConfig;
 
     // current simulation state
     SimState state;
@@ -40,9 +38,10 @@ private:
 
     float* d_trackPoints = nullptr;   // sent to MPPI controller
     int seed;
+    CONTROLLER_KIND contKind;
 
     // controllers
-    MPPIController mppiCont;
+    std::unique_ptr<Controller> controller;
 
     std::mt19937 rng;
 

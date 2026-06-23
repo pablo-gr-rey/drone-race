@@ -17,8 +17,7 @@
 
 SimulationEngine::SimulationEngine(
     const EnvironmentConfig& config,
-    const VerifConfig& vConfig,
-    const MPPIConfig& mppiConfig,
+    const AnyControllerConfig& contConfig,
     int s)
     : rng(s)
 {
@@ -26,7 +25,6 @@ SimulationEngine::SimulationEngine(
     seed = s;
 
     envConfig = config;
-    verifConfig = vConfig;
 
     // initialize current state from config
     for (int a = 0; a < N_AGENTS; a++)
@@ -45,18 +43,24 @@ SimulationEngine::SimulationEngine(
     }
 
     allocTrack();
-    mppiCont = MPPIController(envConfig, mppiConfig, verifConfig, d_trackPoints, seed);
-    mppiCont.engine = this;
 
-    if (USE_SPLINES)
-    {
-        std::vector<float> B = mppiCont.buildSplineMatrix();
-        for (float b : B)
+    // initialize controller
+    controller = std::visit([&](auto&& concreteConfig) -> std::unique_ptr<Controller> {
+        using T = std::decay_t<decltype(concreteConfig)>;
+
+        if constexpr (std::is_same_v<T, MPPIConfig>)
         {
-            if (!isfinite(b))
-                std::cout << "\n\nWARNING WARNING: invalid value detected in spline matrix:" << b << "\n\n";
+            contKind = CONT_MPPI;
+            return std::make_unique<MPPIController>(envConfig, concreteConfig, d_trackPoints, s);
         }
-    }
+        else if constexpr (std::is_same_v<T, PRMPPIConfig>)
+        {
+            contKind = CONT_PRMPPI;
+            return std::make_unique<PRMPPIController>(envConfig, concreteConfig, d_trackPoints, s);
+        }
+        }, contConfig);
+
+    controller->engine = this;
 
     // we only need the S of the opponent
     // this could be faster if we only assume 1 opponent)
@@ -103,119 +107,125 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
     writer.pushFloatArray(egoAction);
 
-    std::cout << "controller " << envConfig.iMppi << " is MPPI controller" << std::endl;
-
-    writer.pushFloatArray(mppiCont.h_belief);
-
-    writer.pushIntArray<uint>(mppiCont.failCount);
-    writer.pushFloat(mppiCont.epsilon);
-    writer.pushFloat(mppiCont.epsilonPartial);
-    writer.pushInt32((int) mppiCont.useNewPlan);
-    writer.pushFloat(mppiCont.certifiedLoss);
-
-    writer.pushInt32(N_TRUE_MODELS);
-
-    SimState initState = state;
-    MPPIConfig mppiConfig = mppiCont.mppiConfig;
-
-    std::vector<float> fullPos(mppiConfig.nTimesteps * N_AGENTS * DIM);
-
-    HostRNG hrng{ &nd, &rng };
-
-    for (int theta = 0; theta < N_TRUE_MODELS; theta++)
+    if (auto mppiCont = dynamic_cast<MPPIController*>(controller.get()))
     {
-        SimState predState = initState;
+        std::cout << "controller " << envConfig.iMppi << " is MPPI controller" << std::endl;
 
-        BranchState bstate;
-        initBranchState(bstate, mppiCont.h_belief.data(), mppiConfig.minConfidence);
+        writer.pushFloatArray(mppiCont->h_belief);
 
-        int stopTime = -1;
-        EventType stopReason = EVT_TRUNCATED;
-        int stopAgent = -1;
+        writer.pushIntArray<uint>(mppiCont->failCount);
+        writer.pushFloat(mppiCont->epsilon);
+        writer.pushFloat(mppiCont->epsilonPartial);
+        writer.pushInt32((int) mppiCont->useNewPlan);
+        writer.pushFloat(mppiCont->certifiedLoss);
 
-        float scratchActions[N_AGENTS * DIM];
-        float nomPidAction[N_TRUE_MODELS * DIM];
-        std::vector<float> egoActions(mppiConfig.nTimesteps * DIM);
+        writer.pushInt32(N_TRUE_MODELS);
 
-        writer.pushIntArray<int>(bstate.predTheta);
+        SimState initState = state;
+        MPPIConfig mppiConfig = mppiCont->mppiConfig;
 
-        // std::cout << "sending initPredTheta: " << bstate.predTheta[0] << "\n";
+        std::vector<float> fullPos(mppiConfig.nTimesteps * N_AGENTS * DIM);
 
-        int tOrigin = 0;
+        HostRNG hrng{ &nd, &rng };
 
-        for (int t = 0; t < mppiConfig.nTimesteps; t++)
+        for (int theta = 0; theta < N_TRUE_MODELS; theta++)
         {
-            // int startInd = ((bstate.predTheta + 1) * mppiConfig.nTimesteps + t - bstate.branchingTime) * DIM;
-            // int startInd = (flattenBranchIndex(bstate.predTheta) * mppiConfig.nTimesteps + t - localBranchTimeOrigin(bstate.predTheta, bstate.branchingTime)) * DIM;
-            int startInd = (flattenBranchIndex(bstate.predTheta) * mppiConfig.nTimesteps + t - tOrigin) * DIM;
+            SimState predState = initState;
 
-            for (int d = 0; d < DIM; d++)
-                egoActions[t * DIM + d] = mppiCont.h_nominal[startInd + d];
+            BranchState bstate;
+            initBranchState(bstate, mppiCont->h_belief.data(), mppiConfig.minConfidence);
 
-            bool branched = false;
+            int stopTime = -1;
+            EventType stopReason = EVT_TRUNCATED;
+            int stopAgent = -1;
 
-            TerminalType term = environmentStep<true, true>(
-                t,
-                envConfig.iMppi,
-                theta,
-                envConfig,
-                mppiConfig,
-                egoActions.data() + t * DIM,
-                false,                  // no PID noise for reproducible display
-                predState,
-                bstate,
-                scratchActions,
-                nomPidAction,
-                hrng,
-                branched);
+            float scratchActions[N_AGENTS * DIM];
+            float nomPidAction[N_TRUE_MODELS * DIM];
+            std::vector<float> egoActions(mppiConfig.nTimesteps * DIM);
 
-            if (branched)
-                tOrigin = t + 1;
+            writer.pushIntArray<int>(bstate.predTheta);
 
-            for (int i = 0; i < N_AGENTS * DIM; i++)
-                fullPos[t * N_AGENTS * DIM + i] = predState.pos[i];
+            // std::cout << "sending initPredTheta: " << bstate.predTheta[0] << "\n";
 
-            if (term != TERM_NONE)
+            int tOrigin = 0;
+
+            for (int t = 0; t < mppiConfig.nTimesteps; t++)
             {
-                for (int tt = t + 1; tt < mppiConfig.nTimesteps; tt++)
+                // int startInd = ((bstate.predTheta + 1) * mppiConfig.nTimesteps + t - bstate.branchingTime) * DIM;
+                // int startInd = (flattenBranchIndex(bstate.predTheta) * mppiConfig.nTimesteps + t - localBranchTimeOrigin(bstate.predTheta, bstate.branchingTime)) * DIM;
+                int startInd = (flattenBranchIndex(bstate.predTheta) * mppiConfig.nTimesteps + t - tOrigin) * DIM;
+
+                for (int d = 0; d < DIM; d++)
+                    egoActions[t * DIM + d] = mppiCont->h_nominal[startInd + d];
+
+                bool branched = false;
+
+                TerminalType term = environmentStep<true, true>(
+                    t,
+                    envConfig.iMppi,
+                    theta,
+                    envConfig,
+                    egoActions.data() + t * DIM,
+                    false,                  // no PID noise for reproducible display
+                    predState,
+                    bstate,
+                    branched,
+                    mppiConfig.minConfidence,
+                    scratchActions,
+                    nomPidAction,
+                    hrng);
+
+                if (branched)
+                    tOrigin = t + 1;
+
+                for (int i = 0; i < N_AGENTS * DIM; i++)
+                    fullPos[t * N_AGENTS * DIM + i] = predState.pos[i];
+
+                if (term != TERM_NONE)
                 {
-                    for (int i = 0; i < N_AGENTS * DIM; i++)
-                        fullPos[tt * N_AGENTS * DIM + i] = predState.pos[i];
+                    for (int tt = t + 1; tt < mppiConfig.nTimesteps; tt++)
+                    {
+                        for (int i = 0; i < N_AGENTS * DIM; i++)
+                            fullPos[tt * N_AGENTS * DIM + i] = predState.pos[i];
+                    }
+
+                    std::cout << "STOPPING SIMULATION at step " << t
+                        << " term " << (int) term << std::endl;
+
+                    stopTime = t;
+                    std::optional<std::pair<EventType, int>> parsed = parseTerm(term, envConfig.iMppi);
+                    stopReason = parsed->first;
+                    stopAgent = parsed->second;
+
+                    break;
                 }
-
-                std::cout << "STOPPING SIMULATION at step " << t
-                    << " term " << (int) term << std::endl;
-
-                stopTime = t;
-                std::optional<std::pair<EventType, int>> parsed = parseTerm(term, envConfig.iMppi);
-                stopReason = parsed->first;
-                stopAgent = parsed->second;
-
-                break;
             }
+
+            std::cout << "Final belief for theta = " << theta << ": ";
+            for (int k = 0; k < N_TRUE_MODELS; k++)
+                std::cout << bstate.belief[k] << " ";
+            std::cout << "\n";
+
+            std::cout << "Final branching time: ";
+            for (int t : bstate.branchingTime)
+                std::cout << t << ' ';
+            std::cout << "\nFinal pred theta: ";
+            for (int t : bstate.predTheta)
+                std::cout << t << ' ';
+            std::cout << "\n";
+
+            writer.pushIntArray<int>(bstate.branchingTime);
+            writer.pushIntArray<int>(bstate.predTheta);
+            writer.pushFloatArray(fullPos);
+            writer.pushFloatArray(egoActions);
+            writer.pushInt32(stopReason);
+            writer.pushInt32(stopTime);
+            writer.pushInt32(stopAgent);
         }
-
-        std::cout << "Final belief for theta = " << theta << ": ";
-        for (int k = 0; k < N_TRUE_MODELS; k++)
-            std::cout << bstate.belief[k] << " ";
-        std::cout << "\n";
-
-        std::cout << "Final branching time: ";
-        for (int t : bstate.branchingTime)
-            std::cout << t << ' ';
-        std::cout << "\nFinal pred theta: ";
-        for (int t : bstate.predTheta)
-            std::cout << t << ' ';
-        std::cout << "\n";
-
-        writer.pushIntArray<int>(bstate.branchingTime);
-        writer.pushIntArray<int>(bstate.predTheta);
-        writer.pushFloatArray(fullPos);
-        writer.pushFloatArray(egoActions);
-        writer.pushInt32(stopReason);
-        writer.pushInt32(stopTime);
-        writer.pushInt32(stopAgent);
     }
+
+    else
+        throw std::runtime_error("Ill-formed controller type in sendState");
 
     sock.send(zmq::buffer(writer.data));
 }
@@ -253,21 +263,42 @@ std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::ar
 
     bool branched = false;
 
-    TerminalType term = environmentStep<true, true>(
-        t,
-        envConfig.iMppi,
-        envConfig.trueTheta,
-        envConfig,
-        mppiCont.mppiConfig,
-        action.data(),
-        true,
-        state,
-        branchState,
-        actBuf.data(),
-        nomPidBuf.data(),
-        hrng,
-        branched
-    );
+    TerminalType term;
+
+    if (auto mppiCont = dynamic_cast<MPPIController*>(controller.get()))
+        // MPPI needs belief & branching update
+        term = environmentStep<true, true>(
+            t,
+            envConfig.iMppi,
+            envConfig.trueTheta,
+            envConfig,
+            action.data(),
+            true,
+            state,
+            branchState,
+            branched,
+            mppiCont->mppiConfig.minConfidence,
+            actBuf.data(),
+            nomPidBuf.data(),
+            hrng
+        );
+    else
+        // other controllers may only use belief update
+        term = environmentStep<true, false>(
+            t,
+            envConfig.iMppi,
+            envConfig.trueTheta,
+            envConfig,
+            action.data(),
+            true,
+            state,
+            branchState,
+            branched,
+            0.0f,
+            actBuf.data(),
+            nomPidBuf.data(),
+            hrng
+        );
 
     std::copy(std::begin(branchState.belief), std::end(branchState.belief), belief.begin());
 
@@ -288,9 +319,9 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
         std::cout << "\nSTEP " << step << "\n";
 
         std::array<float, DIM> action;
-        mppiCont.getControl(envConfig.iMppi, state, action.data());
+        controller->getControl(envConfig.iMppi, state, action.data());
 
-        stopInfo = dynStep(action, step, mppiCont.h_belief);
+        stopInfo = dynStep(action, step, controller->h_belief);
 
         sendState(sock, step, action);
 

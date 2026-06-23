@@ -1,8 +1,9 @@
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import IntEnum
 import math
 import random
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, ClassVar, Optional
 
 import numpy as np
 
@@ -67,6 +68,12 @@ class EVENT_TYPE(IntEnum):
     EVT_TRUNCATED = 3
 
 
+class CONTROLLER_KIND(IntEnum):
+    CONT_INVALID = -1
+    CONT_MPPI = 0
+    CONT_PRMPPI = 1
+
+
 @dataclass
 class GateEnvironmentConfig:
     nAgents: int = 2
@@ -115,7 +122,7 @@ class GateEnvironmentConfig:
     seed: int = 42  # if -1, then it will be set to a random value
 
     nModelFactors: int = 1
-    nTrueModels: int = field(init=False)
+    nTrueModels: int = field(init=False, metadata={"send": False})
     modelSizes: np.ndarray = field(default_factory=lambda: np.array([]))
     initBelief: np.ndarray = field(default_factory=lambda: np.array([]))
 
@@ -198,35 +205,7 @@ class GateEnvironmentConfig:
 
 
 @dataclass
-class VerifConfig:
-    N: int = int(1e6)
-    beta: float = 1e-6
-    horizon: int = 40
-
-    maxEps: float = 0.01
-
-    prMppiDelta: float = 0.1
-    prMppiP: int = 0
-
-    def __post_init__(self):
-        if self.prMppiP == 0:
-            self.prMppiP = math.ceil((1 - self.prMppiDelta) / self.prMppiDelta)
-
-
-# TODO: this is now useless
-@dataclass
-class ControllerConfig:
-    def getDefaultName(self) -> str:
-        if isinstance(self, PIDConfig):
-            return "PID"
-        elif isinstance(self, MPPIConfig):
-            return "MPPI"
-
-        raise ValueError("Unknown controller config")
-
-
-@dataclass
-class PIDConfig(ControllerConfig):
+class PIDConfig:  # not considered as a ControllerConfig, as these are meant to represent independant controllers (and PID isn't really interesting as a main character)
     kp: float = 1.0
     kd: float = 0.5
 
@@ -238,11 +217,22 @@ class PIDConfig(ControllerConfig):
 
     actionNoise: float = 0.0
 
+    def getDefaultName(self) -> str:
+        return "PID"
+
+
+@dataclass
+class ControllerConfig(ABC):
+    contKind: CONTROLLER_KIND = field(init=False, default=CONTROLLER_KIND.CONT_INVALID)
+
+    @abstractmethod
+    def getDefaultName(self) -> str: ...
+
 
 @dataclass
 class MPPIConfig(ControllerConfig):
-    nSamples: int = 100
-    nTimesteps: int = 20
+    nSamples: int = 10000
+    nTimesteps: int = 60
     nKnots: int = 6
     knots: np.ndarray = field(default_factory=lambda: np.array([]))
     inv_temperature: float = 10
@@ -266,19 +256,68 @@ class MPPIConfig(ControllerConfig):
     # final cost: - distance to the gate * finalDistWeight + min(opp. dist to the gate) * finalOppDistWeight - finalSpeedWeight * dot(finalSpeed, targetDirection)
     finalAdvWeight: float = 10
     finalOppAdvWeight: float = 5
-    finalSpeedWeight: float = 5
-
-    # only used by local Python simulation
-    # opponentPredictors: Optional[list[Callable[[int, np.ndarray, AddStateType], np.ndarray]]] = (
-    #     None  # should be the list of modeled getControl() method of opponents
-    # )
 
     minConfidence: float = 0.9
 
+    # verification details
+
+    nVerifSamples: int = int(1e6)
+    beta: float = 1e-6
+    verifHorizon: int = 40
+
+    maxVerifEps: float = 0.01
+
     def __post_init__(self):
+        self.contKind = CONTROLLER_KIND.CONT_MPPI
         if len(self.knots) == 0:
             self.knots = np.arange(0, self.nKnots) * int((self.nTimesteps - 2) / (self.nKnots - 1))  # we need tau_(M-1) <= T-2
             print(self.knots, self.nKnots)
+
+    def getDefaultName(self) -> str:
+        return "Branching MPPI"
+
+
+@dataclass
+class PRMPPIConfig(ControllerConfig):
+    nSamples: int = 100
+    nTimesteps: int = 20
+
+    inv_temperature: float = 10
+
+    samplingNoise: float = 1.0
+    gateTraversalMargin: float = 0.95
+
+    collDistFactor: float = 1.0
+
+    # running cost is the sum of the distance to the opponents oppDistCost / dist^oppDistCost, or 0 if dist > oppDistThreshold * config.minDist
+    oppDistWeight: float = 1
+    oppDistPower: float = 2
+    oppDistThresholdFactor: float = 3
+    boundaryCost: float = 10
+    boundaryThresholdFactor: float = 1.5
+
+    oppOutsideCost: float = 100
+    winCost: float = 1000
+
+    # final cost: - distance to the gate * finalDistWeight + min(opp. dist to the gate) * finalOppDistWeight - finalSpeedWeight * dot(finalSpeed, targetDirection)
+    finalAdvWeight: float = 10
+    finalOppAdvWeight: float = 5
+
+    # safety costs
+    safetyWeight: float = 1e6
+    minSafeDist: float = 0.0
+
+    delta: float = 0.1
+    P: int = 0
+
+    def __post_init__(self):
+        self.contKind = CONTROLLER_KIND.CONT_PRMPPI
+
+        if self.P == 0:
+            self.P = math.ceil((1 - self.delta) / self.delta)
+
+    def getDefaultName(self) -> str:
+        return "Parameter-robust MPPI"
 
 
 @dataclass
@@ -308,7 +347,30 @@ class MPPIStateInfo:
 
 
 @dataclass
+class PRMPPIStatePredInfo:
+    fullPos: np.ndarray
+    egoActions: np.ndarray
+    stopReason: EVENT_TYPE
+    stopTime: int
+    stopAgent: int
+
+
+@dataclass
+class PRMPPIStateInfo:
+    belief: np.ndarray
+
+    useNomPlan: bool
+
+    nModels: int
+    preds: list[PRMPPIStatePredInfo] = field(metadata={"len": "nModels"})
+
+
+@dataclass
 class FullStateInfo:
+    # kind of a hack, but this is a class member which should be set by the protocol part based on the actual controller type
+    # this way, we can automatically unpack the state information corresponding to the given controller
+    ContStateType: ClassVar[type[MPPIStateInfo] | type[PRMPPIStateInfo]]
+
     step: int
     pos: np.ndarray
     speed: np.ndarray
@@ -318,16 +380,13 @@ class FullStateInfo:
 
     egoAction: np.ndarray
 
-    mppiInfo: MPPIStateInfo
+    contInfo: MPPIStateInfo | PRMPPIStateInfo = field(metadata={"class": "ContStateType"})
 
-    #     int,
-
-
-#     np.ndarray,
-#     np.ndarray,
-#     np.ndarray,
-#     np.ndarray,
-#     np.ndarray,
-#     Optional[tuple[int, np.ndarray, np.ndarray, float, list[tuple[int, int, np.ndarray]]]],
-# ]:
-#     "Return (step, pos, vel, currentS, nLaps, currentGates, Optional[iMppi, belief, failCount, eps, list[(branchingTime, predTheta, fullPos, )]]) from bytes"
+    @classmethod
+    def updateContType(cls, config: ControllerConfig) -> None:
+        if config.contKind == CONTROLLER_KIND.CONT_MPPI:
+            cls.ContStateType = MPPIStateInfo
+        elif config.contKind == CONTROLLER_KIND.CONT_PRMPPI:
+            cls.ContStateType = PRMPPIStateInfo
+        else:
+            raise ValueError(f"Unknown controller kind {config.contKind}")

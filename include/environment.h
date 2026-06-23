@@ -93,15 +93,15 @@ HD INLINE TerminalType environmentStep(
     int controlAgent,
     int trueTheta,
     const EnvironmentConfig& envConfig,
-    const MPPIConfig& mppiConfig,
     const float* __restrict__ egoAction,          // (dim)
     bool applyPidNoise,
     SimState& state,
-    BranchState& branchState,                       // belief is updated in-place. branchingTime and branchUsed are updated if considerBranching is true
+    BranchState& branchState,                       // belief is updated in-place if shouldUpdateBelief. branchingTime and branchUsed are updated if considerBranching is true
+    bool& branched,                                 // set to true if we branched at this step. must be previously initialized to false. unused if considerBranching is false
+    float minConfidence,                            // for branching. unused if considerBranching is false
     float* __restrict__ actions,                  // scratch: (nAgents, dim)
     float* __restrict__ nomPidAction,             // scratch: (nModels, dim)
     RNG& rng,
-    bool& branched,                 // true if we branched at this step. must be previously initialized to false. unused if considerBranching is false
     int gateMarginAgent = -1,
     float gateMargin = 0.0f)
 {
@@ -222,7 +222,7 @@ HD INLINE TerminalType environmentStep(
     if constexpr (considerBranching)
     {
         int newPredTheta[N_MODEL_FACTORS];
-        findConfident(branchState.belief, mppiConfig.minConfidence, newPredTheta);
+        findConfident(branchState.belief, minConfidence, newPredTheta);
 
         for (int k = 0; k < N_MODEL_FACTORS; k++)
             if (branchState.predTheta[k] == 0 && newPredTheta[k] != 0)
