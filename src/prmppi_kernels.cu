@@ -55,7 +55,7 @@ __global__ void PRMPPIsampleThetaValues(
     theta_rng[p] = local;
 }
 
-// Full rollout for PRMPPI, one thread per (rob/nom, sample, theta)
+// Full rollout for PRMPPI, one thread per (rob/nom, sample, theta). Stores running cost, safe cost in cost[p, s, 0:2]. note that safe cost is not included in running cost (it is included in PRMPPIcostAvgKernel)
 __global__ void PRMPPIfullRolloutKernel(
     int agent,
     const EnvironmentConfig envConfig,
@@ -102,7 +102,7 @@ __global__ void PRMPPIfullRolloutKernel(
     int theta = thetas[p];
 
     float runningCost = 0.0f;
-    float safeCost = INFINITY;
+    float safeCost = -INFINITY;
     float decay = 1.0f;
 
     bool stop = false;
@@ -134,7 +134,7 @@ __global__ void PRMPPIfullRolloutKernel(
         stop = (term != TERM_NONE);
 
         runningCost += decay * PRMPPIstateCost(agent, state, t, envConfig, mppiConfig);
-        safeCost = min(safeCost, PRMPPIsafetyCost(agent, state, t, envConfig, mppiConfig));
+        safeCost = fmaxf(safeCost, PRMPPIsafetyCost(agent, state, t, envConfig, mppiConfig));
 
         decay *= 0.9f;
     }
@@ -149,7 +149,7 @@ __global__ void PRMPPIfullRolloutKernel(
     rngStates[idx] = rng;
 }
 
-// For each sample s, compute expCost := avg(cost[p, s, 0]) and safeCost := min(cost[p, s, 1]); stores cost[0, s, 0] := expCost + weight * (1 if safeCost < 0), cost[0, s, 1] = safeCost. 2*N threads (1st part for nom, 2nd part for rob)
+// For each sample s, compute expCost := avg(cost[p, s, 0]) and safeCost := max(cost[p, s, 1]); stores cost[0, s, 0] := expCost + weight * (1 if safeCost > 0), cost[0, s, 1] = safeCost. 2*N threads (1st part for nom, 2nd part for rob)
 __global__ void PRMPPIcostAvgKernel(
     float* __restrict__ cost_nom,   // (P, N, 2)
     float* __restrict__ cost_rob,   // (P, N, 2)
@@ -168,7 +168,7 @@ __global__ void PRMPPIcostAvgKernel(
     int s = idx % N;
 
     float avg = 0.0f;
-    float minSafe = INFINITY;
+    float maxSafe = -INFINITY;
 
     float* cost = useNom ? cost_nom : cost_rob;
 
@@ -177,18 +177,18 @@ __global__ void PRMPPIcostAvgKernel(
         int off = (p * N + s) * 2;
 
         avg += cost[off];
-        minSafe = fminf(minSafe, cost[off + 1]);
+        maxSafe = fmaxf(maxSafe, cost[off + 1]);
     }
 
     avg /= (float) P;
 
     int out = s * 2;
 
-    cost[out] = avg + ((minSafe < 0.0f) ? safetyWeight : 0.0f);
-    cost[out + 1] = minSafe;
+    cost[out] = avg + ((maxSafe > 0.0f) ? safetyWeight : 0.0f);
+    cost[out + 1] = maxSafe;
 }
 
-// Compute min costs (3 blocks: nom_full, rob_full, rob_safe). blk*sizeof(float) shared memory
+// Compute max costs (3 blocks: nom_full, rob_full, rob_safe). blk*sizeof(float) shared memory
 __global__ void PRMPPIcomputeMinCostsKernel(
     const float* __restrict__ cost_nom,    // (P, N, 2) (only first N are considered)
     const float* __restrict__ cost_rob,    // (P, N, 2) (only first N are considered)
@@ -222,16 +222,17 @@ __global__ void PRMPPIcomputeMinCostsKernel(
         minCosts[which] = s[0];
 }
 
-// Compute weights, and update nominals. 3*T*DIM blocks. 2*blk*sizeof(float) shared memory
+// Compute weights, and update nominals (nom_nominal + cost_nom[0, s, 0] with minCosts[0] -> cand1; rob_nominal + cost_rob[0, s, 0] with mincosts[1] -> cand2; rob_nominal + cost_rob[0, s, 1] with mincosts[2] -> new_rob_nominal), 3*T*DIM blocks. also writes into nu. 2*blk*sizeof(float) shared memory
 __global__ void PRMPPIWeightedAverageKernel(
     const float* __restrict__ nom_nominal,    // (T, dim)
-    float* __restrict__ rob_nominal,      // (T, dim)
-    const float* __restrict__ noise,      // (N, T, dim)
+    const float* __restrict__ rob_nominal,    // (T, dim)
+    const float* __restrict__ noise,      // (T, N, dim)
     const float* __restrict__ cost_nom,      // (P, N, 2) (only first (N, 0/1) are considered)
-    const float* __restrict__ cost_rob,      // (P, N, 2) (only first (N, 0/1) are considered)
+    const float* __restrict__ cost_rob,      // (P, N, 2) (only first (N, 1) are considered)
     const float* __restrict__ minCosts,   // 3
     float* __restrict__ cand1_nominal,    // (T, dim)
     float* __restrict__ cand2_nominal,    // (T, dim)
+    float* __restrict__ new_rob_nominal,        // (T, DIM)
     int N,
     int T,
     float invTempNomFull,
@@ -254,7 +255,7 @@ __global__ void PRMPPIWeightedAverageKernel(
 
     const float* nominal = (which == 0) ? nom_nominal : rob_nominal;
     const float* cost_arr = which == 0 ? cost_nom : (which == 1 ? cost_rob : cost_rob + 1);
-    float* cand_nominal = (which == 0) ? cand1_nominal : (which == 1 ? cand2_nominal : rob_nominal);
+    float* cand_nominal = (which == 0) ? cand1_nominal : (which == 1 ? cand2_nominal : new_rob_nominal);
 
     float invTemp = which == 0 ? invTempNomFull : (which == 1 ? invTempRobFull : invTempRobSafe);
 
@@ -268,7 +269,8 @@ __global__ void PRMPPIWeightedAverageKernel(
     {
         float cost = cost_arr[2 * i];
 
-        float w = __expf(-invTemp * (cost - minCost));
+        // float w = __expf(-invTemp * (cost - minCost));
+        float w = expf(-(cost - minCost) / invTemp);
         float u = nominal[t * DIM + d] + noise[(t * N + i) * DIM + d];
 
         num += w * u;
@@ -341,7 +343,7 @@ __global__ void PRMPPIcomputeCandidateCostKernel(
     DeviceRNG drng{ &rng };
 
     float cost = 0.0f;
-    float safeCost = INFINITY;
+    float safeCost = -INFINITY;
     float decay = 1.0f;
 
     bool stop = false;
@@ -376,11 +378,11 @@ __global__ void PRMPPIcomputeCandidateCostKernel(
 
         decay *= 0.9f;
 
-        safeCost = min(safeCost, PRMPPIsafetyCost(agent, state, t, envConfig, mppiConfig));
+        safeCost = fmaxf(safeCost, PRMPPIsafetyCost(agent, state, t, envConfig, mppiConfig));
     }
 
     cost += PRMPPIfinalCost(agent, state, envConfig, mppiConfig);
-    if (safeCost < 0.0f)
+    if (safeCost > 0.0f)
         cost += mppiConfig.safetyWeight;
 
     candCosts[second * P + p] = cost;
@@ -417,7 +419,7 @@ __global__ void PRMPPIcomputeSafeCostKernel(
     DeviceRNG drng{ &rng };
 
     bool stop = false;
-    float safeCost = INFINITY;
+    float safeCost = -INFINITY;
 
     for (int t = 0; t < mppiConfig.nTimesteps && !stop; ++t)
     {
@@ -443,7 +445,7 @@ __global__ void PRMPPIcomputeSafeCostKernel(
             agent,
             mppiConfig.gateTraversalMargin);
 
-        safeCost = min(safeCost, PRMPPIsafetyCost(agent, state, t, envConfig, mppiConfig));
+        safeCost = fmaxf(safeCost, PRMPPIsafetyCost(agent, state, t, envConfig, mppiConfig));
 
         stop = (term != TERM_NONE);
     }

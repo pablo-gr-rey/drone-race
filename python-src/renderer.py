@@ -17,7 +17,16 @@ from matplotlib.transforms import Bbox
 from matplotlib.widgets import Button, Slider, TextBox
 from PIL import Image
 from tqdm import tqdm
-from utils import EVENT_TYPE, ControllerConfig, FullStateInfo, GateEnvironmentConfig, MPPIConfig, MPPIStateInfo
+from utils import (
+    EVENT_TYPE,
+    ControllerConfig,
+    FullStateInfo,
+    GateEnvironmentConfig,
+    MPPIConfig,
+    MPPIStateInfo,
+    PRMPPIConfig,
+    PRMPPIStateInfo,
+)
 
 
 class ControllerRenderer[ConfigType](ABC):
@@ -315,10 +324,6 @@ class MPPIRenderer(ControllerRenderer[MPPIConfig]):
         for marker in collMarkers:
             marker.set_data([], [])
 
-        if len(mppiState.preds) != self.envConfig.nTrueModels:
-            print(f"WARNING: len(mppiState.preds) = {len(mppiState.preds)} is different from {self.envConfig.nTrueModels=}")
-            return
-
         # Update fail count
         failCount, eps = mppiState.failCount, mppiState.epsilon
 
@@ -351,6 +356,165 @@ class MPPIRenderer(ControllerRenderer[MPPIConfig]):
 
                 text.set_text(f"{b_val:.2f}")
                 text.set_y(b_val + 0.01)
+
+    def getCapturedAxes(self) -> list[plt.Axes]:  # type: ignore
+        return [self.ax_joint_belief, self.ax_failcount] + self.axs_marg_belief
+
+
+class PRMPPIRenderer(ControllerRenderer[PRMPPIConfig]):
+    def init(self) -> None:
+        self.min_show_confidence = 0.01  # if confidence is less than this amount, do not show the trajectories
+
+        gs_mppi = self.base_gs.subgridspec(3, 1, height_ratios=[1, 3, 3], hspace=0.1)
+
+        self.ax_failcount = self.fig.add_subplot(gs_mppi[0])
+
+        gs_marginal = gs_mppi[1].subgridspec(1, self.envConfig.nModelFactors)
+        self.axs_marg_belief = [self.fig.add_subplot(g) for g in gs_marginal]
+
+        self.ax_joint_belief = self.fig.add_subplot(gs_mppi[2])
+
+        # should have shape nModelFactors * (nModelSizes[k])
+        self.pred_colors = [["green", "orange"], ["cyan", "purple"]]
+        self.own_traj_color = "brown"
+
+        # line collections for MPPI predictions
+        # length: nTrueModels * nModelFactors, with items being (pidStrong, pidLight) (each list of size nModelFactors should represent one global theta by parallel lines, one line color represent that specific parameter value)
+        # since in this case the nominal action is not reactive to the environment, PRMPPI's trajectory is the same for all branches
+        self.lcs_pred: list[list[tuple[Line2D, Line2D]]] = []
+        self.nom_pred = (
+            self.ax.plot([], color=self.own_traj_color, marker=None, linewidth=4, alpha=0.8)[0],
+            self.ax.plot([], color=self.own_traj_color, marker=None, linewidth=2, alpha=0.4)[0],
+        )
+
+        for theta in range(self.envConfig.nTrueModels):
+            preds: list[tuple[Line2D, Line2D]] = []
+            for k in range(self.envConfig.nModelFactors):
+                thetaList = self.envConfig.unflattenTheta(theta)
+
+                pidTraj = (
+                    self.ax.plot(
+                        [], color=self.pred_colors[k][thetaList[k]], marker=None, linewidth=3, alpha=0.8, linestyle="-."
+                    )[0],
+                    self.ax.plot(
+                        [], color=self.pred_colors[k][thetaList[k]], marker=None, linewidth=2, alpha=0.4, linestyle="-."
+                    )[0],
+                )
+
+                preds.append(pidTraj)
+
+            self.lcs_pred.append(preds)
+
+        # crash marker (initially empty)
+        maxCollMarkers = self.envConfig.nAgents * self.envConfig.nTrueModels
+        self.collMarkers = [
+            self.ax.plot(
+                [], [], marker="*", markersize=20, color="yellow", markeredgecolor="red", markeredgewidth=1, zorder=5, alpha=0.8
+            )[0]
+            for i in range(maxCollMarkers)
+        ]
+
+        # MPPI failcount status
+        self.ax_failcount.text(
+            0.5, 0.95, "Controller Type: Parameter-robust-MPPI", fontsize=15, ha="center", va="top", fontweight="bold"
+        )
+        self.ax_failcount.text(
+            0.5, 0.6, "Model belief & nominal information:", fontsize=12, ha="center", va="center", fontweight="bold"
+        )
+        self.verif_text = self.ax_failcount.text(0.5, 0.2, "", fontsize=12, ha="center", va="bottom")
+        self.ax_failcount.axis("off")
+
+        # MPPI belief
+
+        # joint belief
+        joint_colors: list[list[str]] = []
+        names: list[str] = []
+        for theta in range(self.envConfig.nTrueModels):
+            thetaList = self.envConfig.unflattenTheta(theta)
+            joint_colors.append([self.pred_colors[k][thetaList[k]] for k in range(self.envConfig.nModelFactors)])
+            names.append("-".join(self.oppNames[k][thetaList[k]] for k in range(self.envConfig.nModelFactors)))
+
+        self.joint_belief = self.createBeliefBar(self.ax_joint_belief, names, joint_colors, "Joint belief", None)
+
+        # marginal belief
+        self.marginal_belief = [
+            self.createBeliefBar(ax, names, [[c] for c in colors], f"Marginal belief for {k}", None, None)
+            for k, (ax, names, colors) in enumerate(zip(self.axs_marg_belief, self.oppNames, self.pred_colors))
+        ]
+
+    def update(self, state: FullStateInfo) -> None:
+        collMarkers = iter(self.collMarkers)
+
+        mppiState = state.contInfo
+        assert isinstance(mppiState, PRMPPIStateInfo), (
+            f"Expected state.contInfo to be of type PRMPPIStateInfo, but received {type(mppiState)}"
+        )
+
+        if len(mppiState.preds) != self.envConfig.nTrueModels:
+            print(f"WARNING: len(mppiState.preds) = {len(mppiState.preds)} is different from {self.envConfig.nTrueModels=}")
+            return
+
+        # update MPPI predictions
+
+        for theta, (lTrajs, pred) in enumerate(zip(self.lcs_pred, mppiState.preds)):
+            thetaTuple = self.envConfig.unflattenTheta(theta)
+
+            curPos = state.pos.reshape((self.envConfig.nAgents, self.envConfig.dim))
+            fullPos = pred.fullPos.reshape((self.config.nTimesteps, self.envConfig.nAgents, self.envConfig.dim))
+
+            fullPos = np.concat([[curPos], fullPos])
+
+            vHor = self.config.nTimesteps
+
+            sides = np.arange(-self.envConfig.nModelFactors + 1, self.envConfig.nModelFactors, 2)
+
+            for k, pid in enumerate(lTrajs):
+                if mppiState.belief[theta] > self.min_show_confidence:
+                    # TODO: set_data is useless here (we only should keep one trajectory)
+                    self.set_data(*self.nom_pred, fullPos[:, self.envConfig.iMppi, :], vHor, sides[k])
+
+                    color = self.pred_colors[k][thetaTuple[k]]
+
+                    self.set_data(*pid, fullPos[:, 1 - self.envConfig.iMppi, :], vHor, sides[k])
+
+                    if pred.stopReason == EVENT_TYPE.EVT_COLLISION or pred.stopReason == EVENT_TYPE.EVT_OUTSIDE:
+                        marker = next(collMarkers)
+                        marker.set_data(
+                            [fullPos[pred.stopTime + 1, pred.stopAgent, self.axis[0]]],
+                            [fullPos[pred.stopTime + 1, pred.stopAgent, self.axis[1]]],
+                        )
+
+                        marker.set_alpha(0.8)
+                        marker.set_markersize(20)
+                else:
+                    self.set_data(*pid, None, 0)
+
+        # hide remaining coll markers
+        for marker in collMarkers:
+            marker.set_data([], [])
+
+        # update joint belief
+        for bar, text, b_val in zip(self.joint_belief[0], self.joint_belief[1], mppiState.belief):
+            bar.set_height(b_val)
+
+            text.set_text(f"{b_val:.2f}")
+            text.set_y(b_val + 0.01)
+
+        # update marginal belief
+        for k in range(self.envConfig.nModelFactors):
+            marg = self.envConfig.computeMarginal(mppiState.belief, k)
+
+            for bar, text, b_val in zip(self.marginal_belief[k][0], self.marginal_belief[k][1], marg):
+                bar.set_height(b_val)
+
+                # color = "#2ecc71" if b_val >= self.config.minConfidence else "#3498db"
+                color = "#3498db"
+                bar.set_facecolor(color)
+
+                text.set_text(f"{b_val:.2f}")
+                text.set_y(b_val + 0.01)
+
+        self.verif_text.set_text(f"Use nominal plan: {'YES' if mppiState.useNomPlan else 'NO (use robust plan)'}")
 
     def getCapturedAxes(self) -> list[plt.Axes]:  # type: ignore
         return [self.ax_joint_belief, self.ax_failcount] + self.axs_marg_belief
@@ -460,6 +624,8 @@ class EnvironmentRenderer:
         self.contRenderer: ControllerRenderer
         if isinstance(contConfig, MPPIConfig):
             self.contRenderer = MPPIRenderer(envConfig, contConfig, oppNames, self.ax, self.fig, gs_status_cont[1], axis)
+        elif isinstance(contConfig, PRMPPIConfig):
+            self.contRenderer = PRMPPIRenderer(envConfig, contConfig, oppNames, self.ax, self.fig, gs_status_cont[1], axis)
         else:
             raise ValueError(f"Unsupported controller config class {type(contConfig)} for rendering")
 

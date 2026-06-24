@@ -119,7 +119,7 @@ __global__ void PRMPPIfullRolloutKernel(
     curandState* __restrict__ rngStates         // (P, N)
 );
 
-// For each sample s, compute expCost := avg(cost[p, s, 0]) and safeCost := min(cost[p, s, 1]); stores cost[0, s, 0] := expCost + weight * (1 if safeCost < 0), cost[0, s, 1] = safeCost. 2*N threads (1st part for nom, 2nd part for rob)
+// For each sample s, compute expCost := avg(cost[p, s, 0]) and safeCost := max(cost[p, s, 1]); stores cost[0, s, 0] := expCost + weight * (1 if safeCost < 0), cost[0, s, 1] = safeCost. 2*N threads (1st part for nom, 2nd part for rob)
 __global__ void PRMPPIcostAvgKernel(
     float* __restrict__ cost_nom,   // (P, N, 2)
     float* __restrict__ cost_rob,   // (P, N, 2)
@@ -135,16 +135,17 @@ __global__ void PRMPPIcomputeMinCostsKernel(
     float* __restrict__ minCosts,         // 3
     int N);
 
-// Compute weights, and update nominals (nom_nominal + cost_nom[0, s, 0] with minCosts[0] -> cand1; rob_nominal + cost_rob[0, s, 0] with mincosts[1] -> cand2; rob_nominal + cost_rob[0, s, 1] with mincosts[2] -> rob_nominal), 3*T*DIM blocks. also writes into nu. 2*blk*sizeof(float) shared memory
+// Compute weights, and update nominals (nom_nominal + cost_nom[0, s, 0] with minCosts[0] -> cand1; rob_nominal + cost_rob[0, s, 0] with mincosts[1] -> cand2; rob_nominal + cost_rob[0, s, 1] with mincosts[2] -> new_rob_nominal), 3*T*DIM blocks. also writes into nu. 2*blk*sizeof(float) shared memory
 __global__ void PRMPPIWeightedAverageKernel(
     const float* __restrict__ nom_nominal,    // (T, dim)
-    float* __restrict__ rob_nominal,      // (T, dim)
+    const float* __restrict__ rob_nominal,    // (T, dim)
     const float* __restrict__ noise,      // (T, N, dim)
     const float* __restrict__ cost_nom,      // (P, N, 2) (only first (N, 0/1) are considered)
     const float* __restrict__ cost_rob,      // (P, N, 2) (only first (N, 1) are considered)
     const float* __restrict__ minCosts,   // 3
     float* __restrict__ cand1_nominal,    // (T, dim)
     float* __restrict__ cand2_nominal,    // (T, dim)
+    float* __restrict__ new_rob_nominal,        // (T, DIM)
     int N,
     int T,
     float invTempNomFull,

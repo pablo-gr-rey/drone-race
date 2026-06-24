@@ -13,9 +13,11 @@ from typing import Any
 import numpy as np
 from protocol import ZMQRecv
 from utils import (
+    ControllerConfig,
     GateEnvironmentConfig,
     MPPIConfig,
     PIDConfig,
+    PRMPPIConfig,
     circularGateTrack,
 )
 
@@ -128,8 +130,8 @@ def standardGateEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PID
 
 
 def tinyGateEnv(
-    roundObs: bool = True, afraid: bool = False, useSplines: bool = True
-) -> tuple[GateEnvironmentConfig, MPPIConfig, list[PIDConfig], list[list[str]]]:
+    roundObs: bool = True, afraid: bool = False, useSplines: bool = True, usePR: bool = False
+) -> tuple[GateEnvironmentConfig, ControllerConfig, list[PIDConfig], list[list[str]]]:
     nAgents = 2
     dim = 2
     nTrackSamples = 512
@@ -161,7 +163,7 @@ def tinyGateEnv(
         nRaceLines=2,
         nWinLaps=1,
         nGates=nGates,
-        maxSpeed=np.linspace(2, 2.5, nAgents),
+        maxSpeed=np.linspace(2.05, 2.5, nAgents),
         # maxSpeed=np.linspace(2, 3, nAgents),
         maxAccel=np.linspace(3, 3, nAgents),
         nTrackSamples=nTrackSamples,
@@ -169,7 +171,7 @@ def tinyGateEnv(
         gateCenters=gateCenters,
         gateVectors=gateVectors,
         gateRadius=gateRadius,
-        minDist=1,
+        minDist=1.5,
         arenaMin=np.array([-0.1 * length, -2 * height * heightFactor]),
         arenaMax=np.array([1.1 * length, 2 * height * heightFactor]),
         seed=42,
@@ -177,12 +179,14 @@ def tinyGateEnv(
         nModelFactors=1,
         modelSizes=np.array([2]),
         initBelief=np.array([0.5, 0.5]),
+        actionNoiseLevel=0.1,
     )
 
     if roundObs:
         config.nRoundObstacles = 1
         config.roundObsCenters = np.array([length / 2, 0.0])
-        config.roundObsRadius = np.array([height * 1.5])
+        # config.roundObsRadius = np.array([height * 1.5])
+        config.roundObsRadius = np.array([height * 0.5])
     else:
         config.nObstacles = 1
         config.obstacles = np.array([length * (0.5 - obsSize / 2), -height, length * (0.5 + obsSize / 2), height])
@@ -224,7 +228,7 @@ def tinyGateEnv(
     # if afraid:
     #     config.init_pos = np.array([10.0, 4.0, 0.1, 0.0])a
 
-    if useSplines:
+    if useSplines and not usePR:
         mppiconfig = MPPIConfig(
             nSamples=2**16,
             # nSamples=3,
@@ -256,7 +260,7 @@ def tinyGateEnv(
             nKnots=10,
         )
 
-    else:
+    elif not usePR:
         mppiconfig = MPPIConfig(
             nSamples=2**15,
             # nSamples=1,
@@ -286,6 +290,35 @@ def tinyGateEnv(
             minConfidence=0.95,
             # initBelief=np.array([0.7, 0.3]),
             nKnots=15,
+        )
+
+    else:
+        mppiconfig = PRMPPIConfig(
+            nSamples=2**15,
+            # nSamples=1,
+            nTimesteps=60,
+            inv_temperature=10,
+            samplingNoise=3,
+            # samplingNoise=0.5,
+            gateTraversalMargin=0.9,  # restrict 5% on each side
+            collDistFactor=1.1,
+            # collDistFactor=1.3,
+            finalAdvWeight=200,
+            # finalAdvWeight=0,
+            # finalSpeedWeight=50,
+            # oppDistWeight=0,
+            oppDistWeight=0,
+            oppDistThresholdFactor=3,
+            finalOppAdvWeight=0,
+            # finalOppAdvWeight=500,
+            boundaryCost=0,
+            # boundaryCost=0.0,
+            boundaryThresholdFactor=2,
+            oppOutsideCost=0,
+            # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
+            winCost=1e6,
+            safetyWeight=1e6,
+            delta=0.1,
         )
 
     return config, mppiconfig, [pid0, pid1], [["Top", "Bottom"]]
@@ -597,19 +630,21 @@ def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig
 
 def mainGate():
     # envConfig, mppiconfig, pid0, pid1, oppNames = standardGateEnv()  # pid0 = afraid; pid1 = bold
-    envConfig, mppiconfig, pids, oppNames = tinyGateEnv(afraid=False, useSplines=True)  # pid0 = top; pid1 = bottom
+    # envConfig, mppiconfig, pids, oppNames = tinyGateEnv(afraid=False, useSplines=True)  # pid0 = top; pid1 = bottom
     # envConfig, mppiconfig, pids, oppNames = tinyGateEnv(afraid=False, useSplines=False)  # pid0 = top; pid1 = bottom
+    envConfig, mppiconfig, pids, oppNames = tinyGateEnv(afraid=False, usePR=True)  # pid0 = top; pid1 = bottom
     # envConfig, mppiconfig, pids, oppNames = tinyGateEnv2Models(roundObs=True)
     # envConfig, mppiconfig, pid0, pid1, oppNames = activeEnv()  # pid0 = afraid; pid1 = bold
 
     envConfig.trueTheta = 1
     envConfig.iMppi = 1
 
-    mppiconfig.nVerifSamples = 2**17
-    mppiconfig.beta = 1e-6
-    mppiconfig.verifHorizon = 40
-    mppiconfig.maxVerifEps = 0.001
-    # mppiconfig.maxVerifEps = 10
+    if isinstance(mppiconfig, MPPIConfig):
+        mppiconfig.nVerifSamples = 2**17
+        mppiconfig.beta = 1e-6
+        mppiconfig.verifHorizon = 40
+        mppiconfig.maxVerifEps = 0.001
+        # mppiconfig.maxVerifEps = 10
 
     envConfig.sendStates = True
 

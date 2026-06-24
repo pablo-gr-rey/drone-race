@@ -81,6 +81,7 @@ void PRMPPIController::allocDevice()
     CUDA_CHECK(cudaMalloc(&d_rob_nominal, T * DIM * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_cand1_nominal, T * DIM * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_cand2_nominal, T * DIM * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_new_rob_nominal, T * DIM * sizeof(float)));
 
     // Min-reduction / nu
     CUDA_CHECK(cudaMalloc(&d_minCosts, 3 * sizeof(float)));
@@ -146,6 +147,7 @@ void PRMPPIController::freeDevice()
     safe_free(d_rob_nominal);
     safe_free(d_cand1_nominal);
     safe_free(d_cand2_nominal);
+    safe_free(d_new_rob_nominal);
 
     safe_free(d_minCosts);
 
@@ -232,7 +234,7 @@ void PRMPPIController::getControl(
     CUDA_CHECK(cudaDeviceSynchronize());
 #endif
 
-    // 5. For each sample s, compute expCost := avg(cost[p, s, 0]) and safeCost := min(cost[p, s, 1]); stores cost[0, s, 0] := expCost + weight * (1 if safeCost < 0), cost[0, s, 1] = safeCost. 2*N threads (1st part for nom, 2nd part for rob)
+    // 5. For each sample s, compute expCost := avg(cost[p, s, 0]) and safeCost := max(cost[p, s, 1]); stores cost[0, s, 0] := expCost + weight * (1 if safeCost < 0), cost[0, s, 1] = safeCost. 2*N threads (1st part for nom, 2nd part for rob)
     int avgGrid = (2 * N + blk - 1) / blk;
     PRMPPIcostAvgKernel << <avgGrid, blk >> > (
         d_cost_nom,
@@ -258,12 +260,15 @@ void PRMPPIController::getControl(
         d_minCosts,
         d_cand1_nominal,
         d_cand2_nominal,
+        d_new_rob_nominal,
         N,
         T,
         invTempNomFull,
         invTempRobFull,
         invTempRobSafe,
         d_nu);
+
+    std::swap(d_rob_nominal, d_new_rob_nominal);
 
     // 8. compute full cost for the 2 candidates nominals and all models, 2 * P threads (using the rng of the first 2*P rollouts)
     int candGrd = (2 * P + blk - 1) / blk;
@@ -300,6 +305,9 @@ void PRMPPIController::getControl(
     cand1Cost /= (float) P;
     cand2Cost /= (float) P;
 
+    std::cout << "Averaged full cost for candidate 1 (from d_nom_nominal): " << cand1Cost << "\n";
+    std::cout << "Averaged full cost for candidate 2 (from d_rob_nominal): " << cand2Cost << "\n";
+
     if (cand1Cost <= cand2Cost)
         std::swap(d_nom_nominal, d_cand1_nominal);
     else
@@ -330,11 +338,16 @@ void PRMPPIController::getControl(
     useNomPlan = true;
 
     for (float c : safeCosts)
-        if (c < 0.0f)
+        if (c > 0.0f)
         {
             useNomPlan = false;
             break;
         }
+
+    std::cout << "Averaged safety cost of r_nom_nominal: ";
+    for (float c : safeCosts)
+        std::cout << c << " ";
+    std::cout << "\n";
 
     if (useNomPlan)
         std::cout << "USING NOMINAL PLAN\n";

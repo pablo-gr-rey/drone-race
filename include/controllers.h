@@ -164,8 +164,9 @@ private:
     float* d_nom_nominal = nullptr;      // (T, dim)
     float* d_rob_nominal = nullptr;  // (T, dim)
 
-    float* d_cand1_nominal = nullptr;   // (T, dim) candidate nom_nominal (computed from d_nom_nominal and d_cost_nom_full)
-    float* d_cand2_nominal = nullptr;   // (T, dim) candidate nom_nominal (computed from d_rob_nominal and d_cost_rob_full)
+    float* d_cand1_nominal = nullptr;   // (T, dim) candidate nom_nominal (computed from d_nom_nominal and d_cost_nom full)
+    float* d_cand2_nominal = nullptr;   // (T, dim) candidate nom_nominal (computed from d_rob_nominal and d_cost_rob full)
+    float* d_new_rob_nominal = nullptr; // (T, dim) candidate rob_nominal (computed from d_rob_nominal and d_cost_rob safe)
 
     float* d_minCosts = nullptr;    // (3): nom_full, rob_full, rob_safe
     float* d_candCosts = nullptr;   // (2*P): full cost of cand1, cand2

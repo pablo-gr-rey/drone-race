@@ -86,7 +86,7 @@ HD INLINE void computePIDAction(
     }
 }
 
-// compute opp. nominal actions, PID noise, env dynamics, belief update (only if shouldUpdateBelief) and branch update (only if considerBranching is true; if we become specialized, set corresponding branching time to t+1)
+// compute opp. nominal actions, PID noise + env noise (only if applyNoise is True), env dynamics, belief update (only if shouldUpdateBelief) and branch update (only if considerBranching is true; if we become specialized, set corresponding branching time to t+1)
 template <bool shouldUpdateBelief, bool considerBranching, typename RNG>
 HD INLINE TerminalType environmentStep(
     int t,
@@ -94,7 +94,7 @@ HD INLINE TerminalType environmentStep(
     int trueTheta,
     const EnvironmentConfig& envConfig,
     const float* __restrict__ egoAction,          // (dim)
-    bool applyPidNoise,
+    bool applyNoise,                         // TODO: this could be a template (but probably doesn't matter if we're inlined anyway)
     SimState& state,
     BranchState& branchState,                       // belief is updated in-place if shouldUpdateBelief. branchingTime and branchUsed are updated if considerBranching is true
     bool& branched,                                 // set to true if we branched at this step. must be previously initialized to false. unused if considerBranching is false
@@ -130,7 +130,7 @@ HD INLINE TerminalType environmentStep(
             for (int d = 0; d < DIM; d++)
             {
                 float u = nomPidAction[trueTheta * DIM + d];
-                if (applyPidNoise && envConfig.oppPid[trueTheta].actionNoise != 0.0f)
+                if (applyNoise && envConfig.oppPid[trueTheta].actionNoise != 0.0f)
                     u += envConfig.oppPid[trueTheta].actionNoise * sampleNormal(rng);
 
                 actions[a * DIM + d] = u;
@@ -155,7 +155,7 @@ HD INLINE TerminalType environmentStep(
             float& v = actions[a * DIM + d];
             v *= factor;
 
-            if (envConfig.actionNoiseLevel != 0.0f)
+            if (envConfig.actionNoiseLevel != 0.0f && applyNoise)
                 v += sampleNormal(rng) * envConfig.actionNoiseLevel;
         }
     }
@@ -183,7 +183,7 @@ HD INLINE TerminalType environmentStep(
     }
 
     // 7. State noise (pos + speed)
-    if (envConfig.posNoiseLevel != 0.0f || envConfig.speedNoiseLevel != 0.0f)
+    if ((envConfig.posNoiseLevel != 0.0f || envConfig.speedNoiseLevel != 0.0f) && applyNoise)
     {
         for (int a = 0; a < N_AGENTS; a++)
             for (int d = 0; d < DIM; d++)

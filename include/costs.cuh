@@ -112,6 +112,8 @@ __device__ INLINE float PRMPPIstateCost(int agent, const SimState& state, int ti
     if (state.laps[agent] >= (float) envConfig.nWinLaps)
         cost -= mppiConfig.winCost;
 
+    cost += fabsf(curPos[1] - 1.0f) * 100.0f;
+
     return cost;
 }
 
@@ -137,19 +139,19 @@ __device__ INLINE float PRMPPIfinalCost(int agent, const SimState& state, const 
     return cost;
 }
 
-// Safety cost, > 0 iff state is safe (min of distance to nearest obstacles and to other agents, if any, minus minSafeDist)
+// Safety cost, < 0 iff state is safe (negative of min of distance to nearest obstacles and to other agents, if any, minus minSafeDist)
 __device__ INLINE float PRMPPIsafetyCost(int agent, const SimState& state, int timestep, const EnvironmentConfig& envConfig, const PRMPPIConfig& mppiConfig)
 {
-    float cost = trackBoundaryDist(envConfig, state.pos + agent * DIM);
+    float minDist = trackBoundaryDist(envConfig, state.pos + agent * DIM);
 
     if (N_AGENTS > 1)
         for (int other = 0; other < N_AGENTS; other++)
             if (other != agent)
             {
-                float dist = agentDist(state.pos, agent, other);
-                if (cost < dist)
-                    cost = dist;
+                float dist = agentDist(state.pos, agent, other) - envConfig.minDist;
+                if (dist < minDist)
+                    minDist = dist;
             }
 
-    return cost - mppiConfig.minSafeDist;
+    return envConfig.minDist * mppiConfig.collDistFactor + mppiConfig.minSafeDist - minDist;
 }

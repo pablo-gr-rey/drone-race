@@ -224,6 +224,90 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
         }
     }
 
+    else if (auto prmppiCont = dynamic_cast<PRMPPIController*>(controller.get()))
+    {
+        std::cout << "controller " << envConfig.iMppi << " is MPPI controller" << std::endl;
+
+        writer.pushFloatArray(prmppiCont->h_belief);
+
+        writer.pushInt32((int) prmppiCont->useNomPlan);
+
+        writer.pushInt32(N_TRUE_MODELS);
+
+        SimState initState = state;
+        PRMPPIConfig prmppiConfig = prmppiCont->mppiConfig;
+
+        std::vector<float> fullPos(prmppiConfig.nTimesteps * N_AGENTS * DIM);
+
+        HostRNG hrng{ &nd, &rng };
+
+        for (int theta = 0; theta < N_TRUE_MODELS; theta++)
+        {
+            SimState predState = initState;
+
+            BranchState bstate;
+
+            int stopTime = -1;
+            EventType stopReason = EVT_TRUNCATED;
+            int stopAgent = -1;
+
+            float scratchActions[N_AGENTS * DIM];
+            float nomPidAction[N_TRUE_MODELS * DIM];
+            std::vector<float> egoActions(prmppiConfig.nTimesteps * DIM);
+
+            for (int t = 0; t < prmppiConfig.nTimesteps; t++)
+            {
+                for (int d = 0; d < DIM; d++)
+                    egoActions[t * DIM + d] = prmppiCont->h_nom_nominal[t * DIM + d];
+
+                bool branched = false;
+
+                TerminalType term = environmentStep<false, false>(
+                    t,
+                    envConfig.iMppi,
+                    theta,
+                    envConfig,
+                    egoActions.data() + t * DIM,
+                    false,                  // no PID noise for reproducible display
+                    predState,
+                    bstate,
+                    branched,
+                    0.0f,
+                    scratchActions,
+                    nomPidAction,
+                    hrng);
+
+                for (int i = 0; i < N_AGENTS * DIM; i++)
+                    fullPos[t * N_AGENTS * DIM + i] = predState.pos[i];
+
+                if (term != TERM_NONE)
+                {
+                    for (int tt = t + 1; tt < prmppiConfig.nTimesteps; tt++)
+                    {
+                        for (int i = 0; i < N_AGENTS * DIM; i++)
+                            fullPos[tt * N_AGENTS * DIM + i] = predState.pos[i];
+                    }
+
+                    std::cout << "STOPPING SIMULATION at step " << t
+                        << " term " << (int) term << std::endl;
+
+                    stopTime = t;
+                    std::optional<std::pair<EventType, int>> parsed = parseTerm(term, envConfig.iMppi);
+                    stopReason = parsed->first;
+                    stopAgent = parsed->second;
+
+                    break;
+                }
+            }
+
+            writer.pushFloatArray(fullPos);
+            writer.pushFloatArray(egoActions);
+            writer.pushInt32(stopReason);
+            writer.pushInt32(stopTime);
+            writer.pushInt32(stopAgent);
+        }
+    }
+
     else
         throw std::runtime_error("Ill-formed controller type in sendState");
 
