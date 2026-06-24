@@ -301,7 +301,7 @@ def tinyGateEnv(
             samplingNoise=3,
             # samplingNoise=0.5,
             gateTraversalMargin=0.9,  # restrict 5% on each side
-            collDistFactor=1.1,
+            collDistFactor=1.0,
             # collDistFactor=1.3,
             finalAdvWeight=200,
             # finalAdvWeight=0,
@@ -311,13 +311,14 @@ def tinyGateEnv(
             oppDistThresholdFactor=3,
             finalOppAdvWeight=0,
             # finalOppAdvWeight=500,
-            boundaryCost=0,
+            boundaryCost=10,
             # boundaryCost=0.0,
             boundaryThresholdFactor=2,
             oppOutsideCost=0,
             # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
             winCost=1e6,
-            safetyWeight=1e6,
+            safetyWeight=1e5,
+            minSafeDist=0.0,
             delta=0.1,
         )
 
@@ -325,8 +326,8 @@ def tinyGateEnv(
 
 
 def tinyGateEnv2Models(
-    roundObs: bool = True, useSplines: bool = True
-) -> tuple[GateEnvironmentConfig, MPPIConfig, list[PIDConfig], list[list[str]]]:
+    roundObs: bool = True, useSplines: bool = True, usePR: bool = False
+) -> tuple[GateEnvironmentConfig, ControllerConfig, list[PIDConfig], list[list[str]]]:
     nAgents = 2
     dim = 2
     nTrackSamples = 512
@@ -472,7 +473,7 @@ def tinyGateEnv2Models(
 
     # if afraid:
     #     config.init_pos = np.array([10.0, 4.0, 0.1, 0.0])
-    if useSplines:
+    if useSplines and not usePR:
         mppiconfig = MPPIConfig(
             nSamples=2**15,
             # nSamples=1,
@@ -504,7 +505,7 @@ def tinyGateEnv2Models(
             nKnots=12,
         )
 
-    else:
+    elif not usePR:
         mppiconfig = MPPIConfig(
             nSamples=2**15,
             # nSamples=1,
@@ -533,6 +534,36 @@ def tinyGateEnv2Models(
             minConfidence=0.95,
             # initBelief=np.array([0.5, 0.5]),
             # initBelief=np.array([0.7, 0.3]),
+        )
+
+    else:
+        mppiconfig = PRMPPIConfig(
+            nSamples=2**15,
+            # nSamples=1,
+            nTimesteps=60,
+            inv_temperature=10,
+            samplingNoise=3,
+            # samplingNoise=0.5,
+            gateTraversalMargin=0.9,  # restrict 5% on each side
+            collDistFactor=1.0,
+            # collDistFactor=1.3,
+            finalAdvWeight=200,
+            # finalAdvWeight=0,
+            # finalSpeedWeight=50,
+            # oppDistWeight=0,
+            oppDistWeight=0,
+            oppDistThresholdFactor=3,
+            finalOppAdvWeight=0,
+            # finalOppAdvWeight=500,
+            boundaryCost=0,
+            # boundaryCost=0.0,
+            boundaryThresholdFactor=2,
+            oppOutsideCost=0,
+            # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
+            winCost=1e6,
+            safetyWeight=1e5,
+            minSafeDist=0.0,
+            delta=0.1,
         )
 
     return config, mppiconfig, pids, [["1st=Top", "1st=Bottom"], ["2nd=Top", "2nd=Bottom"]]
@@ -633,7 +664,7 @@ def mainGate():
     # envConfig, mppiconfig, pids, oppNames = tinyGateEnv(afraid=False, useSplines=True)  # pid0 = top; pid1 = bottom
     # envConfig, mppiconfig, pids, oppNames = tinyGateEnv(afraid=False, useSplines=False)  # pid0 = top; pid1 = bottom
     envConfig, mppiconfig, pids, oppNames = tinyGateEnv(afraid=False, usePR=True)  # pid0 = top; pid1 = bottom
-    # envConfig, mppiconfig, pids, oppNames = tinyGateEnv2Models(roundObs=True)
+    # envConfig, mppiconfig, pids, oppNames = tinyGateEnv2Models(roundObs=True, usePR=False)
     # envConfig, mppiconfig, pid0, pid1, oppNames = activeEnv()  # pid0 = afraid; pid1 = bold
 
     envConfig.trueTheta = 1

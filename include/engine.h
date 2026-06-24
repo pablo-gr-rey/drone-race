@@ -20,7 +20,7 @@ public:
 
     ~SimulationEngine();
 
-    void sendState(zmq::socket_t& sock, int step, const std::array<float, DIM>& egoAction);
+    void sendState(zmq::socket_t& sock, int step, const std::array<float, DIM>& egoAction, const SimState& prevState);
     void sendEvent(zmq::socket_t& sock, EventType type, int info);
     void sendDone(zmq::socket_t& sock);
 

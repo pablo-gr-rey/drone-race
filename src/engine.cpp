@@ -88,7 +88,7 @@ void SimulationEngine::allocTrack()
     CUDA_CHECK(cudaMemcpy(d_trackPoints, envConfig.trackPoints, bytes, cudaMemcpyHostToDevice));
 }
 
-void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array<float, DIM>& egoAction)
+void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array<float, DIM>& egoAction, const SimState& prevState)
 {
     if (!envConfig.sendStates)
         return;
@@ -228,21 +228,28 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
     {
         std::cout << "controller " << envConfig.iMppi << " is MPPI controller" << std::endl;
 
+        writer.pushFloatArray(prevState.pos);
         writer.pushFloatArray(prmppiCont->h_belief);
 
         writer.pushInt32((int) prmppiCont->useNomPlan);
+        writer.pushInt32((int) prmppiCont->resetNom);
 
-        writer.pushInt32(N_TRUE_MODELS);
+        // we do an additional run with last model and rob_nominal
+        writer.pushInt32(N_TRUE_MODELS + 1);
 
-        SimState initState = state;
+        SimState initState = prevState;
         PRMPPIConfig prmppiConfig = prmppiCont->mppiConfig;
 
         std::vector<float> fullPos(prmppiConfig.nTimesteps * N_AGENTS * DIM);
 
         HostRNG hrng{ &nd, &rng };
 
-        for (int theta = 0; theta < N_TRUE_MODELS; theta++)
+        // one additional pass for rob_nominal on the last model
+
+        for (int j = 0; j <= N_TRUE_MODELS; j++)
         {
+            int theta = std::min(j, N_TRUE_MODELS - 1);
+
             SimState predState = initState;
 
             BranchState bstate;
@@ -258,7 +265,12 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
             for (int t = 0; t < prmppiConfig.nTimesteps; t++)
             {
                 for (int d = 0; d < DIM; d++)
-                    egoActions[t * DIM + d] = prmppiCont->h_nom_nominal[t * DIM + d];
+                {
+                    if (j < N_TRUE_MODELS)
+                        egoActions[t * DIM + d] = prmppiCont->h_nom_nominal[t * DIM + d];
+                    else
+                        egoActions[t * DIM + d] = prmppiCont->h_rob_nominal[t * DIM + d];
+                }
 
                 bool branched = false;
 
@@ -392,7 +404,7 @@ std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::ar
 void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
 {
     std::array<float, DIM> dummyAction{};
-    sendState(sock, 0, dummyAction);
+    sendState(sock, 0, dummyAction, state);
 
     int step;
 
@@ -405,9 +417,11 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
         std::array<float, DIM> action;
         controller->getControl(envConfig.iMppi, state, action.data());
 
+        SimState prevState = state;
+
         stopInfo = dynStep(action, step, controller->h_belief);
 
-        sendState(sock, step, action);
+        sendState(sock, step, action, prevState);
 
         std::cout << std::fixed << std::setprecision(2);
         std::cout << "Current state at step " << step << ":\n";

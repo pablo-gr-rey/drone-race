@@ -120,7 +120,7 @@ class ControllerRenderer[ConfigType](ABC):
 
         return belief_bar, belief_texts
 
-    def apply_offset(self, coords: np.ndarray, side: int, amount: float) -> np.ndarray:
+    def apply_offset(self, coords: np.ndarray, side: int, amount: float = 0.04) -> np.ndarray:
         "Shift the coords array to side*amount, in the direction perpendicular to its tangent"
         if len(coords) < 2:
             return coords
@@ -168,14 +168,20 @@ class ControllerRenderer[ConfigType](ABC):
 
 class MPPIRenderer(ControllerRenderer[MPPIConfig]):
     def init(self) -> None:
-        gs_mppi = self.base_gs.subgridspec(3, 1, height_ratios=[1, 3, 3], hspace=0.1)
+        self.severalModels = self.envConfig.nModelFactors > 1
 
+        gs_mppi = self.base_gs.subgridspec(
+            2 + int(self.severalModels), 1, height_ratios=[1, 3, 3] if self.severalModels else [1, 3], hspace=0.1
+        )
         self.ax_failcount = self.fig.add_subplot(gs_mppi[0])
 
-        gs_marginal = gs_mppi[1].subgridspec(1, self.envConfig.nModelFactors)
-        self.axs_marg_belief = [self.fig.add_subplot(g) for g in gs_marginal]
+        if self.severalModels:
+            gs_marginal = gs_mppi[1].subgridspec(1, self.envConfig.nModelFactors)
+            self.axs_marg_belief = [self.fig.add_subplot(g) for g in gs_marginal]
+        else:
+            self.axs_marg_belief = None
 
-        self.ax_joint_belief = self.fig.add_subplot(gs_mppi[2])
+        self.ax_joint_belief = self.fig.add_subplot(gs_mppi[1 + int(self.severalModels)])
 
         # should have shape nModelFactors * (nModelSizes[k]+1)
         self.pred_colors = [["brown", "green", "orange"], ["yellow", "cyan", "purple"]]
@@ -225,8 +231,7 @@ class MPPIRenderer(ControllerRenderer[MPPIConfig]):
         self.ax_failcount.text(
             0.5, 0.95, "Controller Type: Branching-MPPI", fontsize=15, ha="center", va="top", fontweight="bold"
         )
-        self.ax_failcount.text(0.5, 0.6, "Model belief & Fail count:", fontsize=12, ha="center", va="center", fontweight="bold")
-        self.verif_text = self.ax_failcount.text(0.5, 0.2, "", fontsize=12, ha="center", va="bottom")
+        self.verif_text = self.ax_failcount.text(0.5, 0.1, "", fontsize=12, ha="center", va="bottom")
         self.ax_failcount.axis("off")
 
         # MPPI belief
@@ -242,12 +247,13 @@ class MPPIRenderer(ControllerRenderer[MPPIConfig]):
         self.joint_belief = self.createBeliefBar(self.ax_joint_belief, names, joint_colors, "Joint belief", None)
 
         # marginal belief
-        self.marginal_belief = [
-            self.createBeliefBar(
-                ax, names, [[c] for c in colors[1:]], f"Marginal belief for {k}", colors[0], self.config.minConfidence
-            )
-            for k, (ax, names, colors) in enumerate(zip(self.axs_marg_belief, self.oppNames, self.pred_colors))
-        ]
+        if self.axs_marg_belief is not None:
+            self.marginal_belief = [
+                self.createBeliefBar(
+                    ax, names, [[c] for c in colors[1:]], f"Marginal belief for {k}", colors[0], self.config.minConfidence
+                )
+                for k, (ax, names, colors) in enumerate(zip(self.axs_marg_belief, self.oppNames, self.pred_colors))
+            ]
 
     def update(self, state: FullStateInfo) -> None:
         collMarkers = iter(self.collMarkers)
@@ -345,63 +351,64 @@ class MPPIRenderer(ControllerRenderer[MPPIConfig]):
             text.set_y(b_val + 0.01)
 
         # update marginal belief
-        for k in range(self.envConfig.nModelFactors):
-            marg = self.envConfig.computeMarginal(mppiState.belief, k)
+        if self.axs_marg_belief is not None:
+            for k in range(self.envConfig.nModelFactors):
+                marg = self.envConfig.computeMarginal(mppiState.belief, k)
 
-            for bar, text, b_val in zip(self.marginal_belief[k][0], self.marginal_belief[k][1], marg):
-                bar.set_height(b_val)
+                for bar, text, b_val in zip(self.marginal_belief[k][0], self.marginal_belief[k][1], marg):
+                    bar.set_height(b_val)
 
-                color = "#2ecc71" if b_val >= self.config.minConfidence else "#3498db"
-                bar.set_facecolor(color)
+                    color = "#2ecc71" if b_val >= self.config.minConfidence else "#3498db"
+                    bar.set_facecolor(color)
 
-                text.set_text(f"{b_val:.2f}")
-                text.set_y(b_val + 0.01)
+                    text.set_text(f"{b_val:.2f}")
+                    text.set_y(b_val + 0.01)
 
     def getCapturedAxes(self) -> list[plt.Axes]:  # type: ignore
-        return [self.ax_joint_belief, self.ax_failcount] + self.axs_marg_belief
+        return [self.ax_joint_belief, self.ax_failcount] + (self.axs_marg_belief or [])
 
 
 class PRMPPIRenderer(ControllerRenderer[PRMPPIConfig]):
     def init(self) -> None:
         self.min_show_confidence = 0.01  # if confidence is less than this amount, do not show the trajectories
+        self.severalModels = self.envConfig.nModelFactors > 1
 
-        gs_mppi = self.base_gs.subgridspec(3, 1, height_ratios=[1, 3, 3], hspace=0.1)
+        gs_mppi = self.base_gs.subgridspec(
+            2 + int(self.severalModels), 1, height_ratios=[1, 3, 3] if self.severalModels else [1, 3], hspace=0.1
+        )
 
         self.ax_failcount = self.fig.add_subplot(gs_mppi[0])
 
-        gs_marginal = gs_mppi[1].subgridspec(1, self.envConfig.nModelFactors)
-        self.axs_marg_belief = [self.fig.add_subplot(g) for g in gs_marginal]
+        if self.severalModels:
+            gs_marginal = gs_mppi[1].subgridspec(1, self.envConfig.nModelFactors)
+            self.axs_marg_belief = [self.fig.add_subplot(g) for g in gs_marginal]
+        else:
+            self.axs_marg_belief = None
 
-        self.ax_joint_belief = self.fig.add_subplot(gs_mppi[2])
+        self.ax_joint_belief = self.fig.add_subplot(gs_mppi[1 + int(self.severalModels)])
 
         # should have shape nModelFactors * (nModelSizes[k])
         self.pred_colors = [["green", "orange"], ["cyan", "purple"]]
-        self.own_traj_color = "brown"
+        self.nom_color = "violet"
+        self.rob_color = "brown"
 
         # line collections for MPPI predictions
-        # length: nTrueModels * nModelFactors, with items being (pidStrong, pidLight) (each list of size nModelFactors should represent one global theta by parallel lines, one line color represent that specific parameter value)
+        # length: nTrueModels * nModelFactors (each list of size nModelFactors should represent one global theta by parallel lines, one line color represent that specific parameter value)
         # since in this case the nominal action is not reactive to the environment, PRMPPI's trajectory is the same for all branches
-        self.lcs_pred: list[list[tuple[Line2D, Line2D]]] = []
-        self.nom_pred = (
-            self.ax.plot([], color=self.own_traj_color, marker=None, linewidth=4, alpha=0.8)[0],
-            self.ax.plot([], color=self.own_traj_color, marker=None, linewidth=2, alpha=0.4)[0],
-        )
+        self.lcs_pred: list[list[Line2D]] = []
+        self.nom_pred = self.ax.plot([], color=self.nom_color, marker=None, linewidth=4, alpha=0.8)[0]
+        self.rob_pred = self.ax.plot([], color=self.rob_color, marker=None, linewidth=4, alpha=0.8)[0]
 
         for theta in range(self.envConfig.nTrueModels):
-            preds: list[tuple[Line2D, Line2D]] = []
+            preds: list[Line2D] = []
             for k in range(self.envConfig.nModelFactors):
                 thetaList = self.envConfig.unflattenTheta(theta)
 
-                pidTraj = (
+                preds.append(
                     self.ax.plot(
                         [], color=self.pred_colors[k][thetaList[k]], marker=None, linewidth=3, alpha=0.8, linestyle="-."
-                    )[0],
-                    self.ax.plot(
-                        [], color=self.pred_colors[k][thetaList[k]], marker=None, linewidth=2, alpha=0.4, linestyle="-."
-                    )[0],
+                    )[0]
                 )
-
-                preds.append(pidTraj)
 
             self.lcs_pred.append(preds)
 
@@ -416,12 +423,44 @@ class PRMPPIRenderer(ControllerRenderer[PRMPPIConfig]):
 
         # MPPI failcount status
         self.ax_failcount.text(
-            0.5, 0.95, "Controller Type: Parameter-robust-MPPI", fontsize=15, ha="center", va="top", fontweight="bold"
+            0.5,
+            0.95,
+            "Controller Type: Parameter-robust-MPPI",
+            fontsize=15,
+            ha="center",
+            va="top",
+            fontweight="bold",
+            transform=self.ax_failcount.transAxes,
+        )
+        self.verif_text = self.ax_failcount.text(
+            0.5, 0.7, "", fontsize=12, ha="center", va="center", transform=self.ax_failcount.transAxes
+        )
+
+        self.reset_text = self.ax_failcount.text(
+            0.5,
+            0.5,
+            "Nominal plan was reset",
+            fontsize=12,
+            ha="center",
+            va="center",
+            transform=self.ax_failcount.transAxes,
+            color="red",
+            fontweight="bold",
+            visible=False,
+        )
+
+        self.ax_failcount.text(
+            0.6, 0.3, "Nominal plan:", fontsize=12, ha="right", va="center", transform=self.ax_failcount.transAxes
         )
         self.ax_failcount.text(
-            0.5, 0.6, "Model belief & nominal information:", fontsize=12, ha="center", va="center", fontweight="bold"
+            0.6, 0.1, "Robust plan:", fontsize=12, ha="right", va="center", transform=self.ax_failcount.transAxes
         )
-        self.verif_text = self.ax_failcount.text(0.5, 0.2, "", fontsize=12, ha="center", va="bottom")
+        self.ax_failcount.scatter(
+            [0.7, 0.7], [0.3, 0.1], marker="s", s=200, edgecolors="black", color=[self.nom_color, self.rob_color]
+        )
+
+        self.ax_failcount.set_xlim(0, 1)
+        self.ax_failcount.set_ylim(0, 1)
         self.ax_failcount.axis("off")
 
         # MPPI belief
@@ -437,10 +476,11 @@ class PRMPPIRenderer(ControllerRenderer[PRMPPIConfig]):
         self.joint_belief = self.createBeliefBar(self.ax_joint_belief, names, joint_colors, "Joint belief", None)
 
         # marginal belief
-        self.marginal_belief = [
-            self.createBeliefBar(ax, names, [[c] for c in colors], f"Marginal belief for {k}", None, None)
-            for k, (ax, names, colors) in enumerate(zip(self.axs_marg_belief, self.oppNames, self.pred_colors))
-        ]
+        if self.axs_marg_belief is not None:
+            self.marginal_belief = [
+                self.createBeliefBar(ax, names, [[c] for c in colors], f"Marginal belief for {k}", None, None)
+                for k, (ax, names, colors) in enumerate(zip(self.axs_marg_belief, self.oppNames, self.pred_colors))
+            ]
 
     def update(self, state: FullStateInfo) -> None:
         collMarkers = iter(self.collMarkers)
@@ -450,44 +490,51 @@ class PRMPPIRenderer(ControllerRenderer[PRMPPIConfig]):
             f"Expected state.contInfo to be of type PRMPPIStateInfo, but received {type(mppiState)}"
         )
 
-        if len(mppiState.preds) != self.envConfig.nTrueModels:
-            print(f"WARNING: len(mppiState.preds) = {len(mppiState.preds)} is different from {self.envConfig.nTrueModels=}")
+        if len(mppiState.preds) != self.envConfig.nTrueModels + 1:
+            print(f"WARNING: len(mppiState.preds) = {len(mppiState.preds)} is different from {(self.envConfig.nTrueModels+1)=}")
             return
 
         # update MPPI predictions
 
-        for theta, (lTrajs, pred) in enumerate(zip(self.lcs_pred, mppiState.preds)):
+        for theta, (lTrajs, pred) in enumerate(zip(self.lcs_pred, mppiState.preds[:-1])):
             thetaTuple = self.envConfig.unflattenTheta(theta)
 
-            curPos = state.pos.reshape((self.envConfig.nAgents, self.envConfig.dim))
+            # curPos = state.pos.reshape((self.envConfig.nAgents, self.envConfig.dim))
             fullPos = pred.fullPos.reshape((self.config.nTimesteps, self.envConfig.nAgents, self.envConfig.dim))
-
-            fullPos = np.concat([[curPos], fullPos])
-
-            vHor = self.config.nTimesteps
+            # fullPosConc = np.concat([[mppiState.prevPos.reshape((self.envConfig.nAgents, self.envConfig.dim))], fullPos])
 
             sides = np.arange(-self.envConfig.nModelFactors + 1, self.envConfig.nModelFactors, 2)
 
             for k, pid in enumerate(lTrajs):
                 if mppiState.belief[theta] > self.min_show_confidence:
                     # TODO: set_data is useless here (we only should keep one trajectory)
-                    self.set_data(*self.nom_pred, fullPos[:, self.envConfig.iMppi, :], vHor, sides[k])
+                    # self.set_data(*self.nom_pred, fullPos[:, self.envConfig.iMppi, :], vHor, sides[k])
+                    self.nom_pred.set_data(
+                        fullPos[:, self.envConfig.iMppi, self.axis[0]], fullPos[:, self.envConfig.iMppi, self.axis[1]]
+                    )
 
                     color = self.pred_colors[k][thetaTuple[k]]
 
-                    self.set_data(*pid, fullPos[:, 1 - self.envConfig.iMppi, :], vHor, sides[k])
+                    # self.set_data(*pid, fullPos[:, 1 - self.envConfig.iMppi, :], vHor, sides[k])
+                    arr_offset = self.apply_offset(fullPos[:, 1 - self.envConfig.iMppi, self.axis], sides[k])
+                    pid.set_data(arr_offset[:, 0], arr_offset[:, 1])
 
                     if pred.stopReason == EVENT_TYPE.EVT_COLLISION or pred.stopReason == EVENT_TYPE.EVT_OUTSIDE:
                         marker = next(collMarkers)
                         marker.set_data(
-                            [fullPos[pred.stopTime + 1, pred.stopAgent, self.axis[0]]],
-                            [fullPos[pred.stopTime + 1, pred.stopAgent, self.axis[1]]],
+                            [fullPos[pred.stopTime, pred.stopAgent, self.axis[0]]],
+                            [fullPos[pred.stopTime, pred.stopAgent, self.axis[1]]],
                         )
 
                         marker.set_alpha(0.8)
                         marker.set_markersize(20)
                 else:
-                    self.set_data(*pid, None, 0)
+                    # self.set_data(*pid, None, 0)
+                    pid.set_data([[], []])
+
+        # show robust nominal
+        fullPos = mppiState.preds[-1].fullPos.reshape((self.config.nTimesteps, self.envConfig.nAgents, self.envConfig.dim))
+        self.rob_pred.set_data(fullPos[:, self.envConfig.iMppi, self.axis[0]], fullPos[:, self.envConfig.iMppi, self.axis[1]])
 
         # hide remaining coll markers
         for marker in collMarkers:
@@ -501,23 +548,27 @@ class PRMPPIRenderer(ControllerRenderer[PRMPPIConfig]):
             text.set_y(b_val + 0.01)
 
         # update marginal belief
-        for k in range(self.envConfig.nModelFactors):
-            marg = self.envConfig.computeMarginal(mppiState.belief, k)
+        if self.axs_marg_belief is not None:
+            for k in range(self.envConfig.nModelFactors):
+                marg = self.envConfig.computeMarginal(mppiState.belief, k)
 
-            for bar, text, b_val in zip(self.marginal_belief[k][0], self.marginal_belief[k][1], marg):
-                bar.set_height(b_val)
+                for bar, text, b_val in zip(self.marginal_belief[k][0], self.marginal_belief[k][1], marg):
+                    bar.set_height(b_val)
 
-                # color = "#2ecc71" if b_val >= self.config.minConfidence else "#3498db"
-                color = "#3498db"
-                bar.set_facecolor(color)
+                    # color = "#2ecc71" if b_val >= self.config.minConfidence else "#3498db"
+                    color = "#3498db"
+                    bar.set_facecolor(color)
 
-                text.set_text(f"{b_val:.2f}")
-                text.set_y(b_val + 0.01)
+                    text.set_text(f"{b_val:.2f}")
+                    text.set_y(b_val + 0.01)
 
-        self.verif_text.set_text(f"Use nominal plan: {'YES' if mppiState.useNomPlan else 'NO (use robust plan)'}")
+        # update text status
+
+        self.verif_text.set_text(f"Plan used: {('Robust', 'Nominal')[mppiState.useNomPlan]}")
+        self.reset_text.set_visible(mppiState.resetNom)
 
     def getCapturedAxes(self) -> list[plt.Axes]:  # type: ignore
-        return [self.ax_joint_belief, self.ax_failcount] + self.axs_marg_belief
+        return [self.ax_joint_belief, self.ax_failcount] + (self.axs_marg_belief or [])
 
 
 class EnvironmentRenderer:
@@ -683,6 +734,7 @@ class EnvironmentRenderer:
 
             self.axs_action_plot[dim].set_xlabel("Time")
             self.axs_action_plot[dim].set_ylabel("Action on " + ["x", "y"][dim])
+            self.axs_action_plot[dim].axhline(0, color="black", linewidth=1, linestyle="--", alpha=0.5)
 
         # status text
         self.status_text = self.ax_status.text(
@@ -1039,11 +1091,16 @@ class EnvironmentRenderer:
         self.text_box.disconnect_events()
         # self.text_box.on_submit(lambda ev: None)
         self.text_box.ax.set_visible(False)  # type: ignore
+        self.save_button.set_active(False)
+        self.save_button.label.set_text("Saving GIF...")
         self.fig.canvas.draw_idle()
+        plt.pause(0.5)
         if text.strip() == "":
             print("No filename provided; aborting GIF save")
             return
         self.saveGif(text.strip())
+
+        self.save_button.label.set_text("GIF saved")
 
     def saveGif(self, name: str) -> None:
         if not name.endswith(".gif"):

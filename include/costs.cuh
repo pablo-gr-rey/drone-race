@@ -112,8 +112,6 @@ __device__ INLINE float PRMPPIstateCost(int agent, const SimState& state, int ti
     if (state.laps[agent] >= (float) envConfig.nWinLaps)
         cost -= mppiConfig.winCost;
 
-    cost += fabsf(curPos[1] - 1.0f) * 100.0f;
-
     return cost;
 }
 
@@ -148,10 +146,10 @@ __device__ INLINE float PRMPPIsafetyCost(int agent, const SimState& state, int t
         for (int other = 0; other < N_AGENTS; other++)
             if (other != agent)
             {
-                float dist = agentDist(state.pos, agent, other) - envConfig.minDist;
+                float dist = agentDist(state.pos, agent, other) - envConfig.minDist * 0.5f;
                 if (dist < minDist)
                     minDist = dist;
             }
 
-    return envConfig.minDist * mppiConfig.collDistFactor + mppiConfig.minSafeDist - minDist;
+    return envConfig.minDist * mppiConfig.collDistFactor * 0.5f + mppiConfig.minSafeDist - minDist;
 }

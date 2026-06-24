@@ -136,7 +136,8 @@ public:
     std::vector<float> h_nom_nominal;   // host mirror (T, dim)
     std::vector<float> h_rob_nominal;   // host mirror (T, dim)
 
-    bool useNomPlan;
+    bool resetNom;      // true if the new nominal is optimized from rob_nominal (happens if the nominal has a very high safety cost) (i.e. we use cand2 for new nom_nominal)
+    bool useNomPlan;    // true if we use nom plan (otherwise, nom was deemed unsafe, and we used rob_nominal)
 
     float min_nu = 0.0005f;    // in terms of proportion of nSamples
     float max_nu = 0.001f;

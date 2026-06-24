@@ -184,6 +184,33 @@ void PRMPPIController::getControl(
         std::cout << v << " ";
     std::cout << "\n";
 
+    // 0. shift nominals, and upload them
+    for (int t = 0; t < T - 1; ++t)
+        for (int d = 0; d < DIM; ++d)
+        {
+            h_nom_nominal[t * DIM + d] = h_nom_nominal[(t + 1) * DIM + d];
+            h_rob_nominal[t * DIM + d] = h_rob_nominal[(t + 1) * DIM + d];
+        }
+
+    for (int d = 0; d < DIM; ++d)
+    {
+        h_nom_nominal[(T - 1) * DIM + d] = 0.0f;
+        h_rob_nominal[(T - 1) * DIM + d] = 0.0f;
+    }
+
+    CUDA_CHECK(cudaMemcpy(
+        d_nom_nominal,
+        h_nom_nominal.data(),
+        T * DIM * sizeof(float),
+        cudaMemcpyHostToDevice));
+
+    CUDA_CHECK(cudaMemcpy(
+        d_rob_nominal,
+        h_rob_nominal.data(),
+        T * DIM * sizeof(float),
+        cudaMemcpyHostToDevice));
+
+
     // 1. upload belief (now, current state is passed as argument to the kernels)
     CUDA_CHECK(cudaMemcpy(d_belief, h_belief.data(), N_TRUE_MODELS * sizeof(float), cudaMemcpyHostToDevice));
 
@@ -308,6 +335,8 @@ void PRMPPIController::getControl(
     std::cout << "Averaged full cost for candidate 1 (from d_nom_nominal): " << cand1Cost << "\n";
     std::cout << "Averaged full cost for candidate 2 (from d_rob_nominal): " << cand2Cost << "\n";
 
+    resetNom = cand2Cost < cand1Cost;
+
     if (cand1Cost <= cand2Cost)
         std::swap(d_nom_nominal, d_cand1_nominal);
     else
@@ -354,14 +383,15 @@ void PRMPPIController::getControl(
     else
         std::cout << "USING ROBUST PLAN\n";
 
-    if (!useNomPlan)
-        CUDA_CHECK(cudaMemcpy(
-            d_nom_nominal,
-            d_rob_nominal,
-            T * DIM * sizeof(float),
-            cudaMemcpyDeviceToDevice));
+    // we DO NOT copy the robust plan into the nominal even if nominal is unsafe, simply send the first action of robust
+    // if (!useNomPlan)
+    //     CUDA_CHECK(cudaMemcpy(
+    //         d_nom_nominal,
+    //         d_rob_nominal,
+    //         T * DIM * sizeof(float),
+    //         cudaMemcpyDeviceToDevice));
 
-    // 12. Copy d_nom_nominal and d_rob_nominal into the corresponding host vectors; copy the first step of h_nom_nominal into outAction; shift both nominals by 1
+    // 12. Copy d_nom_nominal and d_rob_nominal into the corresponding host vectors; copy the first step of the chosen nominal into outAction
 
     CUDA_CHECK(cudaMemcpy(
         h_nom_nominal.data(),
@@ -375,33 +405,10 @@ void PRMPPIController::getControl(
         T * DIM * sizeof(float),
         cudaMemcpyDeviceToHost));
 
-    for (int d = 0; d < DIM; ++d)
-        outAction[d] = h_nom_nominal[d];
-
-    for (int t = 0; t < T - 1; ++t)
-        for (int d = 0; d < DIM; ++d)
-        {
-            h_nom_nominal[t * DIM + d] = h_nom_nominal[(t + 1) * DIM + d];
-            h_rob_nominal[t * DIM + d] = h_rob_nominal[(t + 1) * DIM + d];
-        }
-
-    for (int d = 0; d < DIM; ++d)
-    {
-        h_nom_nominal[(T - 1) * DIM + d] = 0.0f;
-        h_rob_nominal[(T - 1) * DIM + d] = 0.0f;
-    }
-
-    CUDA_CHECK(cudaMemcpy(
-        d_nom_nominal,
-        h_nom_nominal.data(),
-        T * DIM * sizeof(float),
-        cudaMemcpyHostToDevice));
-
-    CUDA_CHECK(cudaMemcpy(
-        d_rob_nominal,
-        h_rob_nominal.data(),
-        T * DIM * sizeof(float),
-        cudaMemcpyHostToDevice));
+    if (useNomPlan)
+        std::copy(h_nom_nominal.begin(), h_nom_nominal.begin() + DIM, outAction);
+    else
+        std::copy(h_rob_nominal.begin(), h_rob_nominal.begin() + DIM, outAction);
 
     // 13. Update inverse temperatures
 

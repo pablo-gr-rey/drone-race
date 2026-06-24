@@ -406,7 +406,7 @@ HD INLINE void findConfident(const float* __restrict__ belief, float threshold, 
     }
 }
 
-// Boundary distance = distance to closest boundary (<= 0 if outside)
+// Boundary distance = distance of point to closest boundary (<= 0 if outside)
 __device__ INLINE float trackBoundaryDist(const EnvironmentConfig& envConfig, const float* __restrict__ pos)
 {
     float minDist = INFINITY;

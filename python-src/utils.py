@@ -357,12 +357,14 @@ class PRMPPIStatePredInfo:
 
 @dataclass
 class PRMPPIStateInfo:
+    prevPos: np.ndarray
     belief: np.ndarray
 
     useNomPlan: bool
+    resetNom: bool
 
-    nModels: int
-    preds: list[PRMPPIStatePredInfo] = field(metadata={"len": "nModels"})
+    nModelsPlusRob: int
+    preds: list[PRMPPIStatePredInfo] = field(metadata={"len": "nModelsPlusRob"})
 
 
 @dataclass
