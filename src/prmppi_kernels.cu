@@ -136,7 +136,7 @@ __global__ void PRMPPIfullRolloutKernel(
         runningCost += decay * PRMPPIstateCost(agent, state, t, envConfig, mppiConfig);
         safeCost = fmaxf(safeCost, PRMPPIsafetyCost(agent, state, t, envConfig, mppiConfig));
 
-        decay *= 0.9f;
+        decay *= DECAY;
     }
 
     runningCost += PRMPPIfinalCost(agent, state, envConfig, mppiConfig);
@@ -376,7 +376,7 @@ __global__ void PRMPPIcomputeCandidateCostKernel(
 
         cost += decay * PRMPPIstateCost(agent, state, t, envConfig, mppiConfig);
 
-        decay *= 0.9f;
+        decay *= DECAY;
 
         safeCost = fmaxf(safeCost, PRMPPIsafetyCost(agent, state, t, envConfig, mppiConfig));
     }

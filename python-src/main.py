@@ -659,13 +659,199 @@ def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig
     return config, mppiconfig, pid0, pid1, ["Afraid", "Bold"]
 
 
+def highInertiaEnv(
+    afraid: bool = False, usePR: bool = False, useSplines: bool = False
+) -> tuple[GateEnvironmentConfig, ControllerConfig, list[PIDConfig], list[list[str]]]:
+    nAgents = 2
+    dim = 2
+    nTrackSamples = 512
+
+    # startS = np.linspace(0.15, 0.0, nAgents)
+    startS = np.linspace(0.15, 0.02, nAgents)
+    nGates = 2
+
+    length = 30
+    obsHeight = 1.5
+    obsPos = 0.6
+    halfSize = 0.1
+    curveLength = 0.05
+    trackHeight = 3
+
+    gateCenters, gateVectors, gateRadius = (
+        np.array([[length, 0], [length * 0.01, 0]]),
+        np.array([[1, 0], [1, 0]]),
+        np.array([1, 1]),
+    )
+
+    repulsion = 30 if afraid else 0
+    pid0 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=0, actionNoise=0.01)
+    pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=1, actionNoise=0.01)
+
+    config = GateEnvironmentConfig(
+        nAgents=nAgents,
+        dim=dim,
+        dt=0.1,
+        nRaceLines=2,
+        nWinLaps=1,
+        nGates=nGates,
+        maxSpeed=np.linspace(1.2, 3, nAgents),
+        # maxSpeed=np.linspace(2, 3, nAgents),
+        maxAccel=np.linspace(2, 0.3, nAgents),
+        nTrackSamples=nTrackSamples,
+        targetDistance=0.05,
+        gateCenters=gateCenters,
+        gateVectors=gateVectors,
+        gateRadius=gateRadius,
+        minDist=2.2,
+        arenaMin=np.array([-0.1 * length, -trackHeight]),
+        arenaMax=np.array([1.1 * length, trackHeight]),
+        seed=42,
+        opponentPidConfigs=(pid0, pid1),
+        nModelFactors=1,
+        modelSizes=np.array([2]),
+        initBelief=np.array([0.5, 0.5]),
+    )
+
+    def getHeight(x):
+        x_norm = x / length
+        if x_norm > 1.0:
+            return 0.0
+
+        if x_norm < obsPos - halfSize:
+            return 0.0
+        elif x_norm < obsPos - halfSize + curveLength:
+            x_norm_small = (x_norm - (obsPos - halfSize)) / curveLength
+            return np.sin(np.pi / 2.0 * x_norm_small) ** 2  # smooth between 0 and 1
+        elif x_norm < obsPos + halfSize - curveLength:
+            return 1.0
+        elif x_norm < obsPos + halfSize:
+            x_norm_small = (x_norm - (obsPos + halfSize - curveLength)) / curveLength
+            return np.sin(np.pi / 2.0 * (1 - x_norm_small)) ** 2
+        else:
+            return 0.0
+
+    base_x = np.linspace(0.0, length * 1.1, nTrackSamples)
+    base_y = np.array([getHeight(x) for x in base_x]) * obsHeight
+
+    config.trackPoints = np.concat(
+        [
+            np.column_stack((base_x, base_y)),
+            np.column_stack((base_x, -base_y)),
+        ]
+    )
+
+    config.init_pos = np.array([config.trackPoints[int(s * config.nTrackSamples)] for s in startS]).flatten()
+    config.initS = np.repeat(startS, 2)
+    config.initnLaps = np.zeros(nAgents)
+    config.initGates = np.array([1, 1])
+
+    # if afraid:
+    #     config.init_pos = np.array([10.0, 4.0, 0.1, 0.0])a
+
+    if not usePR and not useSplines:
+        mppiconfig = MPPIConfig(
+            useSplines=False,
+            nSamples=2**16,
+            # nSamples=1,
+            nTimesteps=70,
+            inv_temperature=1,
+            samplingNoise=0.1,
+            # samplingNoise=0.5,
+            gateTraversalMargin=0.9,  # restrict 5% on each side
+            collDistFactor=1.1,
+            # collDistFactor=1.3,
+            finalAdvWeight=500,
+            # finalAdvWeight=0,
+            # finalSpeedWeight=50,
+            # oppDistWeight=0,
+            oppDistWeight=0,
+            oppDistThresholdFactor=3,
+            finalOppAdvWeight=0,
+            # finalOppAdvWeight=500,
+            boundaryCost=0,
+            # boundaryCost=0.0,
+            boundaryThresholdFactor=1,
+            oppOutsideCost=0,
+            # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
+            outsideCost=1e6,
+            collisionCost=1e6,
+            winCost=1e6,
+            minConfidence=0.95,
+            nKnots=5,
+        )
+
+    elif not usePR:
+        mppiconfig = MPPIConfig(
+            useSplines=True,
+            nSamples=2**16,
+            # nSamples=1,
+            nTimesteps=80,
+            inv_temperature=10,
+            samplingNoise=0.1,
+            # samplingNoise=0.5,
+            gateTraversalMargin=0.9,  # restrict 5% on each side
+            collDistFactor=1.1,
+            # collDistFactor=1.3,
+            finalAdvWeight=500,
+            # finalAdvWeight=0,
+            # finalSpeedWeight=50,
+            # oppDistWeight=0,
+            oppDistWeight=0,
+            oppDistThresholdFactor=3,
+            finalOppAdvWeight=0,
+            # finalOppAdvWeight=500,
+            boundaryCost=5,
+            # boundaryCost=0.0,
+            boundaryThresholdFactor=1.3,
+            oppOutsideCost=0,
+            # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
+            outsideCost=1e6,
+            collisionCost=1e6,
+            winCost=1e6,
+            minConfidence=0.95,
+            nKnots=30,
+        )
+
+    else:
+        mppiconfig = PRMPPIConfig(
+            nSamples=2**16,
+            # nSamples=1,
+            nTimesteps=60,
+            inv_temperature=1,
+            samplingNoise=0.3,
+            # samplingNoise=0.5,
+            gateTraversalMargin=0.9,  # restrict 5% on each side
+            collDistFactor=1.1,
+            # collDistFactor=1.3,
+            finalAdvWeight=500,
+            # finalAdvWeight=0,
+            # finalSpeedWeight=50,
+            # oppDistWeight=0,
+            oppDistWeight=0,
+            oppDistThresholdFactor=3,
+            finalOppAdvWeight=0,
+            # finalOppAdvWeight=500,
+            boundaryCost=0,
+            # boundaryCost=0.0,
+            boundaryThresholdFactor=1,
+            oppOutsideCost=0,
+            # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
+            safetyWeight=1e4,
+            delta=0.1,
+        )
+
+    return config, mppiconfig, [pid0, pid1], [["Top", "Bottom"]]
+
+
 def mainGate():
     # envConfig, mppiconfig, pid0, pid1, oppNames = standardGateEnv()  # pid0 = afraid; pid1 = bold
     # envConfig, mppiconfig, pids, oppNames = tinyGateEnv(afraid=False, useSplines=True)  # pid0 = top; pid1 = bottom
     # envConfig, mppiconfig, pids, oppNames = tinyGateEnv(afraid=False, useSplines=False)  # pid0 = top; pid1 = bottom
-    envConfig, mppiconfig, pids, oppNames = tinyGateEnv(afraid=False, usePR=True)  # pid0 = top; pid1 = bottom
+    # envConfig, mppiconfig, pids, oppNames = tinyGateEnv(afraid=False, usePR=True)  # pid0 = top; pid1 = bottom
     # envConfig, mppiconfig, pids, oppNames = tinyGateEnv2Models(roundObs=True, usePR=False)
     # envConfig, mppiconfig, pid0, pid1, oppNames = activeEnv()  # pid0 = afraid; pid1 = bold
+
+    envConfig, mppiconfig, pids, oppNames = highInertiaEnv(usePR=True, useSplines=False)
 
     envConfig.trueTheta = 1
     envConfig.iMppi = 1
@@ -673,8 +859,8 @@ def mainGate():
     if isinstance(mppiconfig, MPPIConfig):
         mppiconfig.nVerifSamples = 2**17
         mppiconfig.beta = 1e-6
-        mppiconfig.verifHorizon = 40
-        mppiconfig.maxVerifEps = 0.001
+        mppiconfig.verifHorizon = 60
+        mppiconfig.maxVerifEps = 0.0005
         # mppiconfig.maxVerifEps = 10
 
     envConfig.sendStates = True

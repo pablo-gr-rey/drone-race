@@ -49,8 +49,79 @@ HD INLINE void computePIDAction(
         outAction[d] = pid.kp * error + pid.kd * (-latVelError);
     }
 
+    // float targetSpeedFactor = 0.8;
+    // float speedKp = 1;
+
+    // float center[DIM] = {};
+    // float ahead[DIM] = {};
+
+    // const float s0 = state.S[agent * N_RACELINES + pid.racelineIndex];
+    // const float ds = envConfig.targetDistance;   // reinterpret as tangent/lookahead distance along S
+
+    // sampleCenterline(
+    //     envConfig.trackPoints + N_TRACK_SAMPLES * pid.racelineIndex * DIM,
+    //     s0,
+    //     center);
+
+    // sampleCenterline(
+    //     envConfig.trackPoints + N_TRACK_SAMPLES * pid.racelineIndex * DIM,
+    //     s0 + ds,
+    //     ahead);
+
+    // const float* curPos = state.pos + agent * DIM;
+    // const float* curVel = state.vel + agent * DIM;
+
+    // // tangent direction
+    // float tanDir[DIM];
+    // float tanNorm2 = 0.0f;
+    // for (int d = 0; d < DIM; d++)
+    // {
+    //     tanDir[d] = ahead[d] - center[d];
+    //     tanNorm2 += tanDir[d] * tanDir[d];
+    // }
+
+    // float invTanNorm = 1.0f / sqrtf(tanNorm2 + 1e-6f);
+    // for (int d = 0; d < DIM; d++)
+    //     tanDir[d] *= invTanNorm;
+
+    // // position error relative to current line point
+    // float posErr[DIM];
+    // float posErrTan = 0.0f;
+    // for (int d = 0; d < DIM; d++)
+    // {
+    //     posErr[d] = curPos[d] - center[d];
+    //     posErrTan += posErr[d] * tanDir[d];
+    // }
+
+    // // lateral position error = remove tangential component
+    // float latErr[DIM];
+    // for (int d = 0; d < DIM; d++)
+    //     latErr[d] = posErr[d] - posErrTan * tanDir[d];
+
+    // // velocity decomposition
+    // float velTan = 0.0f;
+    // for (int d = 0; d < DIM; d++)
+    //     velTan += curVel[d] * tanDir[d];
+
+    // float latVel[DIM];
+    // for (int d = 0; d < DIM; d++)
+    //     latVel[d] = curVel[d] - velTan * tanDir[d];
+
+    // // desired tangential speed
+    // // simplest version: constant desired speed fraction of max speed
+    // const float desiredSpeed = targetSpeedFactor * envConfig.maxSpeed[agent];
+
+    // // line-following acceleration:
+    // //   lateral PD + tangential P speed tracking
+    // for (int d = 0; d < DIM; d++)
+    // {
+    //     float aLat = -pid.kp * latErr[d] - pid.kd * latVel[d];
+    //     float aTan = speedKp * (desiredSpeed - velTan) * tanDir[d];
+    //     outAction[d] = aLat + aTan;
+    // }
+
     // repulsion
-    if (pid.repulsionDistFact != 0.0f)
+    if (pid.repulsionFactor != 0.0f)
         for (int other = 0; other < N_AGENTS; other++)
         {
             if (other == agent)
@@ -85,6 +156,121 @@ HD INLINE void computePIDAction(
             outAction[d] *= fact;
     }
 }
+
+// HD INLINE void computePIDAction_test(
+//     int agent,
+//     const SimState& state,
+//     const EnvironmentConfig& envConfig,
+//     const PIDConfig& pid,
+//     float* outAction)
+// {
+//     float targetSpeedFactor = 0.8;
+//     float speedKp = 1;
+
+//     float center[DIM] = {};
+//     float ahead[DIM] = {};
+
+//     const float s0 = state.S[agent * N_RACELINES + pid.racelineIndex];
+//     const float ds = envConfig.targetDistance;   // reinterpret as tangent/lookahead distance along S
+
+//     sampleCenterline(
+//         envConfig.trackPoints + N_TRACK_SAMPLES * pid.racelineIndex * DIM,
+//         s0,
+//         center);
+
+//     sampleCenterline(
+//         envConfig.trackPoints + N_TRACK_SAMPLES * pid.racelineIndex * DIM,
+//         s0 + ds,
+//         ahead);
+
+//     const float* curPos = state.pos + agent * DIM;
+//     const float* curVel = state.vel + agent * DIM;
+
+//     // tangent direction
+//     float tanDir[DIM];
+//     float tanNorm2 = 0.0f;
+//     for (int d = 0; d < DIM; d++)
+//     {
+//         tanDir[d] = ahead[d] - center[d];
+//         tanNorm2 += tanDir[d] * tanDir[d];
+//     }
+
+//     float invTanNorm = 1.0f / sqrtf(tanNorm2 + 1e-6f);
+//     for (int d = 0; d < DIM; d++)
+//         tanDir[d] *= invTanNorm;
+
+//     // position error relative to current line point
+//     float posErr[DIM];
+//     float posErrTan = 0.0f;
+//     for (int d = 0; d < DIM; d++)
+//     {
+//         posErr[d] = curPos[d] - center[d];
+//         posErrTan += posErr[d] * tanDir[d];
+//     }
+
+//     // lateral position error = remove tangential component
+//     float latErr[DIM];
+//     for (int d = 0; d < DIM; d++)
+//         latErr[d] = posErr[d] - posErrTan * tanDir[d];
+
+//     // velocity decomposition
+//     float velTan = 0.0f;
+//     for (int d = 0; d < DIM; d++)
+//         velTan += curVel[d] * tanDir[d];
+
+//     float latVel[DIM];
+//     for (int d = 0; d < DIM; d++)
+//         latVel[d] = curVel[d] - velTan * tanDir[d];
+
+//     // desired tangential speed
+//     // simplest version: constant desired speed fraction of max speed
+//     const float desiredSpeed = targetSpeedFactor * envConfig.maxSpeed[agent];
+
+//     // line-following acceleration:
+//     //   lateral PD + tangential P speed tracking
+//     for (int d = 0; d < DIM; d++)
+//     {
+//         float aLat = -pid.kp * latErr[d] - pid.kd * latVel[d];
+//         float aTan = speedKp * (desiredSpeed - velTan) * tanDir[d];
+//         outAction[d] = aLat + aTan;
+//     }
+
+//     // repulsion
+//     if (pid.repulsionFactor != 0.0f)
+//         for (int other = 0; other < N_AGENTS; other++)
+//         {
+//             if (other == agent)
+//                 continue;
+
+//             float diff[DIM];
+//             float dist2 = 0.0f;
+//             for (int d = 0; d < DIM; d++)
+//             {
+//                 diff[d] = state.pos[other * DIM + d] - curPos[d];
+//                 dist2 += diff[d] * diff[d];
+//             }
+
+//             float dist = sqrtf(dist2) + 1e-8f;
+//             if (dist < pid.repulsionDistFact * envConfig.minDist)
+//             {
+//                 float scale = pid.repulsionFactor / powf(dist / envConfig.minDist, pid.repulsionPower + 1.0f);
+//                 for (int d = 0; d < DIM; d++)
+//                     outAction[d] -= scale * diff[d];
+//             }
+//         }
+
+//     // normalize / clamp accel
+//     float sqAccel = 0.0f;
+//     for (int d = 0; d < DIM; d++)
+//         sqAccel += outAction[d] * outAction[d];
+
+//     if (sqAccel > envConfig.maxAccel[agent] * envConfig.maxAccel[agent])
+//     {
+//         float fact = envConfig.maxAccel[agent] / sqrtf(sqAccel);
+//         for (int d = 0; d < DIM; d++)
+//             outAction[d] *= fact;
+//     }
+// }
 
 // compute opp. nominal actions, PID noise + env noise (only if applyNoise is True), env dynamics, belief update (only if shouldUpdateBelief) and branch update (only if considerBranching is true; if we become specialized, set corresponding branching time to t+1)
 template <bool shouldUpdateBelief, bool considerBranching, typename RNG>

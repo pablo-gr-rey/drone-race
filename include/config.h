@@ -17,7 +17,7 @@
 #define INLINE inline
 #endif
 
-constexpr bool USE_SPLINES = true;
+constexpr bool USE_SPLINES = false;
 
 // ── compile-time limits ──────────────────────────────────────────────
 constexpr int N_AGENTS = 2;
@@ -28,17 +28,19 @@ constexpr int N_OBSTACLES = 0;
 
 constexpr int MAX_N_KNOTS = 60;
 
-// 1 agent
-constexpr int N_ROUND_OBSTACLES = 1;
+// 0/1 obstacle
+constexpr int N_ROUND_OBSTACLES = 0;
+// constexpr int N_ROUND_OBSTACLES = 1;
 constexpr int N_RACELINES = 2;
 constexpr int N_MODEL_FACTORS = 1;
 
-// 2 agents
+// 2 obstacles
 // constexpr int N_ROUND_OBSTACLES = 2;
 // constexpr int N_RACELINES = 4;
 // constexpr int N_MODEL_FACTORS = 2;
 
 constexpr float MIN_COEFF_THRESHOLD = 0.01f;        // minimum probability threshold for samples to contribute
+constexpr float DECAY = 0.95f;
 
 // CUDA does not like constexpr arrays, so we use constexpr inline functions
 

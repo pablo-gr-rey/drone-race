@@ -161,7 +161,7 @@ __global__ void fullRolloutKernel(
             stop = (term != TERM_NONE);
 
             cost += stateCost(controlAgent, state, t, envConfig, mc) * decay;
-            decay *= 0.9f;
+            decay *= DECAY;
         }
 
         // Terminal cost

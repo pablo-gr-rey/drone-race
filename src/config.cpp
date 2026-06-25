@@ -143,6 +143,10 @@ void MPPIConfig::unpackHeader(Reader& reader)
     if (nRecv != nKnots)
         throw std::runtime_error(std::format("Received invalid number of knots: got {} elements, but received nKnots={}", nRecv, nKnots));
 
+    bool useSplines = reader.readInt32();
+    if (useSplines != USE_SPLINES)
+        throw std::runtime_error(std::format("Received useSplines={}, but constexpr USE_SPLINES is set to {}. Edit this constant and recompile", useSplines, USE_SPLINES));
+
     if (!USE_SPLINES)
         nKnots = nTimesteps;        // for MPPI device array allocationsmy
 
@@ -173,7 +177,7 @@ void MPPIConfig::unpackHeader(Reader& reader)
     verifHorizon = reader.readInt32();
     maxVerifEps = reader.readFloat();
 
-    std::cout << "loaded MPPI samples " << nSamples << " timesteps " << nTimesteps << " collDistFactor " << collDistFactor << " with " << N_TRUE_MODELS << " opponent strats\n";
+    std::cout << "loaded MPPI samples " << nSamples << " timesteps " << nTimesteps << " collDistFactor " << collDistFactor << " invTemp " << invTemperature << " with " << N_TRUE_MODELS << " opponent strats\n";
 }
 
 void PRMPPIConfig::unpackHeader(Reader& reader)

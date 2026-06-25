@@ -235,6 +235,9 @@ class MPPIConfig(ControllerConfig):
     nTimesteps: int = 60
     nKnots: int = 6
     knots: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    useSplines: bool = True
+
     inv_temperature: float = 10
 
     samplingNoise: float = 1.0

@@ -175,13 +175,10 @@ class MPPIRenderer(ControllerRenderer[MPPIConfig]):
         )
         self.ax_failcount = self.fig.add_subplot(gs_mppi[0])
 
-        if self.severalModels:
-            gs_marginal = gs_mppi[1].subgridspec(1, self.envConfig.nModelFactors)
-            self.axs_marg_belief = [self.fig.add_subplot(g) for g in gs_marginal]
-        else:
-            self.axs_marg_belief = None
+        gs_marginal = gs_mppi[1].subgridspec(1, self.envConfig.nModelFactors)
+        self.axs_marg_belief = [self.fig.add_subplot(g) for g in gs_marginal]
 
-        self.ax_joint_belief = self.fig.add_subplot(gs_mppi[1 + int(self.severalModels)])
+        self.ax_joint_belief = self.fig.add_subplot(gs_mppi[2]) if self.severalModels else None
 
         # should have shape nModelFactors * (nModelSizes[k]+1)
         self.pred_colors = [["brown", "green", "orange"], ["yellow", "cyan", "purple"]]
@@ -229,7 +226,13 @@ class MPPIRenderer(ControllerRenderer[MPPIConfig]):
 
         # MPPI failcount status
         self.ax_failcount.text(
-            0.5, 0.95, "Controller Type: Branching-MPPI", fontsize=15, ha="center", va="top", fontweight="bold"
+            0.5,
+            0.95,
+            "Controller Type: Branching-MPPI (" + ["without", "with"][self.config.useSplines] + " splines)",
+            fontsize=15,
+            ha="center",
+            va="top",
+            fontweight="bold",
         )
         self.verif_text = self.ax_failcount.text(0.5, 0.1, "", fontsize=12, ha="center", va="bottom")
         self.ax_failcount.axis("off")
@@ -244,16 +247,19 @@ class MPPIRenderer(ControllerRenderer[MPPIConfig]):
             joint_colors.append([self.pred_colors[k][thetaList[k] + 1] for k in range(self.envConfig.nModelFactors)])
             names.append("-".join(self.oppNames[k][thetaList[k]] for k in range(self.envConfig.nModelFactors)))
 
-        self.joint_belief = self.createBeliefBar(self.ax_joint_belief, names, joint_colors, "Joint belief", None)
+        self.joint_belief = (
+            self.createBeliefBar(self.ax_joint_belief, names, joint_colors, "Joint belief", None)
+            if self.ax_joint_belief is not None
+            else None
+        )
 
         # marginal belief
-        if self.axs_marg_belief is not None:
-            self.marginal_belief = [
-                self.createBeliefBar(
-                    ax, names, [[c] for c in colors[1:]], f"Marginal belief for {k}", colors[0], self.config.minConfidence
-                )
-                for k, (ax, names, colors) in enumerate(zip(self.axs_marg_belief, self.oppNames, self.pred_colors))
-            ]
+        self.marginal_belief = [
+            self.createBeliefBar(
+                ax, names, [[c] for c in colors[1:]], f"Marginal belief for {k}", colors[0], self.config.minConfidence
+            )
+            for k, (ax, names, colors) in enumerate(zip(self.axs_marg_belief, self.oppNames, self.pred_colors))
+        ]
 
     def update(self, state: FullStateInfo) -> None:
         collMarkers = iter(self.collMarkers)
@@ -344,28 +350,31 @@ class MPPIRenderer(ControllerRenderer[MPPIConfig]):
         )
 
         # update joint belief
-        for bar, text, b_val in zip(self.joint_belief[0], self.joint_belief[1], mppiState.belief):
-            bar.set_height(b_val)
+        if self.joint_belief is not None:
+            for bar, text, b_val in zip(self.joint_belief[0], self.joint_belief[1], mppiState.belief):
+                bar.set_height(b_val)
 
-            text.set_text(f"{b_val:.2f}")
-            text.set_y(b_val + 0.01)
+                text.set_text(f"{b_val:.2f}")
+                text.set_y(b_val + 0.01)
 
         # update marginal belief
-        if self.axs_marg_belief is not None:
-            for k in range(self.envConfig.nModelFactors):
-                marg = self.envConfig.computeMarginal(mppiState.belief, k)
+        for k in range(self.envConfig.nModelFactors):
+            marg = self.envConfig.computeMarginal(mppiState.belief, k)
 
-                for bar, text, b_val in zip(self.marginal_belief[k][0], self.marginal_belief[k][1], marg):
-                    bar.set_height(b_val)
+            for bar, text, b_val in zip(self.marginal_belief[k][0], self.marginal_belief[k][1], marg):
+                bar.set_height(b_val)
 
-                    color = "#2ecc71" if b_val >= self.config.minConfidence else "#3498db"
-                    bar.set_facecolor(color)
+                color = "#2ecc71" if b_val >= self.config.minConfidence else "#3498db"
+                bar.set_facecolor(color)
 
-                    text.set_text(f"{b_val:.2f}")
-                    text.set_y(b_val + 0.01)
+                text.set_text(f"{b_val:.2f}")
+                text.set_y(b_val + 0.01)
 
     def getCapturedAxes(self) -> list[plt.Axes]:  # type: ignore
-        return [self.ax_joint_belief, self.ax_failcount] + (self.axs_marg_belief or [])
+        ans = [self.ax_failcount] + self.axs_marg_belief
+        if self.ax_joint_belief is not None:
+            ans.append(self.ax_joint_belief)
+        return ans
 
 
 class PRMPPIRenderer(ControllerRenderer[PRMPPIConfig]):
@@ -379,13 +388,10 @@ class PRMPPIRenderer(ControllerRenderer[PRMPPIConfig]):
 
         self.ax_failcount = self.fig.add_subplot(gs_mppi[0])
 
-        if self.severalModels:
-            gs_marginal = gs_mppi[1].subgridspec(1, self.envConfig.nModelFactors)
-            self.axs_marg_belief = [self.fig.add_subplot(g) for g in gs_marginal]
-        else:
-            self.axs_marg_belief = None
+        gs_marginal = gs_mppi[1].subgridspec(1, self.envConfig.nModelFactors)
+        self.axs_marg_belief = [self.fig.add_subplot(g) for g in gs_marginal]
 
-        self.ax_joint_belief = self.fig.add_subplot(gs_mppi[1 + int(self.severalModels)])
+        self.ax_joint_belief = self.fig.add_subplot(gs_mppi[2]) if self.severalModels else None
 
         # should have shape nModelFactors * (nModelSizes[k])
         self.pred_colors = [["green", "orange"], ["cyan", "purple"]]
@@ -473,14 +479,17 @@ class PRMPPIRenderer(ControllerRenderer[PRMPPIConfig]):
             joint_colors.append([self.pred_colors[k][thetaList[k]] for k in range(self.envConfig.nModelFactors)])
             names.append("-".join(self.oppNames[k][thetaList[k]] for k in range(self.envConfig.nModelFactors)))
 
-        self.joint_belief = self.createBeliefBar(self.ax_joint_belief, names, joint_colors, "Joint belief", None)
+        self.joint_belief = (
+            self.createBeliefBar(self.ax_joint_belief, names, joint_colors, "Joint belief", None)
+            if self.ax_joint_belief is not None
+            else None
+        )
 
         # marginal belief
-        if self.axs_marg_belief is not None:
-            self.marginal_belief = [
-                self.createBeliefBar(ax, names, [[c] for c in colors], f"Marginal belief for {k}", None, None)
-                for k, (ax, names, colors) in enumerate(zip(self.axs_marg_belief, self.oppNames, self.pred_colors))
-            ]
+        self.marginal_belief = [
+            self.createBeliefBar(ax, names, [[c] for c in colors], f"Marginal belief for {k}", None, None)
+            for k, (ax, names, colors) in enumerate(zip(self.axs_marg_belief, self.oppNames, self.pred_colors))
+        ]
 
     def update(self, state: FullStateInfo) -> None:
         collMarkers = iter(self.collMarkers)
@@ -541,26 +550,26 @@ class PRMPPIRenderer(ControllerRenderer[PRMPPIConfig]):
             marker.set_data([], [])
 
         # update joint belief
-        for bar, text, b_val in zip(self.joint_belief[0], self.joint_belief[1], mppiState.belief):
-            bar.set_height(b_val)
+        if self.joint_belief is not None:
+            for bar, text, b_val in zip(self.joint_belief[0], self.joint_belief[1], mppiState.belief):
+                bar.set_height(b_val)
 
-            text.set_text(f"{b_val:.2f}")
-            text.set_y(b_val + 0.01)
+                text.set_text(f"{b_val:.2f}")
+                text.set_y(b_val + 0.01)
 
         # update marginal belief
-        if self.axs_marg_belief is not None:
-            for k in range(self.envConfig.nModelFactors):
-                marg = self.envConfig.computeMarginal(mppiState.belief, k)
+        for k in range(self.envConfig.nModelFactors):
+            marg = self.envConfig.computeMarginal(mppiState.belief, k)
 
-                for bar, text, b_val in zip(self.marginal_belief[k][0], self.marginal_belief[k][1], marg):
-                    bar.set_height(b_val)
+            for bar, text, b_val in zip(self.marginal_belief[k][0], self.marginal_belief[k][1], marg):
+                bar.set_height(b_val)
 
-                    # color = "#2ecc71" if b_val >= self.config.minConfidence else "#3498db"
-                    color = "#3498db"
-                    bar.set_facecolor(color)
+                # color = "#2ecc71" if b_val >= self.config.minConfidence else "#3498db"
+                color = "#3498db"
+                bar.set_facecolor(color)
 
-                    text.set_text(f"{b_val:.2f}")
-                    text.set_y(b_val + 0.01)
+                text.set_text(f"{b_val:.2f}")
+                text.set_y(b_val + 0.01)
 
         # update text status
 
@@ -568,7 +577,10 @@ class PRMPPIRenderer(ControllerRenderer[PRMPPIConfig]):
         self.reset_text.set_visible(mppiState.resetNom)
 
     def getCapturedAxes(self) -> list[plt.Axes]:  # type: ignore
-        return [self.ax_joint_belief, self.ax_failcount] + (self.axs_marg_belief or [])
+        ans = [self.ax_failcount] + self.axs_marg_belief
+        if self.ax_joint_belief is not None:
+            ans.append(self.ax_joint_belief)
+        return ans
 
 
 class EnvironmentRenderer:
