@@ -14,14 +14,14 @@ class SimulationEngine
 {
 public:
     SimulationEngine(
-        const EnvironmentConfig& cfg,
-        const VerifConfig& verifConfig,
-        const MPPIConfig& mppiConfig,
+        const EnvironmentConfig& config,
+        const AnyControllerConfig& contConfig,
+        const SimState& initSimState,
         int seed);
 
     ~SimulationEngine();
 
-    void sendState(zmq::socket_t& sock, int step, const std::array<float, DIM>& egoAction);
+    void sendState(zmq::socket_t& sock, int step, const std::array<float, ACTION_DIM>& egoAction, const SimState& prevState);
     void sendEvent(zmq::socket_t& sock, EventType type, int info);
     void sendDone(zmq::socket_t& sock);
 
@@ -30,7 +30,7 @@ public:
 
     // public config & track data
     EnvironmentConfig envConfig;
-    VerifConfig verifConfig;
+    EnvironmentConfig d_envConfig;
 
     // current simulation state
     SimState state;
@@ -38,17 +38,15 @@ public:
 private:
     std::normal_distribution<float> nd{ 0.0f, 1.0f };
 
-    float* d_trackPoints = nullptr;   // sent to MPPI controller
     int seed;
+    CONTROLLER_KIND contKind;
 
     // controllers
-    MPPIController mppiCont;
+    std::unique_ptr<Controller> controller;
 
     std::mt19937 rng;
 
-    void allocTrack();
-
-    std::optional<std::pair<EventType, int>> dynStep(const std::array<float, DIM>& action, int t, std::array<float, N_TRUE_MODELS>& belief);
+    std::optional<std::pair<EventType, int>> dynStep(const std::array<float, ACTION_DIM>& action, int t, std::array<float, N_TRUE_MODELS>& belief);
 
     std::optional<std::pair<EventType, int>> parseTerm(TerminalType term, int egoAgent);
 };

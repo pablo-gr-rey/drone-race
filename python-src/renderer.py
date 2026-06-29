@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 import io
 import os
 import time
@@ -16,343 +17,51 @@ from matplotlib.transforms import Bbox
 from matplotlib.widgets import Button, Slider, TextBox
 from PIL import Image
 from tqdm import tqdm
-from utils import EVENT_TYPE, FullStateInfo, GateEnvironmentConfig, MPPIConfig, VerifConfig
+from utils import (
+    EVENT_TYPE,
+    ControllerConfig,
+    FullStateInfo,
+    GateEnvironmentConfig,
+    MPPIConfig,
+    MPPIStateInfo,
+    PRMPPIConfig,
+    PRMPPIStateInfo,
+)
 
 
-class EnvironmentRenderer:
-    """Helper that manages a non-blocking matplotlib window for live rendering.
-    If you wish the window to stay open at the end of the dynamics loop, make sure to call renderer.finish() which will block the program.
-    """
-
+class ControllerRenderer[ConfigType](ABC):
     def __init__(
         self,
         envConfig: GateEnvironmentConfig,
-        mppiConfig: MPPIConfig,
-        contNames: list[str],
-        verifConfig: VerifConfig,
+        contConfig: ConfigType,
         oppNames: list[list[str]],
-        axis: tuple[int, ...] = (0, 1),
-        interval: int = 30,
-        autoplay: bool = True,
-        frameSkipPlayback: int = 2,
-        frameSkipWaiting: int = 1,
-        defaultZoomAgent: int = 0,
-        display_raceline: bool | list[bool] = True,
-        renderTrails: bool = True,
+        ax: plt.Axes,  # type: ignore
+        fig: plt.Figure,  # type: ignore
+        gs: plt.SubplotSpec,  # type: ignore
+        axis: tuple[int, ...],
     ):
-        "interval: refresh rate. frameSkipWaiting: how many frames to skip if emitting states faster than we can display (use -1 to always display last frame). use defaultZoomAgent=-1 to start viewing full track, otherwise start zooming on agent"
+        self.config = contConfig
         self.envConfig = envConfig
-        self.verifConfig = verifConfig
-        self.axis = axis
-        self.interval = interval
-        self.frameSkipPlayback = frameSkipPlayback
-        self.frameSkipWaiting = frameSkipWaiting
-        self.iMppi = self.envConfig.iMppi
-
-        self.mppiConfig = mppiConfig
-
-        if len(oppNames) != envConfig.nModelFactors or any(len(n) != size for n, size in zip(oppNames, envConfig.modelSizes)):
-            raise ValueError("Wrong length for oppNames")
-
         self.oppNames = oppNames
-        print(oppNames)
 
-        self.renderTrails = renderTrails
+        self.ax = ax
+        self.fig = fig
+        self.base_gs = gs
 
-        self.stateLog: list[FullStateInfo] = []
+        self.axis = axis
 
-        self.collision = False
-        self.winner: Optional[int] = None
-        self.outside: Optional[int] = None
+        self.init()
 
-        if isinstance(display_raceline, bool):
-            display_raceline = [display_raceline] * envConfig.nRaceLines
+    @abstractmethod
+    def init(self) -> None: ...
 
-        plt.rcParams["keymap.back"].remove("left")
-        plt.rcParams["keymap.forward"].remove("right")
+    @abstractmethod
+    def update(self, state: FullStateInfo) -> None: ...
 
-        plt.ion()
-        plt.show()
+    @abstractmethod
+    def getCapturedAxes(self) -> list[plt.Axes]: ...  # type: ignore
 
-        self.fig = plt.figure(figsize=(12, 10))
-
-        # try to make picture fullscreen
-        # matplotlib can use different backend, so this is not guaranteed to work
-
-        fig_manager = plt.get_current_fig_manager()
-        if fig_manager is not None:
-            try:
-                # default tk backend on X11
-                fig_manager.window.attributes("-zoomed", True)  # type: ignore
-            except Exception:
-                try:
-                    # default tk backend (but sometimes works better)
-                    fig_manager.window.state("zoomed")  # type: ignore
-                except Exception:
-                    # Qt backend
-                    try:
-                        fig_manager.window.showMaximized()  # type: ignore
-                    except Exception:
-                        # give up
-                        pass
-
-        gs = GridSpec(
-            2,
-            2,
-            figure=self.fig,
-            width_ratios=[3, 1],
-            height_ratios=[15, 1],
-            wspace=0.2,
-            hspace=0.1,
-            left=0.04,
-            right=0.96,
-            bottom=0.06,
-            top=0.96,
-        )
-
-        gs_plot = gs[0, 0].subgridspec(3, 1, height_ratios=[2, 1, 1], hspace=0.1)
-
-        self.ax = self.fig.add_subplot(gs_plot[0])  # track ax
-        self.ax.set_aspect("equal", adjustable="box")
-
-        self.axs_action_plot = [self.fig.add_subplot(gs_plot[i + 1]) for i in range(envConfig.dim)]
-
-        gs_status = gs[0, 1].subgridspec(4, 1, height_ratios=[1, 1, 3, 3], hspace=0.1)
-
-        self.ax_status = self.fig.add_subplot(gs_status[0])  # for text status
-        self.ax_status.axis("off")
-
-        self.ax_failcount = self.fig.add_subplot(gs_status[1])
-
-        gs_marginal = gs_status[2].subgridspec(1, envConfig.nModelFactors)
-        self.axs_marg_belief = [self.fig.add_subplot(g) for g in gs_marginal]
-
-        self.ax_joint_belief = self.fig.add_subplot(gs_status[3])
-
-        # slider, empty space, play/pause, save gif, gif name, zoom, +/-, focus
-        gs_ui = gs[1, :].subgridspec(1, 8, width_ratios=[7, 1, 1, 1, 1, 1, 0.4, 1], wspace=0.1)
-
-        # draw static background using environment hook
-        # self.env.renderBackground(self.ax, display_raceline)
-        self.renderBackground(display_raceline)
-
-        # color maps and patch/marker colors for drones
-        self.cmaps = ["Blues", "Reds", "Greens", "Purples", "Oranges", "Greys", "YlOrBr", "BuPu"]
-        self.colors = ["blue", "red", "green", "purple", "orange", "gray", "brown", "pink"]
-
-        # should have shape nModelFactors * (nModelSizes[k]+1)
-        self.pred_colors = [["brown", "green", "orange"], ["yellow", "cyan", "purple"]]
-        # self.pred_colors = ["brown", "green", "orange"]
-
-        self.nAgents = self.envConfig.nAgents
-
-        # line collections for trajectories
-        self.lcs: list[LineCollection] = []
-
-        for i_agent in range(self.nAgents):
-            lc = LineCollection([], cmap=self.cmaps[i_agent % self.nAgents], linewidth=4, alpha=0.8)
-            self.lcs.append(lc)
-            self.ax.add_collection(lc)  # type: ignore
-
-        # line collections for MPPI predictions
-        # length: nTrueModels * nModelFactors, with items being (nomMppi, branchMppi, pid). each item is ((nominalStrong, nominalLight), (branchedStrong, branchedLight)). branched color should change based on the real value
-        self.lcs_pred: list[list[tuple[tuple[Line2D, Line2D], tuple[Line2D, Line2D], tuple[Line2D, Line2D]]]] = []
-
-        for theta in range(envConfig.nTrueModels):
-            preds: list[tuple[tuple[Line2D, Line2D], tuple[Line2D, Line2D], tuple[Line2D, Line2D]]] = []
-            for k in range(envConfig.nModelFactors):
-                thetaList = envConfig.unflattenTheta(theta)
-
-                nomMppi = (
-                    self.ax.plot([], color=self.pred_colors[k][0], marker=None, linewidth=4, alpha=0.8)[0],
-                    self.ax.plot([], color=self.pred_colors[k][0], marker=None, linewidth=2, alpha=0.4)[0],
-                )
-
-                branchMppi = (
-                    self.ax.plot([], color=self.pred_colors[k][0], marker=None, linewidth=4, alpha=0.8)[0],
-                    self.ax.plot([], color=self.pred_colors[k][0], marker=None, linewidth=2, alpha=0.4)[0],
-                )
-
-                pidTraj = (
-                    self.ax.plot(
-                        [], color=self.pred_colors[k][thetaList[k] + 1], marker=None, linewidth=3, alpha=0.8, linestyle="-."
-                    )[0],
-                    self.ax.plot(
-                        [], color=self.pred_colors[k][thetaList[k] + 1], marker=None, linewidth=2, alpha=0.4, linestyle="-."
-                    )[0],
-                )
-
-                preds.append((nomMppi, branchMppi, pidTraj))
-
-            self.lcs_pred.append(preds)
-
-        # points and collision circles
-        self.points: list[Any] = []
-        self.circles: list[Circle] = []
-        for i_agent in range(self.nAgents):
-            px, py = self.getPos(0, i_agent)
-            color = self.colors[i_agent % len(self.colors)]
-            (pt,) = self.ax.plot([px], [py], marker="o", color=color, markersize=8, label=f"{contNames[i_agent]} ({i_agent + 1})")
-            self.points.append(pt)
-            circ = Circle((px, py), radius=self.envConfig.minDist / 2, fill=True, color=color, linestyle="--", alpha=0.3)
-            self.circles.append(circ)
-            self.ax.add_patch(circ)
-
-        # crash marker (initially empty)
-        maxCollMarkers = self.nAgents * envConfig.nTrueModels
-        self.collMarkers = [
-            self.ax.plot(
-                [], [], marker="*", markersize=20, color="yellow", markeredgecolor="red", markeredgewidth=1, zorder=5, alpha=0.8
-            )[0]
-            for i in range(maxCollMarkers)
-        ]
-
-        bmin, bmax = self.envConfig.arenaMin, self.envConfig.arenaMax
-        self.ax.set_xlim(xmin=bmin[self.axis[0]], xmax=bmax[self.axis[0]])  # type: ignore
-        self.ax.set_ylim(bmin[self.axis[1]], bmax[self.axis[1]])  # type: ignore
-        self.ax.set_aspect("equal", adjustable="box")
-        self.ax.legend()
-
-        self.zoom_radius = 6
-
-        # action plots
-        self.actions_plot: list[tuple[Line2D, Line2D]] = []  # plot & vline
-        for dim in range(self.envConfig.dim):
-            self.actions_plot.append(
-                (
-                    self.axs_action_plot[dim].plot(
-                        [], [], color="red", label=f"{contNames[envConfig.iMppi]} ({envConfig.iMppi + 1})"
-                    )[0],
-                    self.axs_action_plot[dim].axvline(x=0, color="green", linestyle="--", linewidth=1, alpha=0.5),
-                )
-            )
-
-            self.axs_action_plot[dim].set_xlabel("Time")
-            self.axs_action_plot[dim].set_ylabel("Action on " + ["x", "y"][dim])
-
-        # status text
-        self.status_text = self.ax_status.text(
-            0.5, 1.0, "Running...", fontsize=14, ha="center", va="top", transform=self.ax_status.transAxes
-        )
-
-        self.agent_value_texts: list[Text] = []
-        y_positions = np.linspace(0.7, 0.2, self.nAgents)
-
-        for i in range(self.nAgents):
-            self.ax_status.text(
-                0.0,
-                y_positions[i],
-                f"Agent {i + 1}: ",
-                fontsize=12,
-                ha="left",
-                va="top",
-                color=self.colors[i % len(self.colors)],
-                fontweight="bold",
-                transform=self.ax_status.transAxes,
-            )
-
-            t_val = self.ax_status.text(
-                1.0,
-                y_positions[i],
-                "",
-                fontsize=12,
-                ha="right",
-                va="top",
-                color="black",
-                transform=self.ax_status.transAxes,
-            )
-            self.agent_value_texts.append(t_val)
-
-        title = "Model Beliefs & Fail Count"
-
-        self.ax_failcount.text(0.5, 1, title, fontsize=12, ha="center", va="top", fontweight="bold")
-        self.verif_text = self.ax_failcount.text(0.5, 0.1, "", fontsize=12, ha="center", va="bottom")
-        self.ax_failcount.axis("off")
-
-        # MPPI belief
-
-        # joint belief
-        joint_colors: list[list[str]] = []
-        names: list[str] = []
-        for theta in range(envConfig.nTrueModels):
-            thetaList = envConfig.unflattenTheta(theta)
-            joint_colors.append([self.pred_colors[k][thetaList[k] + 1] for k in range(envConfig.nModelFactors)])
-            names.append("-".join(oppNames[k][thetaList[k]] for k in range(envConfig.nModelFactors)))
-
-        self.joint_belief = self.createBeliefBar(self.ax_joint_belief, names, joint_colors, "Joint belief", None)
-
-        # marginal belief
-        self.marginal_belief = [
-            self.createBeliefBar(
-                ax, names, [[c] for c in colors[1:]], f"Marginal belief for {k}", colors[0], mppiConfig.minConfidence
-            )
-            for k, (ax, names, colors) in enumerate(zip(self.axs_marg_belief, oppNames, self.pred_colors))
-        ]
-
-        # UI: slider, play, save GIF, textbox and zoom
-        max_idx = max(1, len(self.stateLog) - 1)
-        self.slider = Slider(self.fig.add_subplot(gs_ui[0]), "Time", 0, max_idx, valinit=0, valstep=1)
-
-        self.pause_button = Button(self.fig.add_subplot(gs_ui[2]), "Pause")
-        self.pause_button.label.set_fontsize(10)
-
-        self.save_button = Button(self.fig.add_subplot(gs_ui[3]), "Save GIF")
-        self.save_button.label.set_fontsize(10)
-        self.save_button.set_active(False)
-
-        self.text_box = TextBox(self.fig.add_subplot(gs_ui[4]), "", initial="")
-        self.text_box.ax.set_visible(False)  # type: ignore
-
-        gs_zoom_buttons = gs_ui[6].subgridspec(2, 1, height_ratios=[1, 1])
-
-        self.zoom_minus_button = Button(self.fig.add_subplot(gs_zoom_buttons[1]), "-")
-        self.zoom_minus_button.on_clicked(self.onZoomMinus)
-
-        self.zoom_plus_button = Button(self.fig.add_subplot(gs_zoom_buttons[0]), "+")
-        self.zoom_plus_button.on_clicked(self.onZoomPlus)
-
-        if defaultZoomAgent == -1:
-            self.zoomAgent = 0
-            self.zoomed = False
-            zoomButtonText = "Zoom"
-        else:
-            self.zoomAgent = defaultZoomAgent
-            self.zoomed = True
-            zoomButtonText = "Full track"
-
-        self.button_zoom = Button(self.fig.add_subplot(gs_ui[5]), zoomButtonText)
-
-        ax_zoom_label = self.fig.add_subplot(gs_ui[7])
-        ax_zoom_label.axis("off")
-        self.zoom_agent_label = ax_zoom_label.text(
-            0.5, 0.5, f"Focus: {self.zoomAgent + 1}", ha="center", va="center", fontsize=10
-        )
-
-        # internal state
-        self.playing = False
-        self.slider_is_updating = False
-        self.current_index = 0
-
-        self.isFinished = False
-
-        # timer for playback (non-blocking)
-        self.timer = self.fig.canvas.new_timer(interval=self.interval)
-        self.timer.add_callback(self.timerTick)
-
-        # connect callbacks
-        self.slider.on_changed(self.sliderChanged)
-        self.pause_button.on_clicked(self.tooglePlay)
-        self.save_button.on_clicked(self.askSavePath)
-        self.button_zoom.on_clicked(self.toogleZoom)
-        self.fig.canvas.mpl_connect("key_press_event", self.onKeyPress)
-
-        self.lastRenderTime = time.perf_counter()
-
-        # initial render
-        self.updateDisplay(0)
-
-        if autoplay:
-            self.tooglePlay(None, True)
+    # general utility methods
 
     def createBeliefBar(
         self,
@@ -365,8 +74,6 @@ class EnvironmentRenderer:
     ) -> tuple[plt.BarContainer, list[Text]]:  # type: ignore
         "Draw a bar with the given arguments. Return the bar itself, and the list of texts above the little bars"
         belief_texts: list[Text] = []
-
-        print(names, colors)
 
         nVals = len(names)
 
@@ -407,14 +114,748 @@ class EnvironmentRenderer:
             ax.scatter(0.75, 1.12, color=nomColor, marker="s", s=300, edgecolor="black", clip_on=False)
 
         for i in range(nVals):
-            # thetaList = envConfig.unflattenTheta(theta)
-            # colors = [self.pred_colors[k][thetaList[k] + 1] for k in range(envConfig.nModelFactors)]
-
             x_pos = i + 0.1 * np.linspace(-len(colors[i]) + 1, len(colors[i]) - 1, len(colors[i]))
 
             ax.scatter(x_pos, [-0.12] * len(colors[i]), c=colors[i], marker="s", s=300, edgecolors="black")
 
         return belief_bar, belief_texts
+
+    def apply_offset(self, coords: np.ndarray, side: int, amount: float = 0.04) -> np.ndarray:
+        "Shift the coords array to side*amount, in the direction perpendicular to its tangent"
+        if len(coords) < 2:
+            return coords
+
+        # Compute tangent direction
+        diff = np.diff(coords, axis=0, append=[coords[-1] + (coords[-1] - coords[-2])])
+        # Perpendicular (x, y) -> (-y, x)
+        perp = np.stack([-diff[:, 1], diff[:, 0]], axis=1)
+        # Normalize
+        norm = np.linalg.norm(perp, axis=1, keepdims=True)
+        perp = (perp / (norm + 1e-8)) * side * amount
+
+        return coords + perp
+
+    def set_data(
+        self,
+        lineStrong: Line2D,
+        lineLight: Line2D,
+        arr: np.ndarray | None,
+        effVerifHorizon: int,  # should be verifHorizon - tOrigin
+        side: int = 0,
+        amount: float = 0.04,
+        color: Optional[str] = None,
+    ) -> None:
+        if arr is not None:
+            ind = max(effVerifHorizon, 0)
+
+            arr1_offset = self.apply_offset(arr[: (ind + 1), [self.axis[0], self.axis[1]]], side, amount)
+            arr2_offset = self.apply_offset(arr[ind:, [self.axis[0], self.axis[1]]], side, amount)
+
+            # lineStrong.set_data(arr[:ind, self.axis[0]], arr[:ind, self.axis[1]])
+            # lineLight.set_data(arr[max(ind - 1, 0) :, self.axis[0]], arr[max(ind - 1, 0) :, self.axis[1]])
+
+            lineStrong.set_data(arr1_offset[:, 0], arr1_offset[:, 1])
+            lineLight.set_data(arr2_offset[:, 0], arr2_offset[:, 1])
+
+            if color is not None:
+                lineStrong.set_color(color)
+                lineLight.set_color(color)
+
+        else:
+            lineStrong.set_data([], [])
+            lineLight.set_data([], [])
+
+
+class MPPIRenderer(ControllerRenderer[MPPIConfig]):
+    def init(self) -> None:
+        self.severalModels = self.envConfig.nModelFactors > 1
+
+        gs_mppi = self.base_gs.subgridspec(
+            2 + int(self.severalModels), 1, height_ratios=[1, 3, 3] if self.severalModels else [1, 3], hspace=0.1
+        )
+        self.ax_failcount = self.fig.add_subplot(gs_mppi[0])
+
+        gs_marginal = gs_mppi[1].subgridspec(1, self.envConfig.nModelFactors)
+        self.axs_marg_belief = [self.fig.add_subplot(g) for g in gs_marginal]
+
+        self.ax_joint_belief = self.fig.add_subplot(gs_mppi[2]) if self.severalModels else None
+
+        # should have shape nModelFactors * (nModelSizes[k]+1)
+        self.pred_colors = [["brown", "green", "orange"], ["yellow", "cyan", "purple"]]
+
+        # line collections for MPPI predictions
+        # length: nTrueModels * nModelFactors, with items being (nomMppi, branchMppi, pid). each item is ((nominalStrong, nominalLight), (branchedStrong, branchedLight)). branched color should change based on the real value
+        self.lcs_pred: list[list[tuple[tuple[Line2D, Line2D], tuple[Line2D, Line2D], tuple[Line2D, Line2D]]]] = []
+
+        for theta in range(self.envConfig.nTrueModels):
+            preds: list[tuple[tuple[Line2D, Line2D], tuple[Line2D, Line2D], tuple[Line2D, Line2D]]] = []
+            for k in range(self.envConfig.nModelFactors):
+                thetaList = self.envConfig.unflattenTheta(theta)
+
+                nomMppi = (
+                    self.ax.plot([], color=self.pred_colors[k][0], marker=None, linewidth=4, alpha=0.8)[0],
+                    self.ax.plot([], color=self.pred_colors[k][0], marker=None, linewidth=2, alpha=0.4)[0],
+                )
+
+                branchMppi = (
+                    self.ax.plot([], color=self.pred_colors[k][0], marker=None, linewidth=4, alpha=0.8)[0],
+                    self.ax.plot([], color=self.pred_colors[k][0], marker=None, linewidth=2, alpha=0.4)[0],
+                )
+
+                pidTraj = (
+                    self.ax.plot(
+                        [], color=self.pred_colors[k][thetaList[k] + 1], marker=None, linewidth=3, alpha=0.8, linestyle="-."
+                    )[0],
+                    self.ax.plot(
+                        [], color=self.pred_colors[k][thetaList[k] + 1], marker=None, linewidth=2, alpha=0.4, linestyle="-."
+                    )[0],
+                )
+
+                preds.append((nomMppi, branchMppi, pidTraj))
+
+            self.lcs_pred.append(preds)
+
+        # crash marker (initially empty)
+        maxCollMarkers = self.envConfig.nAgents * self.envConfig.nTrueModels
+        self.collMarkers = [
+            self.ax.plot(
+                [], [], marker="*", markersize=20, color="yellow", markeredgecolor="red", markeredgewidth=1, zorder=5, alpha=0.8
+            )[0]
+            for i in range(maxCollMarkers)
+        ]
+
+        # MPPI failcount status
+        self.ax_failcount.text(
+            0.5,
+            0.95,
+            "Controller Type: Branching-MPPI (" + ["without", "with"][self.config.useSplines] + " splines)",
+            fontsize=15,
+            ha="center",
+            va="top",
+            fontweight="bold",
+        )
+        self.verif_text = self.ax_failcount.text(0.5, 0.1, "", fontsize=12, ha="center", va="bottom")
+        self.ax_failcount.axis("off")
+
+        # MPPI belief
+
+        # joint belief
+        joint_colors: list[list[str]] = []
+        names: list[str] = []
+        for theta in range(self.envConfig.nTrueModels):
+            thetaList = self.envConfig.unflattenTheta(theta)
+            joint_colors.append([self.pred_colors[k][thetaList[k] + 1] for k in range(self.envConfig.nModelFactors)])
+            names.append("-".join(self.oppNames[k][thetaList[k]] for k in range(self.envConfig.nModelFactors)))
+
+        self.joint_belief = (
+            self.createBeliefBar(self.ax_joint_belief, names, joint_colors, "Joint belief", None)
+            if self.ax_joint_belief is not None
+            else None
+        )
+
+        # marginal belief
+        self.marginal_belief = [
+            self.createBeliefBar(
+                ax, names, [[c] for c in colors[1:]], f"Marginal belief for {k}", colors[0], self.config.minConfidence
+            )
+            for k, (ax, names, colors) in enumerate(zip(self.axs_marg_belief, self.oppNames, self.pred_colors))
+        ]
+
+    def update(self, state: FullStateInfo) -> None:
+        collMarkers = iter(self.collMarkers)
+
+        # update MPPI predictions
+        mppiState = state.contInfo
+        assert isinstance(mppiState, MPPIStateInfo), (
+            f"Expected state.contInfo to be of type MPPIStateInfo, but received {type(mppiState)}"
+        )
+
+        if len(mppiState.preds) != self.envConfig.nTrueModels:
+            print(f"WARNING: len(mppiState.preds) = {len(mppiState.preds)} is different from {self.envConfig.nTrueModels=}")
+            return
+
+        for theta, (lTrajs, pred) in enumerate(zip(self.lcs_pred, mppiState.preds)):
+            thetaTuple = self.envConfig.unflattenTheta(theta)
+
+            curPos = state.state.pos.reshape((self.envConfig.nAgents, self.envConfig.dim))
+            fullPos = pred.fullPos.reshape((self.config.nTimesteps, self.envConfig.nAgents, self.envConfig.dim))
+
+            fullPos = np.concat([[curPos], fullPos])
+
+            vHor = self.config.verifHorizon
+
+            initPredTheta = [int(round(t)) for t in pred.initPredTheta]
+            predTheta = [int(round(t)) for t in pred.predTheta]
+            branchTime = [
+                int(round(b)) if pT != 0 else self.config.nTimesteps + 1 for (b, pT) in zip(pred.branchTime, pred.predTheta)
+            ]
+            # from a rendering point of view, if we're already committed at beginning, then it's as if we committed at time t=0; if we never commit, then it's as if we committed at time T+1 (but it is stored as 0)
+
+            sides = np.arange(-self.envConfig.nModelFactors + 1, self.envConfig.nModelFactors, 2)
+
+            # if we branch at time 0, only show the corresponding plot (otherwise, it might get confusing) (skip if we are already committed to a theta, which is different from the current theta)
+            compatible = True
+            for k in range(self.envConfig.nModelFactors):
+                if initPredTheta[k] != 0 and initPredTheta[k] != thetaTuple[k] + 1:
+                    compatible = False
+
+            for k, (nomMppi, branchMppi, pid) in enumerate(lTrajs):
+                self.set_data(*nomMppi, fullPos[: (branchTime[k] + 1), self.envConfig.iMppi, :], vHor, sides[k])
+
+                if compatible:
+                    color = self.pred_colors[k][predTheta[k]]
+
+                    self.set_data(
+                        *branchMppi,
+                        fullPos[branchTime[k] :, self.envConfig.iMppi, :],
+                        vHor - branchTime[k],
+                        sides[k],
+                        color=color,
+                    )
+                    self.set_data(*pid, fullPos[:, 1 - self.envConfig.iMppi, :], vHor, sides[k])
+
+                    if pred.stopReason == EVENT_TYPE.EVT_COLLISION or pred.stopReason == EVENT_TYPE.EVT_OUTSIDE:
+                        marker = next(collMarkers)
+                        marker.set_data(
+                            [fullPos[pred.stopTime + 1, pred.stopAgent, self.axis[0]]],
+                            [fullPos[pred.stopTime + 1, pred.stopAgent, self.axis[1]]],
+                        )
+                        if (
+                            pred.stopTime < self.config.verifHorizon - 1
+                        ):  # the prediction timescale is shifted by one (since it starts from the already actuated state)
+                            marker.set_alpha(0.8)
+                            marker.set_markersize(20)
+                        else:
+                            marker.set_alpha(0.4)
+                            marker.set_markersize(10)
+                else:
+                    self.set_data(*branchMppi, None, 0)
+                    self.set_data(*pid, None, 0)
+
+        # hide remaining coll markers
+        for marker in collMarkers:
+            marker.set_data([], [])
+
+        # Update fail count
+        failCount, eps = mppiState.failCount, mppiState.epsilon
+
+        self.verif_text.set_text(
+            f"Fail: {sum(failCount) / self.config.nVerifSamples * 100:.3f}% (coll {failCount[0] / self.config.nVerifSamples * 100:.3f}%, out {failCount[1] / self.config.nVerifSamples * 100:.3f}%)\n"
+            + (f"Failure rate: {eps:.5f} (partial {mppiState.epsilonPartial:.5f})\n")  # if i > 0 else "Failure rate: --\n")
+            + (
+                f"Use new plan: {'YES' if mppiState.useNewPlan else 'NO'} (loss: {mppiState.certifiedLoss:.5f})"
+                # if i > 0
+                # else "Use new plan: --\n"
+            )
+        )
+
+        # update joint belief
+        if self.joint_belief is not None:
+            for bar, text, b_val in zip(self.joint_belief[0], self.joint_belief[1], mppiState.belief):
+                bar.set_height(b_val)
+
+                text.set_text(f"{b_val:.2f}")
+                text.set_y(b_val + 0.01)
+
+        # update marginal belief
+        for k in range(self.envConfig.nModelFactors):
+            marg = self.envConfig.computeMarginal(mppiState.belief, k)
+
+            for bar, text, b_val in zip(self.marginal_belief[k][0], self.marginal_belief[k][1], marg):
+                bar.set_height(b_val)
+
+                color = "#2ecc71" if b_val >= self.config.minConfidence else "#3498db"
+                bar.set_facecolor(color)
+
+                text.set_text(f"{b_val:.2f}")
+                text.set_y(b_val + 0.01)
+
+    def getCapturedAxes(self) -> list[plt.Axes]:  # type: ignore
+        ans = [self.ax_failcount] + self.axs_marg_belief
+        if self.ax_joint_belief is not None:
+            ans.append(self.ax_joint_belief)
+        return ans
+
+
+class PRMPPIRenderer(ControllerRenderer[PRMPPIConfig]):
+    def init(self) -> None:
+        self.min_show_confidence = 0.01  # if confidence is less than this amount, do not show the trajectories
+        self.severalModels = self.envConfig.nModelFactors > 1
+
+        gs_mppi = self.base_gs.subgridspec(
+            2 + int(self.severalModels), 1, height_ratios=[1, 3, 3] if self.severalModels else [1, 3], hspace=0.1
+        )
+
+        self.ax_failcount = self.fig.add_subplot(gs_mppi[0])
+
+        gs_marginal = gs_mppi[1].subgridspec(1, self.envConfig.nModelFactors)
+        self.axs_marg_belief = [self.fig.add_subplot(g) for g in gs_marginal]
+
+        self.ax_joint_belief = self.fig.add_subplot(gs_mppi[2]) if self.severalModels else None
+
+        # should have shape nModelFactors * (nModelSizes[k])
+        self.pred_colors = [["green", "orange"], ["cyan", "purple"]]
+        self.nom_color = "violet"
+        self.rob_color = "brown"
+
+        # line collections for MPPI predictions
+        # length: nTrueModels * nModelFactors (each list of size nModelFactors should represent one global theta by parallel lines, one line color represent that specific parameter value)
+        # since in this case the nominal action is not reactive to the environment, PRMPPI's trajectory is the same for all branches
+        self.lcs_pred: list[list[Line2D]] = []
+        self.nom_pred = self.ax.plot([], color=self.nom_color, marker=None, linewidth=4, alpha=0.8)[0]
+        self.rob_pred = self.ax.plot([], color=self.rob_color, marker=None, linewidth=4, alpha=0.8)[0]
+
+        for theta in range(self.envConfig.nTrueModels):
+            preds: list[Line2D] = []
+            for k in range(self.envConfig.nModelFactors):
+                thetaList = self.envConfig.unflattenTheta(theta)
+
+                preds.append(
+                    self.ax.plot(
+                        [], color=self.pred_colors[k][thetaList[k]], marker=None, linewidth=3, alpha=0.8, linestyle="-."
+                    )[0]
+                )
+
+            self.lcs_pred.append(preds)
+
+        # crash marker (initially empty)
+        maxCollMarkers = self.envConfig.nAgents * self.envConfig.nTrueModels
+        self.collMarkers = [
+            self.ax.plot(
+                [], [], marker="*", markersize=20, color="yellow", markeredgecolor="red", markeredgewidth=1, zorder=5, alpha=0.8
+            )[0]
+            for i in range(maxCollMarkers)
+        ]
+
+        # MPPI failcount status
+        self.ax_failcount.text(
+            0.5,
+            0.95,
+            "Controller Type: Parameter-robust-MPPI",
+            fontsize=15,
+            ha="center",
+            va="top",
+            fontweight="bold",
+            transform=self.ax_failcount.transAxes,
+        )
+        self.verif_text = self.ax_failcount.text(
+            0.5, 0.7, "", fontsize=12, ha="center", va="center", transform=self.ax_failcount.transAxes
+        )
+
+        self.reset_text = self.ax_failcount.text(
+            0.5,
+            0.5,
+            "Nominal plan was reset",
+            fontsize=12,
+            ha="center",
+            va="center",
+            transform=self.ax_failcount.transAxes,
+            color="red",
+            fontweight="bold",
+            visible=False,
+        )
+
+        self.ax_failcount.text(
+            0.6, 0.3, "Nominal plan:", fontsize=12, ha="right", va="center", transform=self.ax_failcount.transAxes
+        )
+        self.ax_failcount.text(
+            0.6, 0.1, "Robust plan:", fontsize=12, ha="right", va="center", transform=self.ax_failcount.transAxes
+        )
+        self.ax_failcount.scatter(
+            [0.7, 0.7], [0.3, 0.1], marker="s", s=200, edgecolors="black", color=[self.nom_color, self.rob_color]
+        )
+
+        self.ax_failcount.set_xlim(0, 1)
+        self.ax_failcount.set_ylim(0, 1)
+        self.ax_failcount.axis("off")
+
+        # MPPI belief
+
+        # joint belief
+        joint_colors: list[list[str]] = []
+        names: list[str] = []
+        for theta in range(self.envConfig.nTrueModels):
+            thetaList = self.envConfig.unflattenTheta(theta)
+            joint_colors.append([self.pred_colors[k][thetaList[k]] for k in range(self.envConfig.nModelFactors)])
+            names.append("-".join(self.oppNames[k][thetaList[k]] for k in range(self.envConfig.nModelFactors)))
+
+        self.joint_belief = (
+            self.createBeliefBar(self.ax_joint_belief, names, joint_colors, "Joint belief", None)
+            if self.ax_joint_belief is not None
+            else None
+        )
+
+        # marginal belief
+        self.marginal_belief = [
+            self.createBeliefBar(ax, names, [[c] for c in colors], f"Marginal belief for {k}", None, None)
+            for k, (ax, names, colors) in enumerate(zip(self.axs_marg_belief, self.oppNames, self.pred_colors))
+        ]
+
+    def update(self, state: FullStateInfo) -> None:
+        collMarkers = iter(self.collMarkers)
+
+        mppiState = state.contInfo
+        assert isinstance(mppiState, PRMPPIStateInfo), (
+            f"Expected state.contInfo to be of type PRMPPIStateInfo, but received {type(mppiState)}"
+        )
+
+        if len(mppiState.preds) != self.envConfig.nTrueModels + 1:
+            print(f"WARNING: len(mppiState.preds) = {len(mppiState.preds)} is different from {(self.envConfig.nTrueModels+1)=}")
+            return
+
+        # update MPPI predictions
+
+        for theta, (lTrajs, pred) in enumerate(zip(self.lcs_pred, mppiState.preds[:-1])):
+            thetaTuple = self.envConfig.unflattenTheta(theta)
+
+            # curPos = state.pos.reshape((self.envConfig.nAgents, self.envConfig.dim))
+            fullPos = pred.fullPos.reshape((self.config.nTimesteps, self.envConfig.nAgents, self.envConfig.dim))
+            # fullPosConc = np.concat([[mppiState.prevPos.reshape((self.envConfig.nAgents, self.envConfig.dim))], fullPos])
+
+            sides = np.arange(-self.envConfig.nModelFactors + 1, self.envConfig.nModelFactors, 2)
+
+            for k, pid in enumerate(lTrajs):
+                if mppiState.belief[theta] > self.min_show_confidence:
+                    # TODO: set_data is useless here (we only should keep one trajectory)
+                    # self.set_data(*self.nom_pred, fullPos[:, self.envConfig.iMppi, :], vHor, sides[k])
+                    self.nom_pred.set_data(
+                        fullPos[:, self.envConfig.iMppi, self.axis[0]], fullPos[:, self.envConfig.iMppi, self.axis[1]]
+                    )
+
+                    color = self.pred_colors[k][thetaTuple[k]]
+
+                    # self.set_data(*pid, fullPos[:, 1 - self.envConfig.iMppi, :], vHor, sides[k])
+                    arr_offset = self.apply_offset(fullPos[:, 1 - self.envConfig.iMppi, self.axis], sides[k])
+                    pid.set_data(arr_offset[:, 0], arr_offset[:, 1])
+
+                    if pred.stopReason == EVENT_TYPE.EVT_COLLISION or pred.stopReason == EVENT_TYPE.EVT_OUTSIDE:
+                        marker = next(collMarkers)
+                        marker.set_data(
+                            [fullPos[pred.stopTime, pred.stopAgent, self.axis[0]]],
+                            [fullPos[pred.stopTime, pred.stopAgent, self.axis[1]]],
+                        )
+
+                        marker.set_alpha(0.8)
+                        marker.set_markersize(20)
+                else:
+                    # self.set_data(*pid, None, 0)
+                    pid.set_data([[], []])
+
+        # show robust nominal
+        fullPos = mppiState.preds[-1].fullPos.reshape((self.config.nTimesteps, self.envConfig.nAgents, self.envConfig.dim))
+        self.rob_pred.set_data(fullPos[:, self.envConfig.iMppi, self.axis[0]], fullPos[:, self.envConfig.iMppi, self.axis[1]])
+
+        # hide remaining coll markers
+        for marker in collMarkers:
+            marker.set_data([], [])
+
+        # update joint belief
+        if self.joint_belief is not None:
+            for bar, text, b_val in zip(self.joint_belief[0], self.joint_belief[1], mppiState.belief):
+                bar.set_height(b_val)
+
+                text.set_text(f"{b_val:.2f}")
+                text.set_y(b_val + 0.01)
+
+        # update marginal belief
+        for k in range(self.envConfig.nModelFactors):
+            marg = self.envConfig.computeMarginal(mppiState.belief, k)
+
+            for bar, text, b_val in zip(self.marginal_belief[k][0], self.marginal_belief[k][1], marg):
+                bar.set_height(b_val)
+
+                # color = "#2ecc71" if b_val >= self.config.minConfidence else "#3498db"
+                color = "#3498db"
+                bar.set_facecolor(color)
+
+                text.set_text(f"{b_val:.2f}")
+                text.set_y(b_val + 0.01)
+
+        # update text status
+
+        self.verif_text.set_text(f"Plan used: {('Robust', 'Nominal')[mppiState.useNomPlan]}")
+        self.reset_text.set_visible(mppiState.resetNom)
+
+    def getCapturedAxes(self) -> list[plt.Axes]:  # type: ignore
+        ans = [self.ax_failcount] + self.axs_marg_belief
+        if self.ax_joint_belief is not None:
+            ans.append(self.ax_joint_belief)
+        return ans
+
+
+class EnvironmentRenderer:
+    """Helper that manages a non-blocking matplotlib window for live rendering.
+    If you wish the window to stay open at the end of the dynamics loop, make sure to call renderer.finish() which will block the program.
+    """
+
+    def __init__(
+        self,
+        envConfig: GateEnvironmentConfig,
+        contConfig: ControllerConfig,
+        contNames: list[str],
+        oppNames: list[list[str]],
+        axis: tuple[int, ...] = (0, 1),
+        interval: int = 30,
+        autoplay: bool = True,
+        frameSkipPlayback: int = 2,
+        frameSkipWaiting: int = 1,
+        defaultZoomAgent: int = 0,
+        display_raceline: bool | list[bool] = True,
+        renderTrails: bool = True,
+    ):
+        "interval: refresh rate. frameSkipWaiting: how many frames to skip if emitting states faster than we can display (use -1 to always display last frame). use defaultZoomAgent=-1 to start viewing full track, otherwise start zooming on agent"
+        self.envConfig = envConfig
+        self.axis = axis
+        self.interval = interval
+        self.frameSkipPlayback = frameSkipPlayback
+        self.frameSkipWaiting = frameSkipWaiting
+        self.iMppi = self.envConfig.iMppi
+
+        self.contConfig = contConfig
+
+        if len(oppNames) != envConfig.nModelFactors or any(len(n) != size for n, size in zip(oppNames, envConfig.modelSizes)):
+            raise ValueError("Wrong length for oppNames")
+
+        self.oppNames = oppNames
+        print(oppNames)
+
+        self.renderTrails = renderTrails
+
+        self.stateLog: list[FullStateInfo] = []
+
+        self.collision = False
+        self.winner: Optional[int] = None
+        self.outside: Optional[int] = None
+
+        if isinstance(display_raceline, bool):
+            display_raceline = [display_raceline] * envConfig.nRaceLines
+
+        plt.rcParams["keymap.back"].remove("left")
+        plt.rcParams["keymap.forward"].remove("right")
+
+        plt.ion()
+        plt.show()
+
+        self.fig = plt.figure(figsize=(12, 10))
+
+        # try to make picture fullscreen
+        # matplotlib can use different backends, so this is not guaranteed to work
+
+        fig_manager = plt.get_current_fig_manager()
+        if fig_manager is not None:
+            try:
+                # default tk backend on X11
+                fig_manager.window.attributes("-zoomed", True)  # type: ignore
+            except Exception:
+                try:
+                    # default tk backend (but sometimes works better)
+                    fig_manager.window.state("zoomed")  # type: ignore
+                except Exception:
+                    try:
+                        # Qt backend
+                        fig_manager.window.showMaximized()  # type: ignore
+                    except Exception:
+                        # give up
+                        pass
+
+        gs = GridSpec(
+            2,
+            2,
+            figure=self.fig,
+            width_ratios=[3, 1],
+            height_ratios=[15, 1],
+            wspace=0.2,
+            hspace=0.1,
+            left=0.04,
+            right=0.96,
+            bottom=0.06,
+            top=0.96,
+        )
+
+        gs_plot = gs[0, 0].subgridspec(3, 1, height_ratios=[2, 1, 1], hspace=0.1)
+
+        self.ax = self.fig.add_subplot(gs_plot[0])  # track ax
+        self.ax.set_aspect("equal", adjustable="box")
+
+        self.axs_action_plot = [self.fig.add_subplot(gs_plot[i + 1]) for i in range(envConfig.dim)]
+
+        gs_status_cont = gs[0, 1].subgridspec(2, 1, height_ratios=[1, 8], hspace=0.1)
+
+        self.ax_status = self.fig.add_subplot(gs_status_cont[0])
+        self.ax_status.axis("off")
+
+        self.contRenderer: ControllerRenderer
+        if isinstance(contConfig, MPPIConfig):
+            self.contRenderer = MPPIRenderer(envConfig, contConfig, oppNames, self.ax, self.fig, gs_status_cont[1], axis)
+        elif isinstance(contConfig, PRMPPIConfig):
+            self.contRenderer = PRMPPIRenderer(envConfig, contConfig, oppNames, self.ax, self.fig, gs_status_cont[1], axis)
+        else:
+            raise ValueError(f"Unsupported controller config class {type(contConfig)} for rendering")
+
+        # slider, empty space, play/pause, save gif, gif name, zoom, +/-, focus
+        gs_ui = gs[1, :].subgridspec(1, 8, width_ratios=[7, 1, 1, 1, 1, 1, 0.4, 1], wspace=0.1)
+
+        # draw static background
+        self.renderBackground(display_raceline)
+
+        # color maps and patch/marker colors for drones
+        self.cmaps = ["Blues", "Reds", "Greens", "Purples", "Oranges", "Greys", "YlOrBr", "BuPu"]
+        self.colors = ["blue", "red", "green", "purple", "orange", "gray", "brown", "pink"]
+
+        self.nAgents = self.envConfig.nAgents
+
+        # line collections for trajectories
+        self.lcs: list[LineCollection] = []
+
+        for i_agent in range(self.nAgents):
+            lc = LineCollection([], cmap=self.cmaps[i_agent % self.nAgents], linewidth=4, alpha=0.8)
+            self.lcs.append(lc)
+            self.ax.add_collection(lc)  # type: ignore
+
+        # points and collision circles
+        self.points: list[Any] = []
+        self.circles: list[Circle] = []
+        for i_agent in range(self.nAgents):
+            px, py = self.getPos(0, i_agent)
+            color = self.colors[i_agent % len(self.colors)]
+            (pt,) = self.ax.plot([px], [py], marker="o", color=color, markersize=8, label=f"{contNames[i_agent]} ({i_agent + 1})")
+            self.points.append(pt)
+            circ = Circle((px, py), radius=self.envConfig.minDist / 2, fill=True, color=color, linestyle="--", alpha=0.3)
+            self.circles.append(circ)
+            self.ax.add_patch(circ)
+
+        bmin, bmax = self.envConfig.arenaMin, self.envConfig.arenaMax
+        self.ax.set_xlim(xmin=bmin[self.axis[0]], xmax=bmax[self.axis[0]])  # type: ignore
+        self.ax.set_ylim(bmin[self.axis[1]], bmax[self.axis[1]])  # type: ignore
+        self.ax.set_aspect("equal", adjustable="box")
+        self.ax.legend()
+
+        self.zoom_radius = 6
+
+        # status text
+        self.status_text = self.ax_status.text(
+            0.5, 1.0, "Running...", fontsize=14, ha="center", va="top", transform=self.ax_status.transAxes
+        )
+
+        self.agent_value_texts: list[Text] = []
+        y_positions = np.linspace(0.7, 0.2, self.nAgents)
+
+        for i in range(self.nAgents):
+            self.ax_status.text(
+                0.0,
+                y_positions[i],
+                f"Agent {i + 1}: ",
+                fontsize=12,
+                ha="left",
+                va="top",
+                color=self.colors[i % len(self.colors)],
+                fontweight="bold",
+                transform=self.ax_status.transAxes,
+            )
+
+            t_val = self.ax_status.text(
+                1.0,
+                y_positions[i],
+                "",
+                fontsize=12,
+                ha="right",
+                va="top",
+                color="black",
+                transform=self.ax_status.transAxes,
+            )
+            self.agent_value_texts.append(t_val)
+
+        # UI: slider, play, save GIF, textbox and zoom
+        max_idx = max(1, len(self.stateLog) - 1)
+        self.slider = Slider(self.fig.add_subplot(gs_ui[0]), "Time", 0, max_idx, valinit=0, valstep=1)
+
+        self.pause_button = Button(self.fig.add_subplot(gs_ui[2]), "Pause")
+        self.pause_button.label.set_fontsize(10)
+
+        self.save_button = Button(self.fig.add_subplot(gs_ui[3]), "Save GIF")
+        self.save_button.label.set_fontsize(10)
+        self.save_button.set_active(False)
+
+        self.text_box = TextBox(self.fig.add_subplot(gs_ui[4]), "", initial="")
+        self.text_box.ax.set_visible(False)  # type: ignore
+
+        gs_zoom_buttons = gs_ui[6].subgridspec(2, 1, height_ratios=[1, 1])
+
+        self.zoom_minus_button = Button(self.fig.add_subplot(gs_zoom_buttons[1]), "-")
+        self.zoom_minus_button.on_clicked(self.onZoomMinus)
+
+        self.zoom_plus_button = Button(self.fig.add_subplot(gs_zoom_buttons[0]), "+")
+        self.zoom_plus_button.on_clicked(self.onZoomPlus)
+
+        if defaultZoomAgent == -1:
+            self.zoomAgent = 0
+            self.zoomed = False
+            zoomButtonText = "Zoom"
+        else:
+            self.zoomAgent = defaultZoomAgent
+            self.zoomed = True
+            zoomButtonText = "Full track"
+
+        self.button_zoom = Button(self.fig.add_subplot(gs_ui[5]), zoomButtonText)
+
+        ax_zoom_label = self.fig.add_subplot(gs_ui[7])
+        ax_zoom_label.axis("off")
+        self.zoom_agent_label = ax_zoom_label.text(
+            0.5, 0.5, f"Focus: {self.zoomAgent + 1}", ha="center", va="center", fontsize=10
+        )
+
+        # action plots
+        if self.envConfig.dim > 4:
+            raise ValueError("Must provide dimension names for dim > 4")
+        dim_names = ["x", "y", "z", "w"][: self.envConfig.dim]
+
+        self.actions_plot: list[tuple[Line2D, Line2D, Line2D]] = []  # plot, plot_dashed (for non-) & vline
+        for dim, ax_action in enumerate(self.axs_action_plot):
+            self.actions_plot.append(
+                (
+                    ax_action.plot([], [], color="red", linewidth=2)[0],
+                    ax_action.plot([], [], color="orange", linewidth=1, alpha=0.5, zorder=1)[0],
+                    ax_action.axvline(x=0, color="green", linewidth=1, alpha=0.5, zorder=1),
+                )
+            )
+
+            ax_action.set_xlabel("Time")
+            ax_action.set_ylabel("Action on " + dim_names[dim])
+
+            maxAccel = self.envConfig.maxAccel[self.envConfig.iMppi]
+            ax_action.axhline(0, color="black", linewidth=1, linestyle="--", alpha=0.3, zorder=0)
+            ax_action.axhline(maxAccel, color="blue", linestyle="--", alpha=0.3, zorder=0)
+            ax_action.axhline(-maxAccel, color="blue", linestyle="--", alpha=0.3, zorder=0)
+
+            ax_action.autoscale(False)
+            ax_action.set_xlim(0, 5)
+            ax_action.set_ylim(-maxAccel * 1.1, maxAccel * 1.1)
+
+        # internal state
+        self.playing = False
+        self.slider_is_updating = False
+        self.current_index = 0
+
+        self.isFinished = False
+
+        # timer for playback (non-blocking)
+        self.timer = self.fig.canvas.new_timer(interval=self.interval)
+        self.timer.add_callback(self.timerTick)
+
+        # connect callbacks
+        self.slider.on_changed(self.sliderChanged)
+        self.pause_button.on_clicked(self.tooglePlay)
+        self.save_button.on_clicked(self.askSavePath)
+        self.button_zoom.on_clicked(self.toogleZoom)
+        self.fig.canvas.mpl_connect("key_press_event", self.onKeyPress)
+
+        self.lastRenderTime = time.perf_counter()
+
+        # initial render
+        self.updateDisplay(0)
+
+        if autoplay:
+            self.tooglePlay(None, True)
 
     def renderBackground(self, display_raceline: list[bool]):
         # draw gates
@@ -466,7 +907,7 @@ class EnvironmentRenderer:
         if len(self.stateLog) == 0:
             return 0.0, 0.0
         idx = min(frame_index, len(self.stateLog) - 1)
-        s = self.stateLog[idx].pos
+        s = self.stateLog[idx].state.pos
         return (
             float(s[self.coordIndex(agent, self.axis[0])]),
             float(s[self.coordIndex(agent, self.axis[1])]),
@@ -489,130 +930,14 @@ class EnvironmentRenderer:
                 if i > 1:
                     lc.set_array(np.linspace(0, 1, i))
 
-        collMarkers = iter(self.collMarkers)
-
-        # update MPPI predictions
-        mppiState = self.stateLog[i].mppiInfo
-
-        if len(mppiState.preds) != self.envConfig.nTrueModels:
-            print(f"WARNING: len(mppiState.preds) = {len(mppiState.preds)} is different from {self.envConfig.nTrueModels=}")
-            return
-
-        def apply_offset(coords: np.ndarray, side: int, amount: float) -> np.ndarray:
-            "Side should be ie. 1 or -1 to shift the trajectory"
-            if len(coords) < 2:
-                return coords
-
-            # Compute tangent direction
-            diff = np.diff(coords, axis=0, append=[coords[-1] + (coords[-1] - coords[-2])])
-            # Perpendicular (x, y) -> (-y, x)
-            perp = np.stack([-diff[:, 1], diff[:, 0]], axis=1)
-            # Normalize
-            norm = np.linalg.norm(perp, axis=1, keepdims=True)
-            perp = (perp / (norm + 1e-8)) * side * amount
-
-            return coords + perp
-
-        def set_data(
-            lineStrong: Line2D,
-            lineLight: Line2D,
-            arr: np.ndarray | None,
-            tOrigin: int,
-            side: int = 0,
-            amount: float = 0.04,
-            color: Optional[str] = None,
-        ) -> None:
-            if arr is not None:
-                ind = max(vHor - tOrigin, 0)
-
-                arr1_offset = apply_offset(arr[: (ind + 1), [self.axis[0], self.axis[1]]], side, amount)
-                arr2_offset = apply_offset(arr[ind:, [self.axis[0], self.axis[1]]], side, amount)
-
-                # lineStrong.set_data(arr[:ind, self.axis[0]], arr[:ind, self.axis[1]])
-                # lineLight.set_data(arr[max(ind - 1, 0) :, self.axis[0]], arr[max(ind - 1, 0) :, self.axis[1]])
-
-                lineStrong.set_data(arr1_offset[:, 0], arr1_offset[:, 1])
-                lineLight.set_data(arr2_offset[:, 0], arr2_offset[:, 1])
-
-                if color is not None:
-                    lineStrong.set_color(color)
-                    lineLight.set_color(color)
-
-            else:
-                lineStrong.set_data([], [])
-                lineLight.set_data([], [])
-
-        for theta, (lTrajs, pred) in enumerate(zip(self.lcs_pred, mppiState.preds)):
-            thetaTuple = self.envConfig.unflattenTheta(theta)
-
-            curPos = self.stateLog[i].pos.reshape((self.envConfig.nAgents, self.envConfig.dim))
-            fullPos = pred.fullPos.reshape((self.mppiConfig.nTimesteps, self.envConfig.nAgents, self.envConfig.dim))
-
-            fullPos = np.concat([[curPos], fullPos])
-
-            vHor = self.verifConfig.horizon
-
-            initPredTheta = [int(round(t)) for t in pred.initPredTheta]
-            predTheta = [int(round(t)) for t in pred.predTheta]
-            branchTime = [
-                int(round(b)) if pT != 0 else self.mppiConfig.nTimesteps + 1 for (b, pT) in zip(pred.branchTime, pred.predTheta)
-            ]
-            # from a rendering point of view, if we're already committed at beginning, then it's as if we committed at time t=0; if we never commit, then it's as if we committed at time T+1 (but it is stored as 0)
-
-            sides = np.arange(-self.envConfig.nModelFactors + 1, self.envConfig.nModelFactors, 2)
-
-            # if we branch at time 0, only show the corresponding plot (otherwise, it might get confusing) (skip if we are already committed to a theta, which is different from the current theta)
-            compatible = True
-            for k in range(self.envConfig.nModelFactors):
-                if initPredTheta[k] != 0 and initPredTheta[k] != thetaTuple[k] + 1:
-                    compatible = False
-
-            for k, (nomMppi, branchMppi, pid) in enumerate(lTrajs):
-                set_data(*nomMppi, fullPos[: (branchTime[k] + 1), self.iMppi, :], 0, sides[k])
-
-                if compatible:
-                    color = self.pred_colors[k][predTheta[k]]
-
-                    set_data(*branchMppi, fullPos[branchTime[k] :, self.iMppi, :], branchTime[k], sides[k], color=color)
-                    set_data(*pid, fullPos[:, 1 - self.iMppi, :], 0, sides[k])
-
-                    if pred.stopReason == EVENT_TYPE.EVT_COLLISION or pred.stopReason == EVENT_TYPE.EVT_OUTSIDE:
-                        marker = next(collMarkers)
-                        marker.set_data(
-                            [fullPos[pred.stopTime, pred.stopAgent, self.axis[0]]],
-                            [fullPos[pred.stopTime, pred.stopAgent, self.axis[1]]],
-                        )
-                        if (
-                            pred.stopTime < self.verifConfig.horizon - 1
-                        ):  # the prediction timescale is shifted by one (since it starts from the already actuated state)
-                            marker.set_alpha(0.8)
-                            marker.set_markersize(20)
-                        else:
-                            marker.set_alpha(0.4)
-                            marker.set_markersize(10)
-                else:
-                    set_data(*branchMppi, None, 0)
-                    set_data(*pid, None, 0)
-
-        # hide remaining coll markers
-        for marker in collMarkers:
-            marker.set_data([], [])
+        # update controller-specific plots
+        self.contRenderer.update(self.stateLog[i])
 
         # update points and circles
         for idx, pt in enumerate(self.points):
             px, py = self.getPos(i, idx)
             pt.set_data([px], [py])
             self.circles[idx].center = (px, py)
-
-        # update action plots
-        for dim, ((plot, vline), ax) in enumerate(zip(self.actions_plot, self.axs_action_plot)):
-            vline.set_xdata([i, i])
-            if len(plot.get_xdata()) != len(self.stateLog):  # type: ignore
-                plot.set_xdata(np.arange(len(self.stateLog)))
-                plot.set_ydata(np.array([state.egoAction[dim] for state in self.stateLog]))
-
-                ax.relim()
-                ax.autoscale_view()
 
         # update zoom or full view
         if self.zoomed:
@@ -631,6 +956,24 @@ class EnvironmentRenderer:
         self.slider_is_updating = False
 
         self.lastRenderTime = time.perf_counter()
+
+        # update action plots
+        actionsArr = np.array([state.egoAction for state in self.stateLog])
+
+        scale = np.sqrt(np.sum(actionsArr**2, axis=1))
+        coeff = np.maximum(1.0, scale / self.envConfig.maxAccel[self.envConfig.iMppi])
+        actionNormalized = actionsArr / coeff[:, None]
+
+        for dim, ((plot, lightplot, vline), ax) in enumerate(zip(self.actions_plot, self.axs_action_plot)):
+            vline.set_xdata([i, i])
+            if len(plot.get_xdata()) != len(self.stateLog):  # type: ignore
+                plot.set_xdata(np.arange(len(self.stateLog)))
+                lightplot.set_xdata(np.arange(len(self.stateLog)))
+
+                plot.set_ydata(actionNormalized[:, dim])
+                lightplot.set_ydata(actionsArr[:, dim])
+
+                ax.set_xlim(-2, len(self.stateLog) + 2)
 
     def updateStatus(self, i: Optional[int] = None) -> None:
         if i is None:
@@ -651,55 +994,13 @@ class EnvironmentRenderer:
             self.status_text.set_color("orange")
 
         for iAgent in range(self.nAgents):
-            vel, laps, gates = self.stateLog[i].speed, self.stateLog[i].nLaps, self.stateLog[i].currentGates
+            vel, laps, gates = self.stateLog[i].state.vel, self.stateLog[i].state.laps, self.stateLog[i].state.gates
 
             speed = np.linalg.norm(vel[iAgent * self.envConfig.dim : (iAgent + 1) * self.envConfig.dim])
 
             self.agent_value_texts[iAgent].set_text(
                 f"Lap {int(laps[iAgent])}/{self.envConfig.nWinLaps} Gate {int(gates[iAgent])}/{self.envConfig.nGates}\nSpeed {speed:.2f}"
             )
-
-        # update MPPI belief
-        mppiState = self.stateLog[i].mppiInfo
-
-        if len(mppiState.preds) != self.envConfig.nTrueModels:
-            print(f"WARNING: len(mppiState.preds) = {len(mppiState.preds)} is different from {self.envConfig.nTrueModels=}")
-            return
-
-        failCount, eps = mppiState.failCount, mppiState.epsilon
-
-        self.verif_text.set_text(
-            f"Fail: {sum(failCount) / self.verifConfig.N * 100:.2f}% (coll {failCount[0] / self.verifConfig.N * 100:.2f}%, out {failCount[1] / self.verifConfig.N * 100:.2f}%)\n"
-            + (f"Failure rate: {eps:.5f} (partial {mppiState.epsilonPartial:.5f})\n" if i > 0 else "Failure rate: --\n")
-            + (
-                f"Use new plan: {'YES' if mppiState.useNewPlan else 'NO'} (loss: {mppiState.certifiedLoss:.5f})"
-                if i > 0
-                else "Use new plan: --\n"
-            )
-        )
-
-        # update joint belief
-        for bar, text, b_val in zip(self.joint_belief[0], self.joint_belief[1], mppiState.belief):
-            bar.set_height(b_val)
-
-            # color = "#2ecc71" if b_val >= self.mppiConfig.minConfidence else "#3498db"
-            # bar.set_facecolor(color)
-
-            text.set_text(f"{b_val:.2f}")
-            text.set_y(b_val + 0.01)
-
-        # update marginal belief
-        for k in range(self.envConfig.nModelFactors):
-            marg = self.envConfig.computeMarginal(mppiState.belief, k)
-
-            for bar, text, b_val in zip(self.marginal_belief[k][0], self.marginal_belief[k][1], marg):
-                bar.set_height(b_val)
-
-                color = "#2ecc71" if b_val >= self.mppiConfig.minConfidence else "#3498db"
-                bar.set_facecolor(color)
-
-                text.set_text(f"{b_val:.2f}")
-                text.set_y(b_val + 0.01)
 
     def onNewState(
         self,
@@ -821,11 +1122,16 @@ class EnvironmentRenderer:
         self.text_box.disconnect_events()
         # self.text_box.on_submit(lambda ev: None)
         self.text_box.ax.set_visible(False)  # type: ignore
+        self.save_button.set_active(False)
+        self.save_button.label.set_text("Saving GIF...")
         self.fig.canvas.draw_idle()
+        plt.pause(0.5)
         if text.strip() == "":
             print("No filename provided; aborting GIF save")
             return
         self.saveGif(text.strip())
+
+        self.save_button.label.set_text("GIF saved")
 
     def saveGif(self, name: str) -> None:
         if not name.endswith(".gif"):
@@ -845,9 +1151,7 @@ class EnvironmentRenderer:
             self.updateDisplay(i)
             self.fig.canvas.draw()
 
-            axes_to_capture = (
-                [self.ax, self.ax_status, self.ax_joint_belief, self.ax_failcount] + self.axs_marg_belief + self.axs_action_plot
-            )
+            axes_to_capture = [self.ax, self.ax_status] + self.axs_action_plot + self.contRenderer.getCapturedAxes()
             bboxes = [a.get_window_extent().transformed(self.fig.dpi_scale_trans.inverted()) for a in axes_to_capture]
             full_bbox = Bbox.union(bboxes).padded(0.5)
 
@@ -858,11 +1162,6 @@ class EnvironmentRenderer:
             img = Image.open(buf)
             imgs.append(img.convert("RGB"))
             buf.close()
-
-            # w, h = self.fig.canvas.get_width_height()
-            # buf = np.frombuffer(self.fig.canvas.tostring_rgb(), dtype=np.uint8)  # type: ignore
-            # buf = buf.reshape((h, w, 3))
-            # imgs.append(Image.fromarray(buf))
 
         try:
             print(f"Saving animation to {save_path}...")

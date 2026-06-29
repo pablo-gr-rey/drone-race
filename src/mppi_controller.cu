@@ -20,37 +20,35 @@
 MPPIController::MPPIController(
     const EnvironmentConfig& c,
     const MPPIConfig& mc,
-    const VerifConfig& vC,
-    float* d_trackPoints,
     int s,
     std::optional<std::vector<float>> nominal)
 {
     std::cout << "MPPI INIT" << std::endl;
-    name = "MPPI";
     envConfig = c;
     mppiConfig = mc;
-    verifConfig = vC;
     seed = s;
-
-    h_trackPoints = c.trackPoints;
-    envConfig.trackPoints = d_trackPoints;
 
     h_belief = std::to_array(envConfig.initBelief);
 
     if (nominal)
     {
-        if ((int) nominal->size() != N_BRANCH_PLANS * mc.nTimesteps * DIM)
-            throw std::runtime_error(std::format("Invalid MPPI construction: expected nominal size %d, got %d", N_BRANCH_PLANS * mc.nTimesteps * DIM, nominal->size()));
+        if ((int) nominal->size() != N_BRANCH_PLANS * mc.nTimesteps * ACTION_DIM)
+            throw std::runtime_error(std::format("Invalid MPPI construction: expected nominal size {}, got {}", N_BRANCH_PLANS * mc.nTimesteps * ACTION_DIM, nominal->size()));
 
         h_nominal = nominal.value();
     }
     else
-        h_nominal.assign(N_BRANCH_PLANS * mc.nTimesteps * DIM, 0.0f);
+        h_nominal.assign(N_BRANCH_PLANS * mc.nTimesteps * ACTION_DIM, 0.0f);
 
     failCountNew = failCountOld = failCount = { 0u, 0u };
 
     if (USE_SPLINES)
+    {
         h_B = buildSplineMatrix();
+        for (float b : h_B)
+            if (!isfinite(b))
+                std::cout << "WARNING: invalid value detected in spline matrix:" << b << "\n\n";
+    }
     else
         h_B = std::vector<float>(mppiConfig.nTimesteps * mppiConfig.nKnots, 0.0f);
 }
@@ -167,7 +165,7 @@ void MPPIController::allocDevice()
     CUDA_CHECK(cudaMalloc(&d_belief, N_TRUE_MODELS * sizeof(float)));
 
     // Noise
-    CUDA_CHECK(cudaMalloc(&d_noise, N_BRANCH_PLANS * M * N * DIM * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_noise, N_BRANCH_PLANS * M * N * ACTION_DIM * sizeof(float)));
 
     // Costs
     CUDA_CHECK(cudaMalloc(&d_costs, N_BRANCH_PLANS * N * sizeof(float)));
@@ -176,10 +174,10 @@ void MPPIController::allocDevice()
     CUDA_CHECK(cudaMalloc(&d_branchTime, N_TRUE_MODELS * N * N_MODEL_FACTORS * sizeof(int)));
 
     // Nominal action
-    CUDA_CHECK(cudaMalloc(&d_splineNominal, N_BRANCH_PLANS * M * DIM * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_tempSplineNominal, N_BRANCH_PLANS * M * DIM * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_nominal, N_BRANCH_PLANS * T * DIM * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_prevnominal, N_BRANCH_PLANS * T * DIM * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_splineNominal, N_BRANCH_PLANS * M * ACTION_DIM * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_tempSplineNominal, N_BRANCH_PLANS * M * ACTION_DIM * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_nominal, N_BRANCH_PLANS * T * ACTION_DIM * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_prevnominal, N_BRANCH_PLANS * T * ACTION_DIM * sizeof(float)));
 
     // Min-reduction / masked costs / nu
     CUDA_CHECK(cudaMalloc(&d_minCosts, N_BRANCH_PLANS * (USE_SPLINES ? M : T) * sizeof(float)));
@@ -193,16 +191,16 @@ void MPPIController::allocDevice()
     CUDA_CHECK(cudaMalloc(&d_failCountOld, 2 * sizeof(uint)));
     CUDA_CHECK(cudaMalloc(&d_failCountNew, 2 * sizeof(uint)));
 
-    CUDA_CHECK(cudaMalloc(&d_verif_rng, verifConfig.nVerifSamples * sizeof(curandState)));
-    CUDA_CHECK(cudaMemset(d_verif_rng, 0, verifConfig.nVerifSamples * sizeof(curandState)));
+    CUDA_CHECK(cudaMalloc(&d_verif_rng, mppiConfig.nVerifSamples * sizeof(curandState)));
+    CUDA_CHECK(cudaMemset(d_verif_rng, 0, mppiConfig.nVerifSamples * sizeof(curandState)));
 
     // Initialise RNG
     int blk = 256;
     int grd = (N + blk - 1) / blk;
     initRNGKernel << <grd, blk >> > (d_rng, seed, N);
 
-    int grdVerif = (verifConfig.nVerifSamples + blk - 1) / blk;
-    initRNGKernel << <grdVerif, blk >> > (d_verif_rng, seed + 1, verifConfig.nVerifSamples);
+    int grdVerif = (mppiConfig.nVerifSamples + blk - 1) / blk;
+    initRNGKernel << <grdVerif, blk >> > (d_verif_rng, seed + 1, mppiConfig.nVerifSamples);
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
@@ -212,7 +210,7 @@ void MPPIController::allocDevice()
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Upload initial nominal
-    CUDA_CHECK(cudaMemset(d_splineNominal, 0, N_BRANCH_PLANS * M * DIM * sizeof(float)));       // TODO: initialize this properly
+    CUDA_CHECK(cudaMemset(d_splineNominal, 0, N_BRANCH_PLANS * M * ACTION_DIM * sizeof(float)));       // TODO: initialize this properly
     CUDA_CHECK(cudaMemcpy(
         d_nominal,
         h_nominal.data(),
@@ -224,16 +222,6 @@ void MPPIController::allocDevice()
         h_nominal.size() * sizeof(float),
         cudaMemcpyHostToDevice
     ));
-
-    // Temp storage size for reducing N elements
-    cub::DeviceReduce::Min(
-        nullptr,
-        temp_storage_bytes,
-        (const float*) nullptr,
-        (float*) nullptr,
-        N);
-
-    CUDA_CHECK(cudaMalloc(&d_temp_storage, temp_storage_bytes));
 
     deviceReady = true;
 }
@@ -268,13 +256,11 @@ void MPPIController::freeDevice()
     safe_free(d_nu);
 
     safe_free(d_rng);
-    safe_free(d_temp_storage);
 
     safe_free(d_failCountOld);
     safe_free(d_failCountNew);
     safe_free(d_verif_rng);
 
-    temp_storage_bytes = 0;
     deviceReady = false;
 }
 
@@ -377,7 +363,7 @@ void MPPIController::getControl(
 
     // 5. Weighted average update
 
-    int wGrid = N_BRANCH_PLANS * (USE_SPLINES ? M : T) * DIM;
+    int wGrid = N_BRANCH_PLANS * (USE_SPLINES ? M : T) * ACTION_DIM;
     weightedAverageKernelUnified << <wGrid, blk, 2 * blk * sizeof(float) >> > (
         d_costs,
         d_minCosts,
@@ -400,7 +386,7 @@ void MPPIController::getControl(
     // 5.626 If we use splines, then shift spline nominal for next step warm-start
     if (USE_SPLINES)
     {
-        int interpGrd = (N_BRANCH_PLANS * T * DIM + blk - 1) / blk;
+        int interpGrd = (N_BRANCH_PLANS * T * ACTION_DIM + blk - 1) / blk;
         interpolateSplineKernel << < interpGrd, blk >> > (d_splineNominal, d_nominal, d_B, T, M);
 
 #ifdef DEBUG
@@ -418,14 +404,12 @@ void MPPIController::getControl(
 #endif
 
     // 5.75 Verification
-    int verifGrd = (verifConfig.nVerifSamples + blk - 1) / blk;
+    int verifGrd = (mppiConfig.nVerifSamples + blk - 1) / blk;
 
     verifyNominalFailureKernel << <verifGrd, blk >> > (
         agent,
-        verifConfig.nVerifSamples,
         envConfig,
         mppiConfig,
-        verifConfig.horizon,
         state,
         d_belief,
         d_nominal,
@@ -440,10 +424,8 @@ void MPPIController::getControl(
 
     verifyNominalFailureKernel << <verifGrd, blk >> > (
         agent,
-        verifConfig.nVerifSamples,
         envConfig,
         mppiConfig,
-        verifConfig.horizon,
         state,
         d_belief,
         d_prevnominal,
@@ -457,7 +439,7 @@ void MPPIController::getControl(
         cudaMemcpyDeviceToHost));
 
     computeCertifiedLoss();
-    useNewPlan = certifiedLoss < verifConfig.maxEps;
+    useNewPlan = certifiedLoss < mppiConfig.maxVerifEps;
 
     if (useNewPlan)
         std::cout << "USING NEW PLAN\n";
@@ -509,15 +491,15 @@ void MPPIController::getControl(
 
     int branchIdx = flattenBranchIndex(predTheta);
 
-    for (int d = 0; d < DIM; d++)
-        outAction[d] = h_nominal[branchIdx * T * DIM + d];
+    for (int d = 0; d < ACTION_DIM; d++)
+        outAction[d] = h_nominal[branchIdx * T * ACTION_DIM + d];
 
     std::cout << "Chosen branch (-1=nominal, theta=committed to theta): ";
     for (int k = 0; k < N_MODEL_FACTORS; k++)
         std::cout << (predTheta[k] - 1) << ' ';
     std::cout << "\n\tSubmitted action: \t";
 
-    for (int d = 0; d < DIM; d++)
+    for (int d = 0; d < ACTION_DIM; d++)
         std::cout << outAction[d] << " ";
     std::cout << std::endl;
 
@@ -547,7 +529,7 @@ void MPPIController::getControl(
 
     std::cout << "Verification samples: failed "
         << failCountNew[0] + failCountNew[1]
-        << " out of " << verifConfig.nVerifSamples
+        << " out of " << mppiConfig.nVerifSamples
         << " (collision: " << failCountNew[0]
         << "; outside: " << failCountNew[1]
         << ")" << std::endl;
@@ -556,21 +538,21 @@ void MPPIController::getControl(
     // this ensures that the verification logic makes sense: if we stop optimizing (useNewPlan=false), then shifting corresponds
     // to simply time passing, such that the predicted plan matches the actual behavior
 
-    int base = branchIdx * T * DIM;
+    int base = branchIdx * T * ACTION_DIM;
     for (int t = 0; t < T - 1; t++)
-        for (int d = 0; d < DIM; d++)
-            h_nominal[base + t * DIM + d] = h_nominal[base + (t + 1) * DIM + d];
+        for (int d = 0; d < ACTION_DIM; d++)
+            h_nominal[base + t * ACTION_DIM + d] = h_nominal[base + (t + 1) * ACTION_DIM + d];
 
-    for (int d = 0; d < DIM; d++)
-        h_nominal[base + (T - 1) * DIM + d] = 0.0f;
+    for (int d = 0; d < ACTION_DIM; d++)
+        h_nominal[base + (T - 1) * ACTION_DIM + d] = 0.0f;
 
     // 8. If we use splines, also shift the corresponding branch (while keeping the other)
 
     if (USE_SPLINES)
     {
-        int shiftGrd = (M * DIM + blk - 1) / blk;
+        int shiftGrd = (M * ACTION_DIM + blk - 1) / blk;
 
-        CUDA_CHECK(cudaMemcpy(d_tempSplineNominal, d_splineNominal, N_BRANCH_PLANS * M * DIM * sizeof(float), cudaMemcpyDeviceToDevice));
+        CUDA_CHECK(cudaMemcpy(d_tempSplineNominal, d_splineNominal, N_BRANCH_PLANS * M * ACTION_DIM * sizeof(float), cudaMemcpyDeviceToDevice));
 
         shiftSplineKernel << <shiftGrd, blk >> > (d_splineNominal, d_tempSplineNominal, d_B, mppiConfig, branchIdx);
 
@@ -607,10 +589,10 @@ void MPPIController::computeCertifiedLoss()
     uint totFailOld = failCountOld[0] + failCountOld[1];
     uint totFailNew = failCountNew[0] + failCountNew[1];
 
-    int n = verifConfig.nVerifSamples;
+    int n = mppiConfig.nVerifSamples;
 
-    double eps1 = clopperPearsonUpperBound(totFailNew, n, verifConfig.beta / 2.0);
-    double eps2 = clopperPearsonLowerBound(totFailOld, n, verifConfig.beta / 2.0);
+    double eps1 = clopperPearsonUpperBound(totFailNew, n, mppiConfig.beta / 2.0);
+    double eps2 = clopperPearsonLowerBound(totFailOld, n, mppiConfig.beta / 2.0);
 
     certifiedLoss = eps1 - eps2;
 
@@ -625,10 +607,10 @@ void MPPIController::computeCertifiedLoss()
 void MPPIController::computeEpsilon()
 {
     uint totFail = failCount[0] + failCount[1];
-    int n = verifConfig.nVerifSamples;
+    int n = mppiConfig.nVerifSamples;
 
-    epsilonPartial = clopperPearsonUpperBound(totFail, n, verifConfig.beta);
-    epsilon = epsilonPartial + verifConfig.horizon * verifConfig.maxEps;
+    epsilonPartial = clopperPearsonUpperBound(totFail, n, mppiConfig.beta);
+    epsilon = epsilonPartial + mppiConfig.verifHorizon * mppiConfig.maxVerifEps;
 
     std::cout << std::fixed << std::setprecision(5)
         << "For fail count " << totFail

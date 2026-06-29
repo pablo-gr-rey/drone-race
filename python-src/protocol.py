@@ -7,7 +7,7 @@ import typing
 import numpy as np
 import zmq
 from renderer import EnvironmentRenderer
-from utils import EVENT_TYPE, MSG_TYPE, FullStateInfo, GateEnvironmentConfig, MPPIConfig, VerifConfig
+from utils import EVENT_TYPE, MSG_TYPE, ControllerConfig, FullStateInfo, GateEnvironmentConfig, SimState
 
 
 class BytePacker:
@@ -31,9 +31,7 @@ class BytePacker:
 
     def pushObj(self, val: Any, warn: bool = True, log: bool = False) -> bool:
         "Return False if the object (or part of it in case of tuple) could not be pushed"
-        if isinstance(val, int):
-            self.pushInt(val)
-        elif isinstance(val, bool):
+        if isinstance(val, int):  # also handles bool and enums
             self.pushInt(int(val))
         elif isinstance(val, float):
             self.pushFloat(val)
@@ -45,9 +43,7 @@ class BytePacker:
                     return False
         elif dataclasses.is_dataclass(val) and not isinstance(val, type):
             for field in dataclasses.fields(val):
-                if (
-                    not field.init
-                ):  # usually, these fields are computed afterwards for ease of implementation and should not be sent
+                if not field.metadata.get("send", True):
                     continue
 
                 n_val = getattr(val, field.name)
@@ -139,6 +135,17 @@ class ByteUnpacker:
 
                 attrs[field.name] = [self.readAny(elem_type) for i in range(length)]
 
+            elif typing.get_origin(field.type) is typing.Union:
+                if "class" not in field.metadata:
+                    raise ValueError(f"Missing source class information in metadata for field {field.name} of type {field.type}")
+                if not hasattr(cl, field.metadata["class"]):
+                    raise ValueError(
+                        f"Class source metadata for field {field.name} is declared as {field.metadata['class']} but it was not found in attributes of config class {cl}"
+                    )
+
+                subcl = getattr(cl, field.metadata["class"])
+                attrs[field.name] = self.readConfig(subcl)
+
             else:
                 attrs[field.name] = self.readAny(field.type)  # type: ignore
 
@@ -185,8 +192,8 @@ class ZMQRecv:
     def runSim(
         self,
         envConfig: GateEnvironmentConfig,
-        verifConfig: VerifConfig,
-        mppiConfig: MPPIConfig,
+        contConfig: ControllerConfig,
+        initState: SimState,
         render: bool = True,
         contNames: Optional[list[str]] = None,
         oppNames: Optional[list[list[str]]] = None,
@@ -200,7 +207,7 @@ class ZMQRecv:
             if contNames is None:
                 # contNames = [cfg.getDefaultName() for cfg in contConfigs]
                 contNames = [
-                    mppiConfig.getDefaultName()
+                    contConfig.getDefaultName()
                     if i == envConfig.iMppi
                     else envConfig.opponentPidConfigs[envConfig.trueTheta].getDefaultName()
                     for i in range(2)
@@ -211,9 +218,8 @@ class ZMQRecv:
 
             renderer = EnvironmentRenderer(
                 envConfig,
-                mppiConfig,
+                contConfig,
                 contNames,
-                verifConfig,
                 oppNames,
                 interval=0,
                 frameSkipWaiting=2,
@@ -226,16 +232,17 @@ class ZMQRecv:
         else:
             renderer = None
 
+        # update controller type in FullStateInfo
+        FullStateInfo.updateContType(contConfig)
+
         # send header
         print("Sending header...")
 
-        header = encodeConfig(envConfig, MSG_TYPE.MSG_HEADER).toBytes()
-        self.sock.send(header)
+        self.sock.send(encodeConfig(envConfig, MSG_TYPE.MSG_HEADER).toBytes())
 
-        self.sock.send(encodeConfig(verifConfig, MSG_TYPE.MSG_HEADER, log=True).toBytes())
+        self.sock.send(encodeConfig(contConfig, MSG_TYPE.MSG_HEADER).toBytes())
 
-        self.sock.send(encodeConfig(mppiConfig, MSG_TYPE.MSG_HEADER).toBytes())
-
+        self.sock.send(encodeConfig(initState, MSG_TYPE.MSG_HEADER).toBytes())
         print("header sent OK, waiting for first state...")
 
         result = None
@@ -259,15 +266,15 @@ class ZMQRecv:
                 if state.step == 0:
                     # we confirm that the first state is equal to the initial state we sent (to detect early potential transmission bugs)
                     if (
-                        not np.all(np.isclose(state.pos, envConfig.init_pos))
-                        or not np.all(np.isclose(state.speed, envConfig.init_vel))
-                        # or not np.all(np.isclose(state.currentS, config.initS))     # for non-PID agents, engine sets S to -1
-                        or not np.all(np.isclose(state.nLaps, envConfig.initnLaps))
-                        or not np.all(np.isclose(state.currentGates, envConfig.initGates))
+                        not np.all(np.isclose(state.state.pos, initState.pos))
+                        or not np.all(np.isclose(state.state.vel, initState.vel))
+                        # or not np.all(np.isclose(state.state.currentS, config.initS))     # for non-PID agents, engine sets S to -1
+                        or not np.all(np.isclose(state.state.laps, initState.laps))
+                        or not np.all(np.isclose(state.state.gates, initState.gates))
                     ):
-                        print(state.pos, state.speed, state.currentS, state.nLaps, state.currentGates)
-                        print(envConfig.init_pos, envConfig.init_vel, envConfig.initS, envConfig.initnLaps, envConfig.initGates)
-                        raise ValueError("First state sent back by C++ backend did not match expected first state")
+                        print(state.state.pos, state.state.vel, state.state.S, state.state.laps, state.state.gates)
+                        print(initState.pos, initState.vel, initState.S, initState.laps, initState.gates)
+                        raise ValueError("First state sent back by C++ backend did not match initial state")
 
                 self.stateLog.append(state)
 
