@@ -40,7 +40,9 @@ MPPIController::MPPIController(
     else
         h_nominal.assign(N_BRANCH_PLANS * mc.nTimesteps * ACTION_DIM, 0.0f);
 
-    failCountNew = failCountOld = failCount = { 0u, 0u };
+    failCountNew.assign(mppiConfig.nTimesteps, 0u);
+    failCountOld.assign(mppiConfig.nTimesteps, 0u);
+    failCount.assign(mppiConfig.nTimesteps, 0u);
 
     if (USE_SPLINES)
     {
@@ -188,8 +190,8 @@ void MPPIController::allocDevice()
     CUDA_CHECK(cudaMemset(d_rng, 0, N * sizeof(curandState)));
 
     // Verification side
-    CUDA_CHECK(cudaMalloc(&d_failCountOld, 2 * sizeof(uint)));
-    CUDA_CHECK(cudaMalloc(&d_failCountNew, 2 * sizeof(uint)));
+    CUDA_CHECK(cudaMalloc(&d_failCountOld, T * sizeof(uint)));
+    CUDA_CHECK(cudaMalloc(&d_failCountNew, T * sizeof(uint)));
 
     CUDA_CHECK(cudaMalloc(&d_verif_rng, mppiConfig.nVerifSamples * sizeof(curandState)));
     CUDA_CHECK(cudaMemset(d_verif_rng, 0, mppiConfig.nVerifSamples * sizeof(curandState)));
@@ -291,8 +293,8 @@ void MPPIController::getControl(
     // 1. upload belief (now, current state is passed as argument to the kernels)
     CUDA_CHECK(cudaMemcpy(d_belief, h_belief.data(), N_TRUE_MODELS * sizeof(float), cudaMemcpyHostToDevice));
 
-    CUDA_CHECK(cudaMemset(d_failCountOld, 0, 2 * sizeof(uint)));
-    CUDA_CHECK(cudaMemset(d_failCountNew, 0, 2 * sizeof(uint)));
+    CUDA_CHECK(cudaMemset(d_failCountOld, 0, T * sizeof(uint)));
+    CUDA_CHECK(cudaMemset(d_failCountNew, 0, T * sizeof(uint)));
     CUDA_CHECK(cudaMemset(d_nu, 0, N_BRANCH_PLANS * sizeof(float)));
 
     int blk = 256;
@@ -419,7 +421,7 @@ void MPPIController::getControl(
     CUDA_CHECK(cudaMemcpy(
         failCountNew.data(),
         d_failCountNew,
-        2 * sizeof(uint),
+        T * sizeof(uint),
         cudaMemcpyDeviceToHost));
 
     verifyNominalFailureKernel << <verifGrd, blk >> > (
@@ -435,7 +437,7 @@ void MPPIController::getControl(
     CUDA_CHECK(cudaMemcpy(
         failCountOld.data(),
         d_failCountOld,
-        2 * sizeof(uint),
+        T * sizeof(uint),
         cudaMemcpyDeviceToHost));
 
     computeCertifiedLoss();
@@ -527,13 +529,6 @@ void MPPIController::getControl(
         std::cout << mppiConfig.invTemperature << "\n";
     }
 
-    std::cout << "Verification samples: failed "
-        << failCountNew[0] + failCountNew[1]
-        << " out of " << mppiConfig.nVerifSamples
-        << " (collision: " << failCountNew[0]
-        << "; outside: " << failCountNew[1]
-        << ")" << std::endl;
-
     // 7. Shift nominal action sequence left by one timestep (warm start)
     // this ensures that the verification logic makes sense: if we stop optimizing (useNewPlan=false), then shifting corresponds
     // to simply time passing, such that the predicted plan matches the actual behavior
@@ -586,27 +581,44 @@ void MPPIController::getControl(
 
 void MPPIController::computeCertifiedLoss()
 {
-    uint totFailOld = failCountOld[0] + failCountOld[1];
-    uint totFailNew = failCountNew[0] + failCountNew[1];
+    certifiedLoss = -1.0;
 
-    int n = mppiConfig.nVerifSamples;
+    uint totFailOld = 0u, totFailNew = 0u;
 
-    double eps1 = clopperPearsonUpperBound(totFailNew, n, mppiConfig.beta / 2.0);
-    double eps2 = clopperPearsonLowerBound(totFailOld, n, mppiConfig.beta / 2.0);
+    int maxt = -1;
+    double eps1max = 0.0, eps2max = 0.0;
 
-    certifiedLoss = eps1 - eps2;
+    for (int t = 0; t < mppiConfig.nTimesteps; t++)
+    {
+        totFailOld += failCountOld[t];
+        totFailNew += failCountNew[t];
+
+        int n = mppiConfig.nVerifSamples;
+
+        double eps1 = clopperPearsonUpperBound(totFailNew, n, mppiConfig.beta / 2.0);
+        double eps2 = clopperPearsonLowerBound(totFailOld, n, mppiConfig.beta / 2.0);
+
+        if (eps1 - eps2 > certifiedLoss)
+        {
+            certifiedLoss = eps1 - eps2;
+            maxt = t;
+            eps1max = eps1;
+            eps2max = eps2;
+        }
+    }
 
     std::cout << std::fixed << std::setprecision(5)
-        << "Certified loss: " << certifiedLoss
-        << " eps1 " << eps1
-        << " eps2 " << eps2
-        << ": totFailOld "
-        << totFailOld << " (" << failCountOld[0] << "+" << failCountOld[1] << ") totFailNew " << totFailNew << " (" << failCountNew[0] << "+" << failCountNew[1] << "), n " << n << ")\n";
+        << "Certified loss: " << certifiedLoss << " (obtained at timestep " << maxt << "): "
+        << " eps1 " << eps1max
+        << " eps2 " << eps2max
+        << "\ntotFailOld " << std::accumulate(failCountOld.begin(), failCountOld.begin() + maxt + 1, 0u) << "\t(total over whole horizon " << totFailOld << ")\n"
+        << " totFailNew " << std::accumulate(failCountNew.begin(), failCountNew.begin() + maxt + 1, 0u) << "\t(total over whole horizon " << totFailNew << ")\n";
 }
 
 void MPPIController::computeEpsilon()
 {
-    uint totFail = failCount[0] + failCount[1];
+    // uint totFail = failCount[0] + failCount[1];
+    uint totFail = std::accumulate(failCount.begin(), failCount.end(), 0u);
     int n = mppiConfig.nVerifSamples;
 
     epsilonPartial = clopperPearsonUpperBound(totFail, n, mppiConfig.beta);

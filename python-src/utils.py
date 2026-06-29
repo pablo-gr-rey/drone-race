@@ -313,7 +313,7 @@ class MPPIStatePredInfo:
 @dataclass
 class MPPIStateInfo:
     belief: np.ndarray
-    failCount: np.ndarray
+    failCount: int
 
     epsilon: float
     epsilonPartial: float

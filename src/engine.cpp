@@ -76,7 +76,7 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
         writer.pushFloatArray(mppiCont->h_belief);
 
-        writer.pushIntArray<uint>(mppiCont->failCount);
+        writer.pushInt32(std::accumulate(mppiCont->failCount.begin(), mppiCont->failCount.end(), 0u));
         writer.pushFloat(mppiCont->epsilon);
         writer.pushFloat(mppiCont->epsilonPartial);
         writer.pushInt32((int) mppiCont->useNewPlan);
@@ -403,15 +403,9 @@ std::optional<std::pair<EventType, int>> SimulationEngine::parseTerm(TerminalTyp
     {
     case TERM_NONE:
         return std::nullopt;
-    case TERM_COLLISION:
-        return { {EVT_COLLISION, -1} };
-    case TERM_EGO_OUTSIDE:
+    case TERM_LOSE:
         return { {EVT_OUTSIDE, egoAgent} };
-    case TERM_OPP_OUTSIDE:
-        return { {EVT_OUTSIDE, 1 - egoAgent} };
     case TERM_WIN:
-        return { {EVT_WINNER, egoAgent} };
-    case TERM_OPP_WIN:
         return { {EVT_WINNER, 1 - egoAgent} };
     default:
         throw std::runtime_error("Unexpected TerminalType value");

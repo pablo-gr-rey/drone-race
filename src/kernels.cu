@@ -507,7 +507,7 @@ __global__ void verifyNominalFailureKernel(
     const float* __restrict__ initBelief,
     const float* __restrict__ nominal,     // (nModels+1, T, dim)
     curandState* __restrict__ rngStates,
-    unsigned int* __restrict__ failCount)
+    unsigned int* __restrict__ failCount)    // (T)
 {
     int nVerif = mc.nVerifSamples;
     int nTimesteps = mc.verifHorizon;
@@ -530,12 +530,12 @@ __global__ void verifyNominalFailureKernel(
     // Sample actual opponent model according to initial belief
     int theta = sampleModelFromBelief(branchState.belief, &rng);
 
-    int failed = 0;     // 1 if collision, 2 if outside
-
     int tOrigin = 0;
+    int t = 0;
+    bool failed = false;
 
     // Dynamics rollout
-    for (int t = 0; t < nTimesteps && !failed; t++)
+    for (; t < nTimesteps; t++)
     {
         int local_time = t - tOrigin;
         int flatBranch = flattenBranchIndex(branchState.predTheta);
@@ -563,22 +563,17 @@ __global__ void verifyNominalFailureKernel(
 
         // Failure checks
 
-        if (term == TERM_EGO_OUTSIDE)
+        if (term == TERM_LOSE)
         {
-            failed = 2;
+            failed = true;
             break;
         }
-        if (term == TERM_COLLISION)
-        {
-            failed = 1;
-            break;
-        }
-        if (term == TERM_OPP_OUTSIDE || term == TERM_WIN || term == TERM_OPP_WIN)
+        else if (term == TERM_WIN)
             break;
     }
 
     if (failed)
-        atomicAdd(failCount + failed - 1, 1u);
+        atomicAdd(failCount + t, 1u);
 
     rngStates[s] = rng;
 }

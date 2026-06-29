@@ -73,11 +73,8 @@ enum CONTROLLER_KIND : int32_t { CONT_MPPI, CONT_PRMPPI };
 enum TerminalType
 {
     TERM_NONE = 0,
-    TERM_COLLISION,
-    TERM_EGO_OUTSIDE,
-    TERM_OPP_OUTSIDE,
+    TERM_LOSE,
     TERM_WIN,
-    TERM_OPP_WIN
 };
 
 #include "environments/env_dronerace.h"

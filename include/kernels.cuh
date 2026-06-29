@@ -89,7 +89,8 @@ __global__ void verifyNominalFailureKernel(
     const float* __restrict__ initBelief,
     const float* __restrict__ nominal,     // (nModels+1, T, dim)
     curandState* __restrict__ rngStates,
-    unsigned int* __restrict__ failCount);
+    unsigned int* __restrict__ failCount    // (T)
+);
 
 __global__ void PRMPPIgenerateNoiseKernel(float* noise, curandState* rng,
     float stddev,

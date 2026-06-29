@@ -740,7 +740,7 @@ namespace EnvDroneRace
 
 
         if (isOutside(state, envConfig, envConfig.minDist / 2.0f))
-            return TERM_EGO_OUTSIDE;
+            return TERM_LOSE;
 
         if (isWinner(state, envConfig))
             return TERM_WIN;

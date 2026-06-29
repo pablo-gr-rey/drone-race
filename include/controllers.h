@@ -43,9 +43,9 @@ public:
 
     std::vector<float> h_nominal;   // host mirror (nBranchPlans, T, dim)
 
-    std::array<uint, 2> failCountOld;    // size 2: nColl, nOutside (previous nominal, only MPPI outside is counted)
-    std::array<uint, 2> failCountNew;    // size 2: nColl, nOutside (candidate new nominal, only MPPI outside is counted)
-    std::array<uint, 2> failCount;       // size 2: nColl, nOutside (final nominal, only MPPI outside is counted)
+    std::vector<uint> failCountOld;    // T ints (failCount[t] = num of samples which stopped at time t)
+    std::vector<uint> failCountNew;    // T ints (failCount[t] = num of samples which stopped at time t)
+    std::vector<uint> failCount;       // T ints (failCount[t] = num of samples which stopped at time t)
     double epsilonPartial;             // epsilon obtained by verification at current iteration
     double epsilon;                    // epsilonPartial + verifConfig.horizon * verifConfig.maxEps
     double certifiedLoss;              // certified max loss if we use new plan instead of previous
@@ -98,8 +98,8 @@ private:
     curandState* d_rng = nullptr;
 
     // Verification side
-    uint* d_failCountNew = nullptr;  // 2 ints (first is numColl, second is numOutside)
-    uint* d_failCountOld = nullptr;  // 2 ints
+    uint* d_failCountNew = nullptr;  // T ints (failCount[t] = num of samples which stopped at time t)
+    uint* d_failCountOld = nullptr;  // T ints (failCount[t] = num of samples which stopped at time t)
     curandState* d_verif_rng = nullptr;
 
     bool deviceReady = false;
