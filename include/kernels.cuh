@@ -1,7 +1,6 @@
 #pragma once
 
 #include "config.h"
-#include "environment.h"
 #include "controllers.h"
 
 #include <curand_kernel.h>

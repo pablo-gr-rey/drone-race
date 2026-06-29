@@ -18,7 +18,7 @@ from utils import (
     MPPIConfig,
     PIDConfig,
     PRMPPIConfig,
-    circularGateTrack,
+    SimState,
 )
 
 
@@ -32,106 +32,9 @@ class NpJsonEncoder(json.JSONEncoder):
         return super().default(o)
 
 
-def standardGateEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig, list[str]]:
-    nAgents = 2
-    # nAgents = 1
-    dim = 2
-    nTrackSamples = 1000
-    trackRadius = 8
-
-    startS = np.linspace(0.2, 0, nAgents)
-
-    nGates = 5
-    # gateCenters = np.array([[0, 0], [3, 3], [0, 6], [-3, 3]])
-    # gateVectors = np.array([[1, 0], [0, 1], [-1, 0], [0, -1]])
-    # gateRadius = np.ones(nGates)
-
-    gateCenters, gateVectors, gateRadius = circularGateTrack(nGates, trackRadius, 1, None if dim == 2 else 0.0)
-
-    pidafraid = PIDConfig(
-        kp=5, kd=20, repulsionFactor=30, repulsionDistFactor=3, racelineIndex=1, actionNoise=2, repulsionPower=2.0
-    )
-    pidbold = PIDConfig(kp=5, kd=20, repulsionFactor=0, repulsionDistFactor=3, racelineIndex=1, actionNoise=2, repulsionPower=2.0)
-
-    config = GateEnvironmentConfig(
-        nAgents=nAgents,
-        dim=dim,
-        nRaceLines=1,
-        nWinLaps=2,
-        nGates=nGates,
-        maxSpeed=np.linspace(2, 3, nAgents),
-        maxAccel=np.linspace(3, 5, nAgents),
-        nTrackSamples=nTrackSamples,
-        targetDistance=0.05,
-        gateCenters=gateCenters,
-        gateVectors=gateVectors,
-        gateRadius=gateRadius,
-        minDist=1.5,
-        opponentPidConfigs=(pidafraid, pidbold),
-        nModelFactors=1,
-        modelSizes=np.array([2]),
-        initBelief=np.array([0.5, 0.5]),
-    )
-
-    assert config.trackPoints is not None  # it is built automatically in GateEnvironmentConfig
-
-    # add init state and add_state
-    # config.init_state = np.array(
-    #     [np.stack([config.trackPoints[int(s * config.nTrackSamples)], np.zeros(dim)], axis=1).flatten() for s in startS]
-    # ).flatten()
-    config.init_pos = np.array([config.trackPoints[int(s * config.nTrackSamples)] for s in startS]).flatten()
-    config.initS = np.repeat(startS, 2)
-    config.initnLaps = np.zeros(nAgents)
-    config.initGates = np.array([int(s * nGates) for s in startS], dtype=np.float32)
-
-    angles = np.linspace(0, 2 * np.pi, config.nTrackSamples, endpoint=False)
-
-    config.nRaceLines = 2
-    config.trackPoints = np.concat(
-        [
-            trackRadius * np.stack([np.cos(angles), np.sin(angles)], axis=1),
-            (trackRadius - 0.5 * gateRadius[0])
-            * np.stack(
-                [np.cos(angles), np.sin(angles)],
-                axis=1,
-            ),
-        ]
-    )
-
-    mppiconfig = MPPIConfig(
-        nSamples=10000,
-        nTimesteps=60,
-        inv_temperature=10,
-        samplingNoise=3,
-        gateTraversalMargin=0.95,
-        collDistFactor=1.1,
-        # collDistFactor=1.3,
-        finalAdvWeight=200,
-        # finalAdvWeight=0,
-        # finalSpeedWeight=50,
-        # oppDistWeight=1,
-        oppDistWeight=0.0,
-        oppDistThresholdFactor=2,
-        finalOppAdvWeight=0,
-        # finalOppAdvWeight=500,
-        # boundaryCost=0.01,
-        boundaryCost=0.0,
-        boundaryThresholdFactor=2,
-        oppOutsideCost=0,
-        # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
-        outsideCost=1000000,
-        collisionCost=1000000,
-        winCost=100000,
-        minConfidence=0.95,
-        # initBelief=np.array([1, 0]),
-    )
-
-    return config, mppiconfig, pidafraid, pidbold, ["Afraid", "Bold"]
-
-
 def tinyGateEnv(
     roundObs: bool = True, afraid: bool = False, useSplines: bool = True, usePR: bool = False
-) -> tuple[GateEnvironmentConfig, ControllerConfig, list[PIDConfig], list[list[str]]]:
+) -> tuple[GateEnvironmentConfig, SimState, ControllerConfig, list[list[str]]]:
     nAgents = 2
     dim = 2
     nTrackSamples = 512
@@ -219,11 +122,13 @@ def tinyGateEnv(
         ]
     )
 
-    config.init_pos = np.array([config.trackPoints[int(s * config.nTrackSamples)] for s in startS]).flatten()
-    config.initS = np.repeat(startS, 2)
-    print(config.initS)
-    config.initnLaps = np.zeros(nAgents)
-    config.initGates = np.array([1, 1])
+    initState = SimState(
+        pos=np.array([config.trackPoints[int(s * config.nTrackSamples)] for s in startS]).flatten(),
+        vel=np.zeros(config.dim * config.nAgents),
+        S=np.repeat(startS, 2),
+        laps=np.zeros(nAgents),
+        gates=np.array([1, 1]),
+    )
 
     # if afraid:
     #     config.init_pos = np.array([10.0, 4.0, 0.1, 0.0])a
@@ -241,19 +146,12 @@ def tinyGateEnv(
             # collDistFactor=1.3,
             finalAdvWeight=200,
             # finalAdvWeight=0,
-            # finalSpeedWeight=50,
-            # oppDistWeight=0,
-            oppDistWeight=0,
-            oppDistThresholdFactor=2,
             finalOppAdvWeight=0,
             # finalOppAdvWeight=500,
             boundaryCost=0.0,
             # boundaryCost=0.0,
             boundaryThresholdFactor=1.7,
-            oppOutsideCost=0,
-            # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
             outsideCost=1e6,
-            collisionCost=1e6,
             winCost=1e6,
             minConfidence=0.95,
             # initBelief=np.array([0.7, 0.3]),
@@ -273,19 +171,13 @@ def tinyGateEnv(
             # collDistFactor=1.3,
             finalAdvWeight=200,
             # finalAdvWeight=0,
-            # finalSpeedWeight=50,
-            # oppDistWeight=0,
-            oppDistWeight=0,
-            oppDistThresholdFactor=3,
             finalOppAdvWeight=0,
             # finalOppAdvWeight=500,
             boundaryCost=0,
             # boundaryCost=0.0,
             boundaryThresholdFactor=1,
-            oppOutsideCost=0,
             # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
             outsideCost=1e6,
-            collisionCost=1e6,
             winCost=1e6,
             minConfidence=0.95,
             # initBelief=np.array([0.7, 0.3]),
@@ -304,17 +196,12 @@ def tinyGateEnv(
             collDistFactor=1.0,
             # collDistFactor=1.3,
             finalAdvWeight=200,
-            # finalAdvWeight=0,
-            # finalSpeedWeight=50,
-            # oppDistWeight=0,
-            oppDistWeight=0,
-            oppDistThresholdFactor=3,
+            # finalAdvWeight=0,=
             finalOppAdvWeight=0,
             # finalOppAdvWeight=500,
             boundaryCost=10,
             # boundaryCost=0.0,
             boundaryThresholdFactor=2,
-            oppOutsideCost=0,
             # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
             winCost=1e6,
             safetyWeight=1e5,
@@ -322,12 +209,12 @@ def tinyGateEnv(
             delta=0.1,
         )
 
-    return config, mppiconfig, [pid0, pid1], [["Top", "Bottom"]]
+    return config, initState, mppiconfig, [["Top", "Bottom"]]
 
 
 def tinyGateEnv2Models(
     roundObs: bool = True, useSplines: bool = True, usePR: bool = False
-) -> tuple[GateEnvironmentConfig, ControllerConfig, list[PIDConfig], list[list[str]]]:
+) -> tuple[GateEnvironmentConfig, SimState, ControllerConfig, list[list[str]]]:
     nAgents = 2
     dim = 2
     nTrackSamples = 512
@@ -465,11 +352,13 @@ def tinyGateEnv2Models(
         ]
     )
 
-    config.init_pos = np.array([config.trackPoints[int(s * config.nTrackSamples)] for s in startS]).flatten()
-    config.initS = np.repeat(startS, 2)
-    print(config.initS)
-    config.initnLaps = np.zeros(nAgents)
-    config.initGates = np.array([1, 1])
+    initState = SimState(
+        pos=np.array([config.trackPoints[int(s * config.nTrackSamples)] for s in startS]).flatten(),
+        vel=np.zeros(2),
+        S=np.repeat(startS, 2),
+        laps=np.zeros(nAgents),
+        gates=np.array([1, 1]),
+    )
 
     # if afraid:
     #     config.init_pos = np.array([10.0, 4.0, 0.1, 0.0])
@@ -486,19 +375,12 @@ def tinyGateEnv2Models(
             # collDistFactor=1.3,
             finalAdvWeight=200,
             # finalAdvWeight=0,
-            # finalSpeedWeight=50,
-            # oppDistWeight=0,
-            oppDistWeight=0,
-            oppDistThresholdFactor=2,
-            finalOppAdvWeight=0,
             # finalOppAdvWeight=500,
             boundaryCost=0,
             # boundaryCost=0.0,
             boundaryThresholdFactor=1,
-            oppOutsideCost=0,
             # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
             outsideCost=1e6,
-            collisionCost=1e6,
             winCost=1e6,
             minConfidence=0.95,
             # initBelief=np.array([0.7, 0.3]),
@@ -517,19 +399,12 @@ def tinyGateEnv2Models(
             collDistFactor=1.3,
             finalAdvWeight=200,
             # finalAdvWeight=0,
-            # finalSpeedWeight=50,
-            oppDistWeight=20,
-            # oppDistWeight=0.0,
-            oppDistThresholdFactor=3,
             finalOppAdvWeight=0,
             # finalOppAdvWeight=5000,
             # boundaryCost=0.01,
             boundaryCost=100.0,
             boundaryThresholdFactor=3,
-            oppOutsideCost=0,
-            # oppOutsideCost=1e6,  # with this, it's too competitive and will push the opponent out of the arena
             outsideCost=1e7,
-            collisionCost=1e7,
             winCost=1e5,
             minConfidence=0.95,
             # initBelief=np.array([0.5, 0.5]),
@@ -549,16 +424,11 @@ def tinyGateEnv2Models(
             # collDistFactor=1.3,
             finalAdvWeight=200,
             # finalAdvWeight=0,
-            # finalSpeedWeight=50,
-            # oppDistWeight=0,
-            oppDistWeight=0,
-            oppDistThresholdFactor=3,
             finalOppAdvWeight=0,
             # finalOppAdvWeight=500,
             boundaryCost=0,
             # boundaryCost=0.0,
             boundaryThresholdFactor=2,
-            oppOutsideCost=0,
             # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
             winCost=1e6,
             safetyWeight=1e5,
@@ -566,10 +436,10 @@ def tinyGateEnv2Models(
             delta=0.1,
         )
 
-    return config, mppiconfig, pids, [["1st=Top", "1st=Bottom"], ["2nd=Top", "2nd=Bottom"]]
+    return config, initState, mppiconfig, [["1st=Top", "1st=Bottom"], ["2nd=Top", "2nd=Bottom"]]
 
 
-def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig, list[str]]:
+def activeEnv() -> tuple[GateEnvironmentConfig, SimState, MPPIConfig, list[list[str]]]:
     nAgents = 2
     dim = 2
     nTrackSamples = 1000
@@ -624,10 +494,13 @@ def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig
 
     config.trackPoints = np.column_stack([np.linspace(0, length * 1.2, nTrackSamples), np.zeros(nTrackSamples)])
 
-    config.init_pos = np.array([config.trackPoints[int(s * config.nTrackSamples)] for s in startS]).flatten()
-    config.initS = np.repeat(startS, 2)
-    config.initnLaps = np.zeros(nAgents)
-    config.initGates = np.array([1, 1])
+    initState = SimState(
+        pos=np.array([config.trackPoints[int(s * config.nTrackSamples)] for s in startS]).flatten(),
+        vel=np.zeros(2),
+        S=np.repeat(startS, 2),
+        laps=np.zeros(nAgents),
+        gates=np.array([1, 1]),
+    )
 
     mppiconfig = MPPIConfig(
         nSamples=2**18,
@@ -639,29 +512,22 @@ def activeEnv() -> tuple[GateEnvironmentConfig, MPPIConfig, PIDConfig, PIDConfig
         # collDistFactor=1.3,
         finalAdvWeight=50000,
         # finalAdvWeight=0,
-        # finalSpeedWeight=50,
-        # oppDistWeight=1,
-        oppDistWeight=0.0,
-        oppDistThresholdFactor=2,
         finalOppAdvWeight=0,
         # finalOppAdvWeight=500,
         # boundaryCost=0.01,
         boundaryCost=0.0,
         boundaryThresholdFactor=2,
-        oppOutsideCost=0,
-        # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
         outsideCost=1e6,
-        collisionCost=1e6,
         winCost=100000,
         minConfidence=0.95,
     )
 
-    return config, mppiconfig, pid0, pid1, ["Afraid", "Bold"]
+    return config, initState, mppiconfig, [["Afraid", "Bold"]]
 
 
 def highInertiaEnv(
     afraid: bool = False, usePR: bool = False, useSplines: bool = False
-) -> tuple[GateEnvironmentConfig, ControllerConfig, list[PIDConfig], list[list[str]]]:
+) -> tuple[GateEnvironmentConfig, SimState, ControllerConfig, list[list[str]]]:
     nAgents = 2
     dim = 2
     nTrackSamples = 512
@@ -740,10 +606,13 @@ def highInertiaEnv(
         ]
     )
 
-    config.init_pos = np.array([config.trackPoints[int(s * config.nTrackSamples)] for s in startS]).flatten()
-    config.initS = np.repeat(startS, 2)
-    config.initnLaps = np.zeros(nAgents)
-    config.initGates = np.array([1, 1])
+    initState = SimState(
+        pos=np.array([config.trackPoints[int(s * config.nTrackSamples)] for s in startS]).flatten(),
+        vel=np.zeros(config.dim * config.nAgents),
+        S=np.repeat(startS, 2),
+        laps=np.zeros(nAgents),
+        gates=np.array([1, 1]),
+    )
 
     # if afraid:
     #     config.init_pos = np.array([10.0, 4.0, 0.1, 0.0])a
@@ -758,26 +627,18 @@ def highInertiaEnv(
             samplingNoise=0.1,
             # samplingNoise=0.5,
             gateTraversalMargin=0.9,  # restrict 5% on each side
-            collDistFactor=1.1,
+            collDistFactor=1.2,
             # collDistFactor=1.3,
             finalAdvWeight=500,
             # finalAdvWeight=0,
-            # finalSpeedWeight=50,
-            # oppDistWeight=0,
-            oppDistWeight=0,
-            oppDistThresholdFactor=3,
             finalOppAdvWeight=0,
             # finalOppAdvWeight=500,
             boundaryCost=0,
             # boundaryCost=0.0,
             boundaryThresholdFactor=1,
-            oppOutsideCost=0,
-            # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
             outsideCost=1e6,
-            collisionCost=1e6,
             winCost=1e6,
             minConfidence=0.95,
-            nKnots=5,
         )
 
     elif not usePR:
@@ -785,31 +646,25 @@ def highInertiaEnv(
             useSplines=True,
             nSamples=2**16,
             # nSamples=1,
-            nTimesteps=80,
-            inv_temperature=10,
-            samplingNoise=0.1,
+            nTimesteps=70,
+            inv_temperature=1,
+            samplingNoise=0.05,
             # samplingNoise=0.5,
             gateTraversalMargin=0.9,  # restrict 5% on each side
             collDistFactor=1.1,
-            # collDistFactor=1.3,
+            # collDistFactor=1.2,
             finalAdvWeight=500,
             # finalAdvWeight=0,
-            # finalSpeedWeight=50,
-            # oppDistWeight=0,
-            oppDistWeight=0,
-            oppDistThresholdFactor=3,
             finalOppAdvWeight=0,
             # finalOppAdvWeight=500,
-            boundaryCost=5,
-            # boundaryCost=0.0,
-            boundaryThresholdFactor=1.3,
-            oppOutsideCost=0,
-            # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
-            outsideCost=1e6,
-            collisionCost=1e6,
+            # boundaryCost=5,
+            # boundaryCost=10.0,
+            boundaryCost=10.0,
+            boundaryThresholdFactor=1.4,
+            outsideCost=1e7,
             winCost=1e6,
             minConfidence=0.95,
-            nKnots=30,
+            nKnots=20,
         )
 
     else:
@@ -825,22 +680,17 @@ def highInertiaEnv(
             # collDistFactor=1.3,
             finalAdvWeight=500,
             # finalAdvWeight=0,
-            # finalSpeedWeight=50,
-            # oppDistWeight=0,
-            oppDistWeight=0,
-            oppDistThresholdFactor=3,
             finalOppAdvWeight=0,
             # finalOppAdvWeight=500,
-            boundaryCost=0,
+            boundaryCost=10.0,
             # boundaryCost=0.0,
-            boundaryThresholdFactor=1,
-            oppOutsideCost=0,
+            boundaryThresholdFactor=1.4,
             # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
             safetyWeight=1e4,
             delta=0.1,
         )
 
-    return config, mppiconfig, [pid0, pid1], [["Top", "Bottom"]]
+    return config, initState, mppiconfig, [["Top", "Bottom"]]
 
 
 def mainGate():
@@ -851,23 +701,23 @@ def mainGate():
     # envConfig, mppiconfig, pids, oppNames = tinyGateEnv2Models(roundObs=True, usePR=False)
     # envConfig, mppiconfig, pid0, pid1, oppNames = activeEnv()  # pid0 = afraid; pid1 = bold
 
-    envConfig, mppiconfig, pids, oppNames = highInertiaEnv(usePR=True, useSplines=False)
+    envConfig, initState, mppiconfig, oppNames = highInertiaEnv(usePR=False, useSplines=True)
 
     envConfig.trueTheta = 1
     envConfig.iMppi = 1
 
     if isinstance(mppiconfig, MPPIConfig):
         mppiconfig.nVerifSamples = 2**17
-        mppiconfig.beta = 1e-6
+        mppiconfig.beta = 1e-5
         mppiconfig.verifHorizon = 60
-        mppiconfig.maxVerifEps = 0.0005
+        mppiconfig.maxVerifEps = 0.0001
         # mppiconfig.maxVerifEps = 10
 
     envConfig.sendStates = True
 
     z = ZMQRecv()
 
-    evt, res = z.runSim(envConfig, mppiconfig, render=envConfig.sendStates, oppNames=oppNames)
+    evt, res = z.runSim(envConfig, mppiconfig, initState, render=envConfig.sendStates, oppNames=oppNames)
 
     print(f"result: {evt.name} {res}")
 

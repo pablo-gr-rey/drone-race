@@ -17,53 +17,15 @@
 #define INLINE inline
 #endif
 
-constexpr bool USE_SPLINES = false;
+#define USE_ENV_DRONERACE
 
-// ── compile-time limits ──────────────────────────────────────────────
-constexpr int N_AGENTS = 2;
-constexpr int DIM = 2;
-constexpr int N_GATES = 2;
-constexpr int N_TRACK_SAMPLES = 512;
-constexpr int N_OBSTACLES = 0;
+constexpr bool USE_SPLINES = true;
 
 constexpr int MAX_N_KNOTS = 60;
-
-// 0/1 obstacle
-constexpr int N_ROUND_OBSTACLES = 0;
-// constexpr int N_ROUND_OBSTACLES = 1;
-constexpr int N_RACELINES = 2;
-constexpr int N_MODEL_FACTORS = 1;
-
-// 2 obstacles
-// constexpr int N_ROUND_OBSTACLES = 2;
-// constexpr int N_RACELINES = 4;
-// constexpr int N_MODEL_FACTORS = 2;
 
 constexpr float MIN_COEFF_THRESHOLD = 0.01f;        // minimum probability threshold for samples to contribute
 constexpr float DECAY = 0.95f;
 
-// CUDA does not like constexpr arrays, so we use constexpr inline functions
-
-HD INLINE constexpr int MODEL_SIZE(int /* k */)
-{
-    // for several models with different sizes, tests are fine: return (k == 0) ? 2 : 3 or a switch, but here we can just fold it
-    return 2;
-}
-
-HD INLINE constexpr int BRANCH_SIZE(int /* k */)
-{
-    // same comment as above
-    return 3;
-}
-
-constexpr int N_TRUE_MODELS = N_MODEL_FACTORS == 1 ? MODEL_SIZE(0) : MODEL_SIZE(0) * MODEL_SIZE(1);
-constexpr int N_BRANCH_PLANS = N_MODEL_FACTORS == 1 ? BRANCH_SIZE(0) : BRANCH_SIZE(0) * BRANCH_SIZE(1);
-constexpr int MAX_MODEL_SIZE = N_MODEL_FACTORS == 1 ? MODEL_SIZE(0) : (MODEL_SIZE(0) > MODEL_SIZE(1) ? MODEL_SIZE(0) : MODEL_SIZE(1));
-
-// if defined, fastProjectOnTrack will be compared to projectOnTrack. use this to test that the margin is correct when changing track (it will be much slower, though)
-// #define CHECK_PROJECTION
-
-// ── CUDA error helper ────────────────────────────────────────────────
 #ifdef DEBUG
 #define CUDA_CHECK(call)                                                   \
     do {                                                                   \
@@ -77,22 +39,48 @@ constexpr int MAX_MODEL_SIZE = N_MODEL_FACTORS == 1 ? MODEL_SIZE(0) : (MODEL_SIZ
 #define CUDA_CHECK(call) (call)
 #endif
 
+#include "environments/env_dronerace_defs.h"
+
+#ifdef USE_ENV_DRONERACE
+namespace Env = EnvDroneRace;
+#else
+#error "must define a valid environment!"
+#endif
+
+using EnvironmentConfig = Env::EnvironmentConfig;
+using SimState = Env::SimState;
+using ScratchEnvBuffer = Env::ScratchEnvBuffer;
+
+constexpr int ACTION_DIM = Env::ACTION_DIM;
+
+constexpr int N_MODEL_FACTORS = Env::N_MODEL_FACTORS;
+constexpr int N_TRUE_MODELS = Env::N_TRUE_MODELS;
+constexpr int N_BRANCH_PLANS = Env::N_BRANCH_PLANS;
+constexpr int MAX_MODEL_SIZE = Env::MAX_MODEL_SIZE;
+
+HD INLINE constexpr int MODEL_SIZE(int k)
+{
+    return Env::MODEL_SIZE(k);
+}
+
+HD INLINE constexpr int BRANCH_SIZE(int k)
+{
+    return Env::BRANCH_SIZE(k);
+}
+
 enum CONTROLLER_KIND : int32_t { CONT_MPPI, CONT_PRMPPI };
 
-// PID parameters (used for opponent modelling)
-struct PIDConfig
+enum TerminalType
 {
-    float kp = 10.0f;
-    float kd = 5.0f;
-
-    float repulsionFactor = 20.0f;
-    float repulsionPower = 2.0f;
-    float repulsionDistFact = 10.0f;
-
-    int racelineIndex = 0;
-
-    float actionNoise = 0.0f;
+    TERM_NONE = 0,
+    TERM_COLLISION,
+    TERM_EGO_OUTSIDE,
+    TERM_OPP_OUTSIDE,
+    TERM_WIN,
+    TERM_OPP_WIN
 };
+
+#include "environments/env_dronerace.h"
 
 // MPPI configuration
 struct MPPIConfig
@@ -113,14 +101,10 @@ struct MPPIConfig
     float collDistFactor = 1.0f;
 
     // running costs
-    float oppDistWeight = 1.0f;
-    float oppDistPower = 2.0f;
-    float oppDistThresholdFactor = 3.0f;
     float boundaryCost = 10.0f;
     float boundaryThresholdFactor = 1.5f;
+
     float outsideCost = 1000.0f;
-    float oppOutsideCost = 100.0f;
-    float collisionCost = 10000.0f;
     float winCost = 1000.0f;
 
     // terminal costs
@@ -153,12 +137,9 @@ struct PRMPPIConfig
     float collDistFactor = 1.0f;
 
     // running costs
-    float oppDistWeight = 1.0f;
-    float oppDistPower = 2.0f;
-    float oppDistThresholdFactor = 3.0f;
     float boundaryCost = 10.0f;
     float boundaryThresholdFactor = 1.5f;
-    float oppOutsideCost = 100.0f;
+
     float winCost = 1000.0f;
 
     // terminal costs
@@ -179,54 +160,3 @@ struct PRMPPIConfig
 using AnyControllerConfig = std::variant<MPPIConfig, PRMPPIConfig>;
 
 AnyControllerConfig loadControllerConfig(const void* buf, size_t len);
-
-// Environment configuration
-// this should have the same layout as GateEnvironmentConfig in the Python side
-struct EnvironmentConfig
-{
-    float dt;
-
-    bool sendStates;
-
-    float initPos[N_AGENTS * DIM];
-    float initSpeed[N_AGENTS * DIM];
-    float initS[N_AGENTS * N_RACELINES];    // (nAgents * nRacelines). if == -1.0f, will not be updated (since it is only useful for PIDs)
-    int initLaps[N_AGENTS];
-    int initGates[N_AGENTS];
-
-    float minDist;
-    float posNoiseLevel;
-    float speedNoiseLevel;
-    float actionNoiseLevel;
-
-    float maxSpeed[N_AGENTS];
-    float maxAccel[N_AGENTS];
-
-    // track
-    int nWinLaps;
-    float targetDistance;
-
-    float gateCenters[N_GATES * DIM]; // (nGates * dim)
-    float gateVectors[N_GATES * DIM]; // (nGates * dim)
-    float gateRadius[N_GATES];  // (nGates)
-
-    float arenaMin[DIM];    // (dim)
-    float arenaMax[DIM];    // (dim)
-
-    float obstacles[N_OBSTACLES * DIM * 2];   // (nObstacles * dim * 2): rectangle obstacles, i.e. [xmin, ymin, xmax, ymax]
-    float roundObsCenters[N_ROUND_OBSTACLES * DIM];     // (nRoundObstacles * dim): center of obstacles
-    float roundObsRadius[N_ROUND_OBSTACLES];        // (nRoundObstacles): radius of obstacles
-
-    float* trackPoints = nullptr; // (nTrackSamples * nRacelines, dim)  // this pointer is different on host & device!
-
-    float initBelief[N_TRUE_MODELS];
-
-    PIDConfig oppPid[N_TRUE_MODELS];
-    int iMppi;
-    int trueTheta;
-
-    EnvironmentConfig()
-    {}
-
-    int unpackHeader(const void* buf, size_t len);   // returns (seed, trackPoints)
-};

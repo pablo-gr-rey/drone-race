@@ -28,6 +28,7 @@ add_executable(drone_race
     src/kernels.cu
     src/prmppi_kernels.cu
     src/protocol.cpp
+    src/environments/env_dronerace.cpp
 )
 
 target_compile_options(drone_race PRIVATE 

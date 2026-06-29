@@ -16,8 +16,8 @@ __global__ void PRMPPIgenerateNoiseKernel(float* noise, curandState* rng,
 
     curandState local = rng[s];
     for (int t = 0; t < T; t++)
-        for (int d = 0; d < DIM; d++)
-            noise[(t * N + s) * DIM + d] = curand_normal(&local) * stddev;
+        for (int d = 0; d < ACTION_DIM; d++)
+            noise[(t * N + s) * ACTION_DIM + d] = curand_normal(&local) * stddev;
 
     rng[s] = local;
 }
@@ -90,9 +90,11 @@ __global__ void PRMPPIfullRolloutKernel(
     SimState state = initState;
     BranchState branchState;
 
-    float actions[N_AGENTS * DIM];
-    float nomPidAction[N_TRUE_MODELS * DIM];
-    float egoAction[DIM];
+    // float actions[N_AGENTS * ACTION_DIM];
+    // float nomPidAction[N_TRUE_MODELS * ACTION_DIM];
+    ScratchEnvBuffer buffer;
+
+    float egoAction[ACTION_DIM];
 
     curandState rng = rngStates[idx];
     DeviceRNG drng{ &rng };
@@ -109,14 +111,13 @@ __global__ void PRMPPIfullRolloutKernel(
 
     for (int t = 0; t < T && !stop; t++)
     {
-        for (int d = 0; d < DIM; d++)
-            egoAction[d] = nominal[t * DIM + d] + noise[(t * N + s) * DIM + d];
+        for (int d = 0; d < ACTION_DIM; d++)
+            egoAction[d] = nominal[t * ACTION_DIM + d] + noise[(t * N + s) * ACTION_DIM + d];
 
         bool branched = false;
 
         TerminalType term = environmentStep<false, false>(
             t,
-            agent,
             theta,
             envConfig,
             egoAction,
@@ -125,21 +126,20 @@ __global__ void PRMPPIfullRolloutKernel(
             branchState,
             branched,
             0.0f,
-            actions,
-            nomPidAction,
+            buffer,
             drng,
             agent,
             mppiConfig.gateTraversalMargin);
 
         stop = (term != TERM_NONE);
 
-        runningCost += decay * PRMPPIstateCost(agent, state, t, envConfig, mppiConfig);
-        safeCost = fmaxf(safeCost, PRMPPIsafetyCost(agent, state, t, envConfig, mppiConfig));
+        runningCost += decay * PRMPPIstateCost(state, t, envConfig, mppiConfig);
+        safeCost = fmaxf(safeCost, PRMPPIsafetyCost(state, t, envConfig, mppiConfig));
 
         decay *= DECAY;
     }
 
-    runningCost += PRMPPIfinalCost(agent, state, envConfig, mppiConfig);
+    runningCost += PRMPPIfinalCost(state, envConfig, mppiConfig);
 
     float* out = robust ? cost_rob : cost_nom;
 
@@ -222,7 +222,7 @@ __global__ void PRMPPIcomputeMinCostsKernel(
         minCosts[which] = s[0];
 }
 
-// Compute weights, and update nominals (nom_nominal + cost_nom[0, s, 0] with minCosts[0] -> cand1; rob_nominal + cost_rob[0, s, 0] with mincosts[1] -> cand2; rob_nominal + cost_rob[0, s, 1] with mincosts[2] -> new_rob_nominal), 3*T*DIM blocks. also writes into nu. 2*blk*sizeof(float) shared memory
+// Compute weights, and update nominals (nom_nominal + cost_nom[0, s, 0] with minCosts[0] -> cand1; rob_nominal + cost_rob[0, s, 0] with mincosts[1] -> cand2; rob_nominal + cost_rob[0, s, 1] with mincosts[2] -> new_rob_nominal), 3*T*ACTION_DIM blocks. also writes into nu. 2*blk*sizeof(float) shared memory
 __global__ void PRMPPIWeightedAverageKernel(
     const float* __restrict__ nom_nominal,    // (T, dim)
     const float* __restrict__ rob_nominal,    // (T, dim)
@@ -232,7 +232,7 @@ __global__ void PRMPPIWeightedAverageKernel(
     const float* __restrict__ minCosts,   // 3
     float* __restrict__ cand1_nominal,    // (T, dim)
     float* __restrict__ cand2_nominal,    // (T, dim)
-    float* __restrict__ new_rob_nominal,        // (T, DIM)
+    float* __restrict__ new_rob_nominal,        // (T, ACTION_DIM)
     int N,
     int T,
     float invTempNomFull,
@@ -248,10 +248,10 @@ __global__ void PRMPPIWeightedAverageKernel(
 
     const int tid = threadIdx.x;
 
-    const int which = blockIdx.x / (T * DIM);      // 0,1,2
-    const int rem = blockIdx.x % (T * DIM);
-    const int t = rem / DIM;
-    const int d = rem % DIM;
+    const int which = blockIdx.x / (T * ACTION_DIM);      // 0,1,2
+    const int rem = blockIdx.x % (T * ACTION_DIM);
+    const int t = rem / ACTION_DIM;
+    const int d = rem % ACTION_DIM;
 
     const float* nominal = (which == 0) ? nom_nominal : rob_nominal;
     const float* cost_arr = which == 0 ? cost_nom : (which == 1 ? cost_rob : cost_rob + 1);
@@ -271,7 +271,7 @@ __global__ void PRMPPIWeightedAverageKernel(
 
         // float w = __expf(-invTemp * (cost - minCost));
         float w = expf(-(cost - minCost) / invTemp);
-        float u = nominal[t * DIM + d] + noise[(t * N + i) * DIM + d];
+        float u = nominal[t * ACTION_DIM + d] + noise[(t * N + i) * ACTION_DIM + d];
 
         num += w * u;
         den += w;
@@ -299,9 +299,9 @@ __global__ void PRMPPIWeightedAverageKernel(
         if (s_den[0] > 1e-30f)
             value = s_num[0] / s_den[0];
         else
-            value = nominal[t * DIM + d];
+            value = nominal[t * ACTION_DIM + d];
 
-        cand_nominal[t * DIM + d] = value;
+        cand_nominal[t * ACTION_DIM + d] = value;
 
         if (t == 0 && d == 0)
             nu[which] = s_den[0];
@@ -335,9 +335,10 @@ __global__ void PRMPPIcomputeCandidateCostKernel(
     SimState state = initState;
     BranchState branchState;
 
-    float actions[N_AGENTS * DIM];
-    float nomPidAction[N_TRUE_MODELS * DIM];
-    float egoAction[DIM];
+    // float actions[N_AGENTS * ACTION_DIM];
+    // float nomPidAction[N_TRUE_MODELS * ACTION_DIM];
+    ScratchEnvBuffer buffer;
+    float egoAction[ACTION_DIM];
 
     curandState rng = rngStates[tid];
     DeviceRNG drng{ &rng };
@@ -350,14 +351,13 @@ __global__ void PRMPPIcomputeCandidateCostKernel(
 
     for (int t = 0; t < mppiConfig.nTimesteps && !stop; ++t)
     {
-        for (int d = 0; d < DIM; ++d)
-            egoAction[d] = nominal[t * DIM + d];
+        for (int d = 0; d < ACTION_DIM; ++d)
+            egoAction[d] = nominal[t * ACTION_DIM + d];
 
         bool branched = false;
 
         TerminalType term = environmentStep<false, false>(
             t,
-            agent,
             thetas[p],
             envConfig,
             egoAction,
@@ -366,22 +366,21 @@ __global__ void PRMPPIcomputeCandidateCostKernel(
             branchState,
             branched,
             0.0f,
-            actions,
-            nomPidAction,
+            buffer,
             drng,
             agent,
             mppiConfig.gateTraversalMargin);
 
         stop = (term != TERM_NONE);
 
-        cost += decay * PRMPPIstateCost(agent, state, t, envConfig, mppiConfig);
+        cost += decay * PRMPPIstateCost(state, t, envConfig, mppiConfig);
 
         decay *= DECAY;
 
-        safeCost = fmaxf(safeCost, PRMPPIsafetyCost(agent, state, t, envConfig, mppiConfig));
+        safeCost = fmaxf(safeCost, PRMPPIsafetyCost(state, t, envConfig, mppiConfig));
     }
 
-    cost += PRMPPIfinalCost(agent, state, envConfig, mppiConfig);
+    cost += PRMPPIfinalCost(state, envConfig, mppiConfig);
     if (safeCost > 0.0f)
         cost += mppiConfig.safetyWeight;
 
@@ -411,9 +410,8 @@ __global__ void PRMPPIcomputeSafeCostKernel(
     SimState state = initState;
     BranchState branchState;
 
-    float actions[N_AGENTS * DIM];
-    float nomPidAction[N_TRUE_MODELS * DIM];
-    float egoAction[DIM];
+    float egoAction[ACTION_DIM];
+    ScratchEnvBuffer buffer;
 
     curandState rng = rngStates[p];
     DeviceRNG drng{ &rng };
@@ -423,14 +421,13 @@ __global__ void PRMPPIcomputeSafeCostKernel(
 
     for (int t = 0; t < mppiConfig.nTimesteps && !stop; ++t)
     {
-        for (int d = 0; d < DIM; ++d)
-            egoAction[d] = nom_nominal[t * DIM + d];
+        for (int d = 0; d < ACTION_DIM; ++d)
+            egoAction[d] = nom_nominal[t * ACTION_DIM + d];
 
         bool branched = false;
 
         TerminalType term = environmentStep<false, false>(
             t,
-            agent,
             thetas[p],
             envConfig,
             egoAction,
@@ -439,13 +436,12 @@ __global__ void PRMPPIcomputeSafeCostKernel(
             branchState,
             branched,
             0.0f,
-            actions,
-            nomPidAction,
+            buffer,
             drng,
             agent,
             mppiConfig.gateTraversalMargin);
 
-        safeCost = fmaxf(safeCost, PRMPPIsafetyCost(agent, state, t, envConfig, mppiConfig));
+        safeCost = fmaxf(safeCost, PRMPPIsafetyCost(state, t, envConfig, mppiConfig));
 
         stop = (term != TERM_NONE);
     }

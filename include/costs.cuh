@@ -5,72 +5,33 @@
 #include <cmath>
 
 // Running cost
-__device__ INLINE float stateCost(int agent, const SimState& state, int timestep, const EnvironmentConfig& envConfig, const MPPIConfig& mppiConfig)
+HD INLINE float stateCost(const SimState& state, int /* timestep */, const EnvironmentConfig& envConfig, const MPPIConfig& mppiConfig)
 {
     float cost = 0.0f;
-    const float* curPos = state.pos + agent * DIM;
 
-    for (int other = 0; other < N_AGENTS; other++)
-    {
-        if (other == agent)
-        {
-            // own boundary
-            if (mppiConfig.boundaryCost != 0.0f)
-            {
-                float bd = trackBoundaryDist(envConfig, curPos);
+    float bd = Env::trackBoundaryDist(state, envConfig);
 
-                float danger = mppiConfig.boundaryThresholdFactor * envConfig.minDist;
-                if (bd < danger)
-                    // cost += mppiConfig.boundaryCost * (danger - bd) / danger;
-                    cost += mppiConfig.boundaryCost / powf(bd / envConfig.minDist, 2.0f);
-            }
+    float danger = mppiConfig.boundaryThresholdFactor * envConfig.minDist * 0.5f;
+    if (bd < danger)
+        cost += mppiConfig.boundaryCost * powf(bd * 2.0f / envConfig.minDist, 2.0f);
 
-            // for own agent, add a margin to keep it further off the boundary (since otherwise noise can push it a bit)
-            if (isOutside(envConfig, curPos, envConfig.minDist * mppiConfig.collDistFactor / 2.0f))
-                cost += mppiConfig.outsideCost;
-        }
-        else
-        {
-            float dist = agentDist(state.pos, agent, other);
-            if (dist < mppiConfig.oppDistThresholdFactor * envConfig.minDist)
-                cost += mppiConfig.oppDistWeight / powf(dist / envConfig.minDist, mppiConfig.oppDistPower);
-
-            if (dist < envConfig.minDist * mppiConfig.collDistFactor)
-                cost += mppiConfig.collisionCost;
-
-            // opponent outside: bonus for us
-            // float oBd = trackBoundaryDist(envConfig.arenaMin, envConfig.arenaMax, oPos);
-            // if (oBd < 0.0f)
-            if (mppiConfig.oppOutsideCost != 0.0f && isOutside(envConfig, state.pos + other * DIM, envConfig.minDist / 2.0f))
-                cost -= mppiConfig.oppOutsideCost;
-        }
-    }
+    if (bd < envConfig.minDist * mppiConfig.collDistFactor * 0.5f)
+        cost += mppiConfig.outsideCost;
 
     // winner check
-    if (state.laps[agent] >= (float) envConfig.nWinLaps)
+    if (Env::isWinner(state, envConfig))
         cost -= mppiConfig.winCost;
 
     return cost;
 }
 
 // Terminal cost
-__device__ INLINE float finalCost(int agent, const SimState& state, const EnvironmentConfig& envConfig, const MPPIConfig& mppiConfig)
+HD INLINE float finalCost(const SimState& state, const EnvironmentConfig& envConfig, const MPPIConfig& mppiConfig)
 {
-    float cost = 0.0f;
-    float maxOppAdv = -1e30f;
+    float cost = -mppiConfig.finalAdvWeight * Env::getAdvance(state, envConfig);
 
-    for (int a = 0; a < N_AGENTS; a++)
-    {
-        float advance = getAdvance(state.laps, state.gates, a, state.pos + a * DIM, envConfig.gateCenters);
-
-        if (a == agent)
-            cost -= mppiConfig.finalAdvWeight * advance;
-        else if (advance > maxOppAdv)
-            maxOppAdv = advance;
-    }
-
-    if (N_AGENTS > 1)
-        cost += mppiConfig.finalOppAdvWeight * maxOppAdv;
+    if (mppiConfig.finalOppAdvWeight != 0.0f)
+        cost += mppiConfig.finalOppAdvWeight * Env::getOppAdvance(state, envConfig);
 
     return cost;
 }
@@ -78,78 +39,36 @@ __device__ INLINE float finalCost(int agent, const SimState& state, const Enviro
 // for PRMPPI
 
 // Running cost
-__device__ INLINE float PRMPPIstateCost(int agent, const SimState& state, int timestep, const EnvironmentConfig& envConfig, const PRMPPIConfig& mppiConfig)
+HD INLINE float PRMPPIstateCost(const SimState& state, int /* timestep */, const EnvironmentConfig& envConfig, const PRMPPIConfig& mppiConfig)
 {
     float cost = 0.0f;
-    const float* curPos = state.pos + agent * DIM;
 
-    for (int other = 0; other < N_AGENTS; other++)
-    {
-        if (other == agent)
-        {
-            if (mppiConfig.boundaryCost != 0.0f)
-            {
-                float bd = trackBoundaryDist(envConfig, curPos);
+    float bd = Env::trackBoundaryDist(state, envConfig);
 
-                float danger = mppiConfig.boundaryThresholdFactor * envConfig.minDist;
-                if (bd < danger)
-                    cost += mppiConfig.boundaryCost / powf(bd / envConfig.minDist, 2.0f);
-            }
-        }
-        else
-        {
-            float dist = agentDist(state.pos, agent, other);
-            if (dist < mppiConfig.oppDistThresholdFactor * envConfig.minDist)
-                cost += mppiConfig.oppDistWeight / powf(dist / envConfig.minDist, mppiConfig.oppDistPower);
-
-            // opponent outside: bonus for us
-            if (mppiConfig.oppOutsideCost != 0.0f && isOutside(envConfig, state.pos + other * DIM, envConfig.minDist / 2.0f))
-                cost -= mppiConfig.oppOutsideCost;
-        }
-    }
+    float danger = mppiConfig.boundaryThresholdFactor * envConfig.minDist * 0.5f;
+    if (bd < danger)
+        cost += mppiConfig.boundaryCost * powf(bd * 2.0f / envConfig.minDist, 2.0f);
 
     // winner check
-    if (state.laps[agent] >= (float) envConfig.nWinLaps)
+    if (Env::isWinner(state, envConfig))
         cost -= mppiConfig.winCost;
 
     return cost;
 }
 
 // Terminal cost
-__device__ INLINE float PRMPPIfinalCost(int agent, const SimState& state, const EnvironmentConfig& envConfig, const PRMPPIConfig& mppiConfig)
+HD INLINE float PRMPPIfinalCost(const SimState& state, const EnvironmentConfig& envConfig, const PRMPPIConfig& mppiConfig)
 {
-    float cost = 0.0f;
-    float maxOppAdv = -1e30f;
+    float cost = -mppiConfig.finalAdvWeight * Env::getAdvance(state, envConfig);
 
-    for (int a = 0; a < N_AGENTS; a++)
-    {
-        float advance = getAdvance(state.laps, state.gates, a, state.pos + a * DIM, envConfig.gateCenters);
-
-        if (a == agent)
-            cost -= mppiConfig.finalAdvWeight * advance;
-        else if (advance > maxOppAdv)
-            maxOppAdv = advance;
-    }
-
-    if (N_AGENTS > 1)
-        cost += mppiConfig.finalOppAdvWeight * maxOppAdv;
+    if (mppiConfig.finalOppAdvWeight != 0.0f)
+        cost += mppiConfig.finalOppAdvWeight * Env::getOppAdvance(state, envConfig);
 
     return cost;
 }
 
 // Safety cost, < 0 iff state is safe (negative of min of distance to nearest obstacles and to other agents, if any, minus minSafeDist)
-__device__ INLINE float PRMPPIsafetyCost(int agent, const SimState& state, int timestep, const EnvironmentConfig& envConfig, const PRMPPIConfig& mppiConfig)
+HD INLINE float PRMPPIsafetyCost(const SimState& state, int /* timestep */, const EnvironmentConfig& envConfig, const PRMPPIConfig& mppiConfig)
 {
-    float minDist = trackBoundaryDist(envConfig, state.pos + agent * DIM);
-
-    if (N_AGENTS > 1)
-        for (int other = 0; other < N_AGENTS; other++)
-            if (other != agent)
-            {
-                float dist = agentDist(state.pos, agent, other) - envConfig.minDist * 0.5f;
-                if (dist < minDist)
-                    minDist = dist;
-            }
-
-    return envConfig.minDist * mppiConfig.collDistFactor * 0.5f + mppiConfig.minSafeDist - minDist;
+    return envConfig.minDist * mppiConfig.collDistFactor * 0.5f - Env::trackBoundaryDist(state, envConfig);
 }

@@ -26,8 +26,8 @@ __global__ void generateNoiseKernel(float* noise, curandState* rng,
     curandState local = rng[s];
     for (int theta = 0; theta < N_BRANCH_PLANS; theta++)      // generate for nominal + 1 for each model
         for (int t = 0; t < M; t++)
-            for (int d = 0; d < DIM; d++)
-                noise[((theta * M + t) * N + s) * DIM + d] = curand_normal(&local) * stddev;
+            for (int d = 0; d < ACTION_DIM; d++)
+                noise[((theta * M + t) * N + s) * ACTION_DIM + d] = curand_normal(&local) * stddev;
 
     rng[s] = local;
 }
@@ -56,9 +56,8 @@ __global__ void fullRolloutKernel(
     SimState state;
     BranchState branchState;
 
-    float actions[N_AGENTS * DIM];
-    float nomPidAction[N_TRUE_MODELS * DIM];
-    float egoAction[DIM];
+    float egoAction[ACTION_DIM];
+    ScratchEnvBuffer buffer;
 
     curandState rng = rngStates[s];
     DeviceRNG drng{ &rng };
@@ -113,13 +112,13 @@ __global__ void fullRolloutKernel(
             if (USE_SPLINES)
             {
                 const float* B_row = B + local_time * mc.nKnots;
-                for (int d = 0; d < DIM; d++)
+                for (int d = 0; d < ACTION_DIM; d++)
                 {
                     float sum = 0.0f;
                     for (int m = 0; m < mc.nKnots; m++)
                     {
-                        float nom = nominal[(flatBranch * mc.nKnots + m) * DIM + d];
-                        float noisef = noise[((flatBranch * mc.nKnots + m) * mc.nSamples + s) * DIM + d];
+                        float nom = nominal[(flatBranch * mc.nKnots + m) * ACTION_DIM + d];
+                        float noisef = noise[((flatBranch * mc.nKnots + m) * mc.nSamples + s) * ACTION_DIM + d];
                         sum += B_row[m] * (nom + noisef);
                     }
 
@@ -127,12 +126,12 @@ __global__ void fullRolloutKernel(
                 }
             }
             else
-                for (int d = 0; d < DIM; d++)
+                for (int d = 0; d < ACTION_DIM; d++)
                 {
-                    // float nom = nominal[((branchState.predTheta + 1) * mc.nTimesteps + t - branchState.branchingTime) * DIM + d];
-                    // float noisef = noise[(((branchState.predTheta + 1) * mc.nTimesteps + t - branchState.branchingTime) * mc.nSamples + s) * DIM + d];
-                    float nom = nominal[(flatBranch * mc.nTimesteps + local_time) * DIM + d];
-                    float noisef = noise[((flatBranch * mc.nTimesteps + local_time) * mc.nSamples + s) * DIM + d];
+                    // float nom = nominal[((branchState.predTheta + 1) * mc.nTimesteps + t - branchState.branchingTime) * ACTION_DIM + d];
+                    // float noisef = noise[(((branchState.predTheta + 1) * mc.nTimesteps + t - branchState.branchingTime) * mc.nSamples + s) * ACTION_DIM + d];
+                    float nom = nominal[(flatBranch * mc.nTimesteps + local_time) * ACTION_DIM + d];
+                    float noisef = noise[((flatBranch * mc.nTimesteps + local_time) * mc.nSamples + s) * ACTION_DIM + d];
                     egoAction[d] = nom + noisef;
                 }
 
@@ -140,7 +139,6 @@ __global__ void fullRolloutKernel(
 
             TerminalType term = environmentStep<true, true>(
                 t,
-                controlAgent,
                 trueThetaFlat,
                 envConfig,
                 egoAction,
@@ -149,8 +147,7 @@ __global__ void fullRolloutKernel(
                 branchState,
                 branched,
                 mc.minConfidence,
-                actions,
-                nomPidAction,
+                buffer,
                 drng,
                 controlAgent,
                 mc.gateTraversalMargin);
@@ -160,12 +157,12 @@ __global__ void fullRolloutKernel(
 
             stop = (term != TERM_NONE);
 
-            cost += stateCost(controlAgent, state, t, envConfig, mc) * decay;
+            cost += stateCost(state, t, envConfig, mc) * decay;
             decay *= DECAY;
         }
 
         // Terminal cost
-        cost += finalCost(controlAgent, state, envConfig, mc);
+        cost += finalCost(state, envConfig, mc);
 
         // actual cost is dependent on the probability that the opponent is actually following trueTheta, ie. initBelief[theta], unless we are already committed
 
@@ -328,11 +325,11 @@ __global__ void weightedAverageKernelUnified(
     int M = mppiConfig.nKnots;
 
     int btd = blockIdx.x;
-    if (btd >= N_BRANCH_PLANS * (USE_SPLINES ? M : T) * DIM)
+    if (btd >= N_BRANCH_PLANS * (USE_SPLINES ? M : T) * ACTION_DIM)
         return;
 
-    int d = btd % DIM;
-    btd /= DIM;
+    int d = btd % ACTION_DIM;
+    btd /= ACTION_DIM;
     int tLocal = btd % (USE_SPLINES ? M : T);
     int branchPlan = btd / (USE_SPLINES ? M : T);
 
@@ -384,7 +381,7 @@ __global__ void weightedAverageKernelUnified(
             {
                 float cost = costs[branchPlan * N + s];
                 float w = expf(-(cost - minC) / mppiConfig.invTemperature);
-                float eps = noise[((branchPlan * (USE_SPLINES ? M : T) + tLocal) * N + s) * DIM + d];
+                float eps = noise[((branchPlan * (USE_SPLINES ? M : T) + tLocal) * N + s) * ACTION_DIM + d];
 
                 num += w * coeff * eps;
                 den += w * coeff;
@@ -409,7 +406,7 @@ __global__ void weightedAverageKernelUnified(
     if (threadIdx.x == 0)
     {
         if (s_den[0] > 1e-30f)
-            nominal[(branchPlan * (USE_SPLINES ? M : T) + tLocal) * DIM + d] += s_num[0] / s_den[0];
+            nominal[(branchPlan * (USE_SPLINES ? M : T) + tLocal) * ACTION_DIM + d] += s_num[0] / s_den[0];
 
         if (tLocal == 0 && d == 0)
             nu[branchPlan] = s_den[0];
@@ -426,20 +423,20 @@ __global__ void interpolateSplineKernel(
 )
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int nVecs = N_BRANCH_PLANS * T * DIM;
+    int nVecs = N_BRANCH_PLANS * T * ACTION_DIM;
     if (idx >= nVecs)
         return;
 
-    int dim = idx % DIM;
-    idx /= DIM;
+    int dim = idx % ACTION_DIM;
+    idx /= ACTION_DIM;
     int t = idx % T;
     int branch = idx / T;
 
     float sum = 0.0f;
     for (int m = 0; m < M; m++)
-        sum += B[t * M + m] * splineNominal[(branch * M + m) * DIM + dim];
+        sum += B[t * M + m] * splineNominal[(branch * M + m) * ACTION_DIM + dim];
 
-    nominal[(branch * T + t) * DIM + dim] = sum;
+    nominal[(branch * T + t) * ACTION_DIM + dim] = sum;
 }
 
 
@@ -455,8 +452,8 @@ __global__ void clampNominalKernel(
         return;
 
     float sqNorm = 0.0f;
-    int base = idx * DIM;
-    for (int d = 0; d < DIM; ++d)
+    int base = idx * ACTION_DIM;
+    for (int d = 0; d < ACTION_DIM; ++d)
     {
         float v = nominal[base + d];
         sqNorm += v * v;
@@ -466,7 +463,7 @@ __global__ void clampNominalKernel(
     if (sqNorm > maxSq)
     {
         float scale = maxAccel / sqrtf(sqNorm);
-        for (int d = 0; d < DIM; ++d)
+        for (int d = 0; d < ACTION_DIM; ++d)
             nominal[base + d] *= scale;
     }
 }
@@ -483,12 +480,12 @@ __global__ void shiftSplineKernel(
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     int M = mppiConfig.nKnots;
-    int nVecs = M * DIM;
+    int nVecs = M * ACTION_DIM;
     if (idx >= nVecs)
         return;
 
-    int dim = idx % DIM;
-    int newm = idx / DIM;
+    int dim = idx % ACTION_DIM;
+    int newm = idx / ACTION_DIM;
 
     float sum = 0.0f;
 
@@ -497,9 +494,9 @@ __global__ void shiftSplineKernel(
         tEval = mppiConfig.nTimesteps - 1;
 
     for (int m = 0; m < M; m++)
-        sum += B[tEval * M + m] * splineNominal[(branchIdx * M + m) * DIM + dim];
+        sum += B[tEval * M + m] * splineNominal[(branchIdx * M + m) * ACTION_DIM + dim];
 
-    newSplineNominal[(branchIdx * M + newm) * DIM + dim] = sum;
+    newSplineNominal[(branchIdx * M + newm) * ACTION_DIM + dim] = sum;
 }
 
 __global__ void verifyNominalFailureKernel(
@@ -526,9 +523,8 @@ __global__ void verifyNominalFailureKernel(
     BranchState branchState;
     initBranchState(branchState, initBelief, mc.minConfidence);
 
-    float actions[N_AGENTS * DIM];
-    float nomPidAction[N_TRUE_MODELS * DIM];
-    float egoAction[DIM];
+    ScratchEnvBuffer buffer;
+    float egoAction[ACTION_DIM];
     DeviceRNG drng{ &rng };
 
     // Sample actual opponent model according to initial belief
@@ -544,14 +540,13 @@ __global__ void verifyNominalFailureKernel(
         int local_time = t - tOrigin;
         int flatBranch = flattenBranchIndex(branchState.predTheta);
 
-        for (int d = 0; d < DIM; d++)
-            egoAction[d] = nominal[(flatBranch * mc.nTimesteps + local_time) * DIM + d];
+        for (int d = 0; d < ACTION_DIM; d++)
+            egoAction[d] = nominal[(flatBranch * mc.nTimesteps + local_time) * ACTION_DIM + d];
 
         bool branched = false;
 
         TerminalType term = environmentStep<true, true>(
             t,
-            controlAgent,
             theta,
             envConfig,
             egoAction,
@@ -560,8 +555,7 @@ __global__ void verifyNominalFailureKernel(
             branchState,
             branched,
             mc.minConfidence,
-            actions,
-            nomPidAction,
+            buffer,
             drng);
 
         if (branched)

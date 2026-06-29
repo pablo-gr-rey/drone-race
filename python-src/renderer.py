@@ -38,7 +38,7 @@ class ControllerRenderer[ConfigType](ABC):
         ax: plt.Axes,  # type: ignore
         fig: plt.Figure,  # type: ignore
         gs: plt.SubplotSpec,  # type: ignore
-        axis: tuple[int, ...] = (0, 1),
+        axis: tuple[int, ...],
     ):
         self.config = contConfig
         self.envConfig = envConfig
@@ -277,7 +277,7 @@ class MPPIRenderer(ControllerRenderer[MPPIConfig]):
         for theta, (lTrajs, pred) in enumerate(zip(self.lcs_pred, mppiState.preds)):
             thetaTuple = self.envConfig.unflattenTheta(theta)
 
-            curPos = state.pos.reshape((self.envConfig.nAgents, self.envConfig.dim))
+            curPos = state.state.pos.reshape((self.envConfig.nAgents, self.envConfig.dim))
             fullPos = pred.fullPos.reshape((self.config.nTimesteps, self.envConfig.nAgents, self.envConfig.dim))
 
             fullPos = np.concat([[curPos], fullPos])
@@ -732,22 +732,6 @@ class EnvironmentRenderer:
 
         self.zoom_radius = 6
 
-        # action plots
-        self.actions_plot: list[tuple[Line2D, Line2D]] = []  # plot & vline
-        for dim in range(self.envConfig.dim):
-            self.actions_plot.append(
-                (
-                    self.axs_action_plot[dim].plot(
-                        [], [], color="red", label=f"{contNames[envConfig.iMppi]} ({envConfig.iMppi + 1})"
-                    )[0],
-                    self.axs_action_plot[dim].axvline(x=0, color="green", linestyle="--", linewidth=1, alpha=0.5),
-                )
-            )
-
-            self.axs_action_plot[dim].set_xlabel("Time")
-            self.axs_action_plot[dim].set_ylabel("Action on " + ["x", "y"][dim])
-            self.axs_action_plot[dim].axhline(0, color="black", linewidth=1, linestyle="--", alpha=0.5)
-
         # status text
         self.status_text = self.ax_status.text(
             0.5, 1.0, "Running...", fontsize=14, ha="center", va="top", transform=self.ax_status.transAxes
@@ -819,6 +803,33 @@ class EnvironmentRenderer:
         self.zoom_agent_label = ax_zoom_label.text(
             0.5, 0.5, f"Focus: {self.zoomAgent + 1}", ha="center", va="center", fontsize=10
         )
+
+        # action plots
+        if self.envConfig.dim > 4:
+            raise ValueError("Must provide dimension names for dim > 4")
+        dim_names = ["x", "y", "z", "w"][: self.envConfig.dim]
+
+        self.actions_plot: list[tuple[Line2D, Line2D, Line2D]] = []  # plot, plot_dashed (for non-) & vline
+        for dim, ax_action in enumerate(self.axs_action_plot):
+            self.actions_plot.append(
+                (
+                    ax_action.plot([], [], color="red", linewidth=2)[0],
+                    ax_action.plot([], [], color="orange", linewidth=1, alpha=0.5, zorder=1)[0],
+                    ax_action.axvline(x=0, color="green", linewidth=1, alpha=0.5, zorder=1),
+                )
+            )
+
+            ax_action.set_xlabel("Time")
+            ax_action.set_ylabel("Action on " + dim_names[dim])
+
+            maxAccel = self.envConfig.maxAccel[self.envConfig.iMppi]
+            ax_action.axhline(0, color="black", linewidth=1, linestyle="--", alpha=0.3, zorder=0)
+            ax_action.axhline(maxAccel, color="blue", linestyle="--", alpha=0.3, zorder=0)
+            ax_action.axhline(-maxAccel, color="blue", linestyle="--", alpha=0.3, zorder=0)
+
+            ax_action.autoscale(False)
+            ax_action.set_xlim(0, 5)
+            ax_action.set_ylim(-maxAccel * 1.1, maxAccel * 1.1)
 
         # internal state
         self.playing = False
@@ -896,7 +907,7 @@ class EnvironmentRenderer:
         if len(self.stateLog) == 0:
             return 0.0, 0.0
         idx = min(frame_index, len(self.stateLog) - 1)
-        s = self.stateLog[idx].pos
+        s = self.stateLog[idx].state.pos
         return (
             float(s[self.coordIndex(agent, self.axis[0])]),
             float(s[self.coordIndex(agent, self.axis[1])]),
@@ -928,16 +939,6 @@ class EnvironmentRenderer:
             pt.set_data([px], [py])
             self.circles[idx].center = (px, py)
 
-        # update action plots
-        for dim, ((plot, vline), ax) in enumerate(zip(self.actions_plot, self.axs_action_plot)):
-            vline.set_xdata([i, i])
-            if len(plot.get_xdata()) != len(self.stateLog):  # type: ignore
-                plot.set_xdata(np.arange(len(self.stateLog)))
-                plot.set_ydata(np.array([state.egoAction[dim] for state in self.stateLog]))
-
-                ax.relim()
-                ax.autoscale_view()
-
         # update zoom or full view
         if self.zoomed:
             cx, cy = self.getPos(i, self.zoomAgent)
@@ -955,6 +956,24 @@ class EnvironmentRenderer:
         self.slider_is_updating = False
 
         self.lastRenderTime = time.perf_counter()
+
+        # update action plots
+        actionsArr = np.array([state.egoAction for state in self.stateLog])
+
+        scale = np.sqrt(np.sum(actionsArr**2, axis=1))
+        coeff = np.maximum(1.0, scale / self.envConfig.maxAccel[self.envConfig.iMppi])
+        actionNormalized = actionsArr / coeff[:, None]
+
+        for dim, ((plot, lightplot, vline), ax) in enumerate(zip(self.actions_plot, self.axs_action_plot)):
+            vline.set_xdata([i, i])
+            if len(plot.get_xdata()) != len(self.stateLog):  # type: ignore
+                plot.set_xdata(np.arange(len(self.stateLog)))
+                lightplot.set_xdata(np.arange(len(self.stateLog)))
+
+                plot.set_ydata(actionNormalized[:, dim])
+                lightplot.set_ydata(actionsArr[:, dim])
+
+                ax.set_xlim(-2, len(self.stateLog) + 2)
 
     def updateStatus(self, i: Optional[int] = None) -> None:
         if i is None:
@@ -975,7 +994,7 @@ class EnvironmentRenderer:
             self.status_text.set_color("orange")
 
         for iAgent in range(self.nAgents):
-            vel, laps, gates = self.stateLog[i].speed, self.stateLog[i].nLaps, self.stateLog[i].currentGates
+            vel, laps, gates = self.stateLog[i].state.vel, self.stateLog[i].state.laps, self.stateLog[i].state.gates
 
             speed = np.linalg.norm(vel[iAgent * self.envConfig.dim : (iAgent + 1) * self.envConfig.dim])
 

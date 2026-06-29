@@ -32,7 +32,6 @@ public:
     MPPIController(
         const EnvironmentConfig& c,
         const MPPIConfig& mc,
-        float* d_trackPoints,
         int s,
         std::optional<std::vector<float>> nominal = std::nullopt);
 
@@ -60,7 +59,6 @@ public:
 private:
     std::vector<float> h_B;     // spline matrix
 
-    float* h_trackPoints;
     EnvironmentConfig envConfig;    // this contains the device track points
 
     int seed;
@@ -123,7 +121,6 @@ public:
     PRMPPIController(
         const EnvironmentConfig& c,
         const PRMPPIConfig& mc,
-        float* d_trackPoints,
         int s,
         std::optional<std::vector<float>> nominal = std::nullopt);
 
@@ -143,7 +140,6 @@ public:
     float max_nu = 0.001f;
 
 private:
-    float* h_trackPoints;
     EnvironmentConfig envConfig;    // this contains the device track points
 
     float invTempNomFull;

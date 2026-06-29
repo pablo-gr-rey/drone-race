@@ -85,12 +85,11 @@ class GateEnvironmentConfig:
     # they all should be concatenated & specified in trackPoints (which contains nLines arrays of size nSamples * dim), and then the line config in PID specifies the offset (offset=0: following centerline from 0 to nSamples-1; offset=1: following arbitrary raceline from nSamples to 2*nSamples-1, etc)
     nGates: int = 0
 
-    init_pos: list | np.ndarray = field(default_factory=lambda: [])
-    init_vel: list | np.ndarray = field(default_factory=lambda: [])
-    # add_state: Optional[tuple[np.ndarray, np.ndarray, np.ndarray]] = None  # S, currentLaps, currentGates
-    initS: np.ndarray = field(default_factory=lambda: np.array([]))
-    initnLaps: np.ndarray = field(default_factory=lambda: np.array([]))
-    initGates: np.ndarray = field(default_factory=lambda: np.array([]))
+    # init_pos: list | np.ndarray = field(default_factory=lambda: [])
+    # init_vel: list | np.ndarray = field(default_factory=lambda: [])
+    # initS: np.ndarray = field(default_factory=lambda: np.array([]))
+    # initnLaps: np.ndarray = field(default_factory=lambda: np.array([]))
+    # initGates: np.ndarray = field(default_factory=lambda: np.array([]))
 
     minDist: float = 0.2
     posNoiseLevel: float = 0.0
@@ -133,22 +132,6 @@ class GateEnvironmentConfig:
     trackPoints: Optional[np.ndarray] = None
 
     def __post_init__(self) -> None:
-        self.init_pos = np.array(self.init_pos).flatten().astype(np.float32)
-        self.init_vel = np.array(self.init_vel).flatten().astype(np.float32)
-
-        totDim = self.dim * self.nAgents  # dimension of the pos & vel arrays
-
-        # If still empty, default to zeros
-        if self.init_pos.size == 0:
-            self.init_pos = np.zeros(totDim, dtype=np.float32)
-        if self.init_vel.size == 0:
-            self.init_vel = np.zeros(totDim, dtype=np.float32)
-
-        if self.init_pos.size != totDim:
-            raise ValueError(f"Invalid init_pos size: got {self.init_pos.size}, expected {totDim}")
-        if self.init_vel.size != totDim:
-            raise ValueError(f"Invalid init_vel size: got {self.init_vel.size}, expected {totDim}")
-
         if self.trackPoints is None and self.nGates > 0:
             # sample simple centerline as linear points going through the gates
             self.trackPoints = np.concatenate(
@@ -246,14 +229,10 @@ class MPPIConfig(ControllerConfig):
     collDistFactor: float = 1.0
 
     # running cost is the sum of the distance to the opponents oppDistCost / dist^oppDistCost, or 0 if dist > oppDistThreshold * config.minDist
-    oppDistWeight: float = 1
-    oppDistPower: float = 2
-    oppDistThresholdFactor: float = 3
     boundaryCost: float = 10
     boundaryThresholdFactor: float = 1.5
+
     outsideCost: float = 1000
-    oppOutsideCost: float = 100
-    collisionCost: float = 10000
     winCost: float = 1000
 
     # final cost: - distance to the gate * finalDistWeight + min(opp. dist to the gate) * finalOppDistWeight - finalSpeedWeight * dot(finalSpeed, targetDirection)
@@ -293,13 +272,9 @@ class PRMPPIConfig(ControllerConfig):
     collDistFactor: float = 1.0
 
     # running cost is the sum of the distance to the opponents oppDistCost / dist^oppDistCost, or 0 if dist > oppDistThreshold * config.minDist
-    oppDistWeight: float = 1
-    oppDistPower: float = 2
-    oppDistThresholdFactor: float = 3
     boundaryCost: float = 10
     boundaryThresholdFactor: float = 1.5
 
-    oppOutsideCost: float = 100
     winCost: float = 1000
 
     # final cost: - distance to the gate * finalDistWeight + min(opp. dist to the gate) * finalOppDistWeight - finalSpeedWeight * dot(finalSpeed, targetDirection)
@@ -371,17 +346,23 @@ class PRMPPIStateInfo:
 
 
 @dataclass
+class SimState:
+    pos: np.ndarray
+    vel: np.ndarray
+    S: np.ndarray
+    laps: np.ndarray
+    gates: np.ndarray
+
+
+@dataclass
 class FullStateInfo:
     # kind of a hack, but this is a class member which should be set by the protocol part based on the actual controller type
     # this way, we can automatically unpack the state information corresponding to the given controller
     ContStateType: ClassVar[type[MPPIStateInfo] | type[PRMPPIStateInfo]]
 
     step: int
-    pos: np.ndarray
-    speed: np.ndarray
-    currentS: np.ndarray
-    nLaps: np.ndarray
-    currentGates: np.ndarray
+
+    state: SimState
 
     egoAction: np.ndarray
 

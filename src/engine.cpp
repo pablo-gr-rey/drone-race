@@ -1,7 +1,7 @@
 #include "engine.h"
 #include "state.h"
 #include "protocol.h"
-#include "environment.h"
+#include "costs.cuh"
 
 #include <zmq.h>
 #include <cstring>
@@ -18,31 +18,17 @@
 SimulationEngine::SimulationEngine(
     const EnvironmentConfig& config,
     const AnyControllerConfig& contConfig,
+    const SimState& initSimState,
     int s)
     : rng(s)
 {
-    d_trackPoints = nullptr;
     seed = s;
 
     envConfig = config;
 
-    // initialize current state from config
-    for (int a = 0; a < N_AGENTS; a++)
-    {
-        for (int d = 0; d < DIM; d++)
-        {
-            state.pos[a * DIM + d] = config.initPos[a * DIM + d];
-            state.vel[a * DIM + d] = config.initSpeed[a * DIM + d];
-        }
+    state = initSimState;
 
-        for (int r = 0; r < N_RACELINES; r++)
-            state.S[a * N_RACELINES + r] = config.initS[a * N_RACELINES + r];
-
-        state.laps[a] = config.initLaps[a];
-        state.gates[a] = config.initGates[a];
-    }
-
-    allocTrack();
+    d_envConfig = Env::allocDeviceMemory(envConfig);
 
     // initialize controller
     controller = std::visit([&](auto&& concreteConfig) -> std::unique_ptr<Controller> {
@@ -51,44 +37,24 @@ SimulationEngine::SimulationEngine(
         if constexpr (std::is_same_v<T, MPPIConfig>)
         {
             contKind = CONT_MPPI;
-            return std::make_unique<MPPIController>(envConfig, concreteConfig, d_trackPoints, s);
+            return std::make_unique<MPPIController>(d_envConfig, concreteConfig, s);
         }
         else if constexpr (std::is_same_v<T, PRMPPIConfig>)
         {
             contKind = CONT_PRMPPI;
-            return std::make_unique<PRMPPIController>(envConfig, concreteConfig, d_trackPoints, s);
+            return std::make_unique<PRMPPIController>(d_envConfig, concreteConfig, s);
         }
         }, contConfig);
 
     controller->engine = this;
-
-    // we only need the S of the opponent
-    // this could be faster if we only assume 1 opponent)
-    for (int r = 0; r < N_RACELINES; r++)
-        state.S[envConfig.iMppi * N_RACELINES + r] = -1.0f;
 }
 
 SimulationEngine::~SimulationEngine()
 {
-    if (d_trackPoints != nullptr)
-    {
-        if (cudaFree(d_trackPoints) != cudaSuccess)
-            std::cerr << "Failed to free d_trackPoints during cleanup!";
-        d_trackPoints = nullptr;
-    }
+    Env::freeDeviceConfig(d_envConfig);
 }
 
-void SimulationEngine::allocTrack()
-{
-    if (d_trackPoints != nullptr)
-        return;
-
-    size_t bytes = N_RACELINES * N_TRACK_SAMPLES * DIM * sizeof(float);
-    CUDA_CHECK(cudaMalloc(&d_trackPoints, bytes));
-    CUDA_CHECK(cudaMemcpy(d_trackPoints, envConfig.trackPoints, bytes, cudaMemcpyHostToDevice));
-}
-
-void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array<float, DIM>& egoAction, const SimState& prevState)
+void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array<float, ACTION_DIM>& egoAction, const SimState& prevState)
 {
     if (!envConfig.sendStates)
         return;
@@ -98,14 +64,11 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
     writer.pushInt32(MSG_STATE);
     writer.pushInt32(step);
 
-    writer.pushFloatArray(state.pos);
-    writer.pushFloatArray(state.vel);
-    writer.pushFloatArray(state.S);
-
-    writer.pushIntArray<int>(state.laps);
-    writer.pushIntArray<int>(state.gates);
+    Env::pushSimState(writer, state);
 
     writer.pushFloatArray(egoAction);
+
+    ScratchEnvBuffer buffer;
 
     if (auto mppiCont = dynamic_cast<MPPIController*>(controller.get()))
     {
@@ -124,12 +87,15 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
         SimState initState = state;
         MPPIConfig mppiConfig = mppiCont->mppiConfig;
 
-        std::vector<float> fullPos(mppiConfig.nTimesteps * N_AGENTS * DIM);
+        // std::vector<float> fullPos(mppiConfig.nTimesteps * N_AGENTS * ACTION_DIM);
 
         HostRNG hrng{ &nd, &rng };
 
         for (int theta = 0; theta < N_TRUE_MODELS; theta++)
         {
+            float trajCost = 0.0f;
+            float decay = 1.0f;
+
             SimState predState = initState;
 
             BranchState bstate;
@@ -139,58 +105,48 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
             EventType stopReason = EVT_TRUNCATED;
             int stopAgent = -1;
 
-            float scratchActions[N_AGENTS * DIM];
-            float nomPidAction[N_TRUE_MODELS * DIM];
-            std::vector<float> egoActions(mppiConfig.nTimesteps * DIM);
+            std::vector<float> egoActions(mppiConfig.nTimesteps * ACTION_DIM);
+            std::vector<SimState> states;
 
             writer.pushIntArray<int>(bstate.predTheta);
-
-            // std::cout << "sending initPredTheta: " << bstate.predTheta[0] << "\n";
 
             int tOrigin = 0;
 
             for (int t = 0; t < mppiConfig.nTimesteps; t++)
             {
-                // int startInd = ((bstate.predTheta + 1) * mppiConfig.nTimesteps + t - bstate.branchingTime) * DIM;
-                // int startInd = (flattenBranchIndex(bstate.predTheta) * mppiConfig.nTimesteps + t - localBranchTimeOrigin(bstate.predTheta, bstate.branchingTime)) * DIM;
-                int startInd = (flattenBranchIndex(bstate.predTheta) * mppiConfig.nTimesteps + t - tOrigin) * DIM;
+                int startInd = (flattenBranchIndex(bstate.predTheta) * mppiConfig.nTimesteps + t - tOrigin) * ACTION_DIM;
 
-                for (int d = 0; d < DIM; d++)
-                    egoActions[t * DIM + d] = mppiCont->h_nominal[startInd + d];
+                for (int d = 0; d < ACTION_DIM; d++)
+                    egoActions[t * ACTION_DIM + d] = mppiCont->h_nominal[startInd + d];
 
                 bool branched = false;
 
                 TerminalType term = environmentStep<true, true>(
                     t,
-                    envConfig.iMppi,
                     theta,
                     envConfig,
-                    egoActions.data() + t * DIM,
+                    egoActions.data() + t * ACTION_DIM,
                     false,                  // no PID noise for reproducible display
                     predState,
                     bstate,
                     branched,
                     mppiConfig.minConfidence,
-                    scratchActions,
-                    nomPidAction,
+                    buffer,
                     hrng);
 
                 if (branched)
                     tOrigin = t + 1;
 
-                for (int i = 0; i < N_AGENTS * DIM; i++)
-                    fullPos[t * N_AGENTS * DIM + i] = predState.pos[i];
+                states.push_back(predState);
+
+                trajCost += stateCost(predState, t, envConfig, mppiConfig) * decay;
+                decay *= DECAY;
 
                 if (term != TERM_NONE)
                 {
-                    for (int tt = t + 1; tt < mppiConfig.nTimesteps; tt++)
-                    {
-                        for (int i = 0; i < N_AGENTS * DIM; i++)
-                            fullPos[tt * N_AGENTS * DIM + i] = predState.pos[i];
-                    }
+                    states.insert(states.end(), mppiConfig.nTimesteps - t - 1, predState);
 
-                    std::cout << "STOPPING SIMULATION at step " << t
-                        << " term " << (int) term << std::endl;
+                    std::cout << "STOPPING SIMULATION at step " << t << " term " << (int) term << std::endl;
 
                     stopTime = t;
                     std::optional<std::pair<EventType, int>> parsed = parseTerm(term, envConfig.iMppi);
@@ -201,6 +157,9 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
                 }
             }
 
+            trajCost += finalCost(predState, envConfig, mppiConfig);
+
+            std::cout << "Final cost for theta = " << theta << ": " << trajCost << std::endl;
             std::cout << "Final belief for theta = " << theta << ": ";
             for (int k = 0; k < N_TRUE_MODELS; k++)
                 std::cout << bstate.belief[k] << " ";
@@ -216,7 +175,7 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
             writer.pushIntArray<int>(bstate.branchingTime);
             writer.pushIntArray<int>(bstate.predTheta);
-            writer.pushFloatArray(fullPos);
+            Env::pushPredictions(writer, states);
             writer.pushFloatArray(egoActions);
             writer.pushInt32(stopReason);
             writer.pushInt32(stopTime);
@@ -240,8 +199,6 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
         SimState initState = prevState;
         PRMPPIConfig prmppiConfig = prmppiCont->mppiConfig;
 
-        std::vector<float> fullPos(prmppiConfig.nTimesteps * N_AGENTS * DIM);
-
         HostRNG hrng{ &nd, &rng };
 
         // one additional pass for rob_nominal on the last model
@@ -258,50 +215,41 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
             EventType stopReason = EVT_TRUNCATED;
             int stopAgent = -1;
 
-            float scratchActions[N_AGENTS * DIM];
-            float nomPidAction[N_TRUE_MODELS * DIM];
-            std::vector<float> egoActions(prmppiConfig.nTimesteps * DIM);
+            std::vector<float> egoActions(prmppiConfig.nTimesteps * ACTION_DIM);
+            std::vector<SimState> states;
 
             for (int t = 0; t < prmppiConfig.nTimesteps; t++)
             {
-                for (int d = 0; d < DIM; d++)
+                for (int d = 0; d < ACTION_DIM; d++)
                 {
                     if (j < N_TRUE_MODELS)
-                        egoActions[t * DIM + d] = prmppiCont->h_nom_nominal[t * DIM + d];
+                        egoActions[t * ACTION_DIM + d] = prmppiCont->h_nom_nominal[t * ACTION_DIM + d];
                     else
-                        egoActions[t * DIM + d] = prmppiCont->h_rob_nominal[t * DIM + d];
+                        egoActions[t * ACTION_DIM + d] = prmppiCont->h_rob_nominal[t * ACTION_DIM + d];
                 }
 
                 bool branched = false;
 
-                TerminalType term = environmentStep<false, false>(
+                TerminalType term = Env::environmentStep<false, false>(
                     t,
-                    envConfig.iMppi,
                     theta,
                     envConfig,
-                    egoActions.data() + t * DIM,
+                    egoActions.data() + t * ACTION_DIM,
                     false,                  // no PID noise for reproducible display
                     predState,
                     bstate,
                     branched,
                     0.0f,
-                    scratchActions,
-                    nomPidAction,
+                    buffer,
                     hrng);
 
-                for (int i = 0; i < N_AGENTS * DIM; i++)
-                    fullPos[t * N_AGENTS * DIM + i] = predState.pos[i];
+                states.push_back(predState);
 
                 if (term != TERM_NONE)
                 {
-                    for (int tt = t + 1; tt < prmppiConfig.nTimesteps; tt++)
-                    {
-                        for (int i = 0; i < N_AGENTS * DIM; i++)
-                            fullPos[tt * N_AGENTS * DIM + i] = predState.pos[i];
-                    }
+                    states.insert(states.end(), prmppiConfig.nTimesteps - t - 1, predState);
 
-                    std::cout << "STOPPING SIMULATION at step " << t
-                        << " term " << (int) term << std::endl;
+                    std::cout << "STOPPING SIMULATION at step " << t << " term " << (int) term << std::endl;
 
                     stopTime = t;
                     std::optional<std::pair<EventType, int>> parsed = parseTerm(term, envConfig.iMppi);
@@ -312,7 +260,9 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
                 }
             }
 
-            writer.pushFloatArray(fullPos);
+            // writer.pushFloatArray(fullPos);
+            Env::pushPredictions(writer, states);
+
             writer.pushFloatArray(egoActions);
             writer.pushInt32(stopReason);
             writer.pushInt32(stopTime);
@@ -347,10 +297,9 @@ void SimulationEngine::sendDone(zmq::socket_t& sock)
 }
 
 // simulate one state for the given action. belief is updated in-place if given
-std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::array<float, DIM>& action, int t, std::array<float, N_TRUE_MODELS>& belief)
+std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::array<float, ACTION_DIM>& action, int t, std::array<float, N_TRUE_MODELS>& belief)
 {
-    static std::array<float, N_AGENTS* DIM> actBuf;
-    static std::array<float, N_TRUE_MODELS* DIM> nomPidBuf;
+    static ScratchEnvBuffer buffer;
 
     HostRNG hrng{ &nd, &rng };
 
@@ -365,7 +314,6 @@ std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::ar
         // MPPI needs belief & branching update
         term = environmentStep<true, true>(
             t,
-            envConfig.iMppi,
             envConfig.trueTheta,
             envConfig,
             action.data(),
@@ -374,15 +322,13 @@ std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::ar
             branchState,
             branched,
             mppiCont->mppiConfig.minConfidence,
-            actBuf.data(),
-            nomPidBuf.data(),
+            buffer,
             hrng
         );
     else
         // other controllers may only use belief update
         term = environmentStep<true, false>(
             t,
-            envConfig.iMppi,
             envConfig.trueTheta,
             envConfig,
             action.data(),
@@ -391,8 +337,7 @@ std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::ar
             branchState,
             branched,
             0.0f,
-            actBuf.data(),
-            nomPidBuf.data(),
+            buffer,
             hrng
         );
 
@@ -403,7 +348,7 @@ std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::ar
 
 void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
 {
-    std::array<float, DIM> dummyAction{};
+    std::array<float, ACTION_DIM> dummyAction{};
     sendState(sock, 0, dummyAction, state);
 
     int step;
@@ -414,7 +359,7 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
     {
         std::cout << "\nSTEP " << step << "\n";
 
-        std::array<float, DIM> action;
+        std::array<float, ACTION_DIM> action;
         controller->getControl(envConfig.iMppi, state, action.data());
 
         SimState prevState = state;
@@ -425,26 +370,7 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
 
         std::cout << std::fixed << std::setprecision(2);
         std::cout << "Current state at step " << step << ":\n";
-
-        for (int a = 0; a < N_AGENTS; a++)
-        {
-            std::cout << "\tAgent " << (a + 1) << ": currentS:";
-            for (int r = 0; r < N_RACELINES; r++)
-                std::cout << " " << state.S[a * N_RACELINES + r];
-
-            std::cout << "\tcurrentGates: " << state.gates[a]
-                << "\tnLaps: " << state.laps[a]
-                << "\tposition";
-
-            for (int d = 0; d < DIM; d++)
-                std::cout << " " << state.pos[a * DIM + d];
-
-            std::cout << "\tspeed:";
-            for (int d = 0; d < DIM; d++)
-                std::cout << " " << state.vel[a * DIM + d];
-
-            std::cout << std::endl;
-        }
+        Env::printState(state);
 
         if (stopInfo)
         {
@@ -459,10 +385,7 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
 
     sendDone(sock);
 
-    std::cout << "Simulation finished. "
-        << N_AGENTS << " agents, "
-        << N_TRACK_SAMPLES << " track samples after "
-        << step << " steps.\nStop reason: ";
+    std::cout << "Simulation finished after " << step << " steps.\nStop reason: ";
 
     if (!stopInfo)
         std::cout << "Simulation truncated (maxSteps reached)\n";

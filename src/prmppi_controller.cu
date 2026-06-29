@@ -20,7 +20,6 @@
 PRMPPIController::PRMPPIController(
     const EnvironmentConfig& c,
     const PRMPPIConfig& mc,
-    float* d_trackPoints,
     int s,
     std::optional<std::vector<float>> nominal)
 {
@@ -29,23 +28,20 @@ PRMPPIController::PRMPPIController(
     mppiConfig = mc;
     seed = s;
 
-    h_trackPoints = c.trackPoints;
-    envConfig.trackPoints = d_trackPoints;
-
     h_belief = std::to_array(envConfig.initBelief);
 
     if (nominal)
     {
-        if ((int) nominal->size() != mc.nTimesteps * DIM)
-            throw std::runtime_error(std::format("Invalid PRMPPI construction: expected nominal size {}, got {}", mc.nTimesteps * DIM, nominal->size()));
+        if ((int) nominal->size() != mc.nTimesteps * ACTION_DIM)
+            throw std::runtime_error(std::format("Invalid PRMPPI construction: expected nominal size {}, got {}", mc.nTimesteps * ACTION_DIM, nominal->size()));
 
         h_nom_nominal = nominal.value();
         h_rob_nominal = nominal.value();
     }
     else
     {
-        h_nom_nominal.assign(mc.nTimesteps * DIM, 0.0f);
-        h_rob_nominal.assign(mc.nTimesteps * DIM, 0.0f);
+        h_nom_nominal.assign(mc.nTimesteps * ACTION_DIM, 0.0f);
+        h_rob_nominal.assign(mc.nTimesteps * ACTION_DIM, 0.0f);
     }
 
     invTempNomFull = invTempRobFull = invTempRobSafe = mppiConfig.invTemperature;
@@ -69,7 +65,7 @@ void PRMPPIController::allocDevice()
     CUDA_CHECK(cudaMalloc(&d_belief, N_TRUE_MODELS * sizeof(float)));
 
     // Noise
-    CUDA_CHECK(cudaMalloc(&d_noise, T * N * DIM * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_noise, T * N * ACTION_DIM * sizeof(float)));
 
     // Costs
     CUDA_CHECK(cudaMalloc(&d_cost_nom, P * N * 2 * sizeof(float)));
@@ -77,11 +73,11 @@ void PRMPPIController::allocDevice()
     CUDA_CHECK(cudaMalloc(&d_candCosts, 2 * P * sizeof(float)));
 
     // Nominal action
-    CUDA_CHECK(cudaMalloc(&d_nom_nominal, T * DIM * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_rob_nominal, T * DIM * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_cand1_nominal, T * DIM * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_cand2_nominal, T * DIM * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_new_rob_nominal, T * DIM * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_nom_nominal, T * ACTION_DIM * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_rob_nominal, T * ACTION_DIM * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_cand1_nominal, T * ACTION_DIM * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_cand2_nominal, T * ACTION_DIM * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_new_rob_nominal, T * ACTION_DIM * sizeof(float)));
 
     // Min-reduction / nu
     CUDA_CHECK(cudaMalloc(&d_minCosts, 3 * sizeof(float)));
@@ -186,28 +182,28 @@ void PRMPPIController::getControl(
 
     // 0. shift nominals, and upload them
     for (int t = 0; t < T - 1; ++t)
-        for (int d = 0; d < DIM; ++d)
+        for (int d = 0; d < ACTION_DIM; ++d)
         {
-            h_nom_nominal[t * DIM + d] = h_nom_nominal[(t + 1) * DIM + d];
-            h_rob_nominal[t * DIM + d] = h_rob_nominal[(t + 1) * DIM + d];
+            h_nom_nominal[t * ACTION_DIM + d] = h_nom_nominal[(t + 1) * ACTION_DIM + d];
+            h_rob_nominal[t * ACTION_DIM + d] = h_rob_nominal[(t + 1) * ACTION_DIM + d];
         }
 
-    for (int d = 0; d < DIM; ++d)
+    for (int d = 0; d < ACTION_DIM; ++d)
     {
-        h_nom_nominal[(T - 1) * DIM + d] = 0.0f;
-        h_rob_nominal[(T - 1) * DIM + d] = 0.0f;
+        h_nom_nominal[(T - 1) * ACTION_DIM + d] = 0.0f;
+        h_rob_nominal[(T - 1) * ACTION_DIM + d] = 0.0f;
     }
 
     CUDA_CHECK(cudaMemcpy(
         d_nom_nominal,
         h_nom_nominal.data(),
-        T * DIM * sizeof(float),
+        T * ACTION_DIM * sizeof(float),
         cudaMemcpyHostToDevice));
 
     CUDA_CHECK(cudaMemcpy(
         d_rob_nominal,
         h_rob_nominal.data(),
-        T * DIM * sizeof(float),
+        T * ACTION_DIM * sizeof(float),
         cudaMemcpyHostToDevice));
 
 
@@ -277,8 +273,8 @@ void PRMPPIController::getControl(
         d_minCosts,
         N);
 
-    // 7. compute weights, and update nominals (nom_nominal + cost_nom_full&minCosts[0] -> cand1; rob_nominal + cost_rob_full&mincosts[1] -> cand2; rob_nominal + cost_rob_safe&mincosts[2] -> rob_nominal), 3*T*DIM blocks
-    PRMPPIWeightedAverageKernel << <3 * T * DIM, blk, 2 * blk * sizeof(float) >> > (
+    // 7. compute weights, and update nominals (nom_nominal + cost_nom_full&minCosts[0] -> cand1; rob_nominal + cost_rob_full&mincosts[1] -> cand2; rob_nominal + cost_rob_safe&mincosts[2] -> rob_nominal), 3*T*ACTION_DIM blocks
+    PRMPPIWeightedAverageKernel << <3 * T * ACTION_DIM, blk, 2 * blk * sizeof(float) >> > (
         d_nom_nominal,
         d_rob_nominal,
         d_noise,
@@ -388,7 +384,7 @@ void PRMPPIController::getControl(
     //     CUDA_CHECK(cudaMemcpy(
     //         d_nom_nominal,
     //         d_rob_nominal,
-    //         T * DIM * sizeof(float),
+    //         T * ACTION_DIM * sizeof(float),
     //         cudaMemcpyDeviceToDevice));
 
     // 12. Copy d_nom_nominal and d_rob_nominal into the corresponding host vectors; copy the first step of the chosen nominal into outAction
@@ -396,19 +392,19 @@ void PRMPPIController::getControl(
     CUDA_CHECK(cudaMemcpy(
         h_nom_nominal.data(),
         d_nom_nominal,
-        T * DIM * sizeof(float),
+        T * ACTION_DIM * sizeof(float),
         cudaMemcpyDeviceToHost));
 
     CUDA_CHECK(cudaMemcpy(
         h_rob_nominal.data(),
         d_rob_nominal,
-        T * DIM * sizeof(float),
+        T * ACTION_DIM * sizeof(float),
         cudaMemcpyDeviceToHost));
 
     if (useNomPlan)
-        std::copy(h_nom_nominal.begin(), h_nom_nominal.begin() + DIM, outAction);
+        std::copy(h_nom_nominal.begin(), h_nom_nominal.begin() + ACTION_DIM, outAction);
     else
-        std::copy(h_rob_nominal.begin(), h_rob_nominal.begin() + DIM, outAction);
+        std::copy(h_rob_nominal.begin(), h_rob_nominal.begin() + ACTION_DIM, outAction);
 
     // 13. Update inverse temperatures
 
@@ -422,7 +418,7 @@ void PRMPPIController::getControl(
 
     std::cout << "\tSubmitted action: \t";
 
-    for (int d = 0; d < DIM; d++)
+    for (int d = 0; d < ACTION_DIM; d++)
         std::cout << outAction[d] << " ";
 
     std::cout << "\n\tNu values for nom + full_cost, rob + full_cost, rob + safe_cost:\t";

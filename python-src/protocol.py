@@ -7,7 +7,7 @@ import typing
 import numpy as np
 import zmq
 from renderer import EnvironmentRenderer
-from utils import EVENT_TYPE, MSG_TYPE, ControllerConfig, FullStateInfo, GateEnvironmentConfig
+from utils import EVENT_TYPE, MSG_TYPE, ControllerConfig, FullStateInfo, GateEnvironmentConfig, SimState
 
 
 class BytePacker:
@@ -193,6 +193,7 @@ class ZMQRecv:
         self,
         envConfig: GateEnvironmentConfig,
         contConfig: ControllerConfig,
+        initState: SimState,
         render: bool = True,
         contNames: Optional[list[str]] = None,
         oppNames: Optional[list[list[str]]] = None,
@@ -241,6 +242,7 @@ class ZMQRecv:
 
         self.sock.send(encodeConfig(contConfig, MSG_TYPE.MSG_HEADER).toBytes())
 
+        self.sock.send(encodeConfig(initState, MSG_TYPE.MSG_HEADER).toBytes())
         print("header sent OK, waiting for first state...")
 
         result = None
@@ -264,15 +266,15 @@ class ZMQRecv:
                 if state.step == 0:
                     # we confirm that the first state is equal to the initial state we sent (to detect early potential transmission bugs)
                     if (
-                        not np.all(np.isclose(state.pos, envConfig.init_pos))
-                        or not np.all(np.isclose(state.speed, envConfig.init_vel))
-                        # or not np.all(np.isclose(state.currentS, config.initS))     # for non-PID agents, engine sets S to -1
-                        or not np.all(np.isclose(state.nLaps, envConfig.initnLaps))
-                        or not np.all(np.isclose(state.currentGates, envConfig.initGates))
+                        not np.all(np.isclose(state.state.pos, initState.pos))
+                        or not np.all(np.isclose(state.state.vel, initState.vel))
+                        # or not np.all(np.isclose(state.state.currentS, config.initS))     # for non-PID agents, engine sets S to -1
+                        or not np.all(np.isclose(state.state.laps, initState.laps))
+                        or not np.all(np.isclose(state.state.gates, initState.gates))
                     ):
-                        print(state.pos, state.speed, state.currentS, state.nLaps, state.currentGates)
-                        print(envConfig.init_pos, envConfig.init_vel, envConfig.initS, envConfig.initnLaps, envConfig.initGates)
-                        raise ValueError("First state sent back by C++ backend did not match expected first state")
+                        print(state.state.pos, state.state.vel, state.state.S, state.state.laps, state.state.gates)
+                        print(initState.pos, initState.vel, initState.S, initState.laps, initState.gates)
+                        raise ValueError("First state sent back by C++ backend did not match initial state")
 
                 self.stateLog.append(state)
 
