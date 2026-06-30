@@ -1,27 +1,17 @@
-#include "controllers.h"
-#include "engine.h"
 #include "config.h"
-#include "state.h"
+#include "controllers.h"
 #include "kernels.cuh"
 
+#include <algorithm>
+#include <cub/cub.cuh>
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
-#include <cstring>
-#include <algorithm>
-#include <vector>
-#include <cfloat>
-#include <stdexcept>
-#include <variant>
-#include <type_traits>
-#include <cub/cub.cuh>
 #include <format>
+#include <stdexcept>
+#include <vector>
 
 // Construction
-PRMPPIController::PRMPPIController(
-    const EnvironmentConfig& c,
-    const PRMPPIConfig& mc,
-    int s,
-    std::optional<std::vector<float>> nominal)
+PRMPPIController::PRMPPIController(const EnvironmentConfig& c, const PRMPPIConfig& mc, int s, std::optional<std::vector<float>> nominal)
 {
     std::cout << "PRMPPI INIT" << std::endl;
     envConfig = c;
@@ -32,8 +22,9 @@ PRMPPIController::PRMPPIController(
 
     if (nominal)
     {
-        if ((int) nominal->size() != mc.nTimesteps * ACTION_DIM)
-            throw std::runtime_error(std::format("Invalid PRMPPI construction: expected nominal size {}, got {}", mc.nTimesteps * ACTION_DIM, nominal->size()));
+        if ((int)nominal->size() != mc.nTimesteps * ACTION_DIM)
+            throw std::runtime_error(
+                std::format("Invalid PRMPPI construction: expected nominal size {}, got {}", mc.nTimesteps * ACTION_DIM, nominal->size()));
 
         h_nom_nominal = nominal.value();
         h_rob_nominal = nominal.value();
@@ -47,10 +38,7 @@ PRMPPIController::PRMPPIController(
     invTempNomFull = invTempRobFull = invTempRobSafe = mppiConfig.invTemperature;
 }
 
-PRMPPIController::~PRMPPIController()
-{
-    freeDevice();
-}
+PRMPPIController::~PRMPPIController() { freeDevice(); }
 
 void PRMPPIController::allocDevice()
 {
@@ -94,9 +82,9 @@ void PRMPPIController::allocDevice()
     // Initialise RNG
     int blk = 256;
     int grd = (P * N + blk - 1) / blk;
-    initRNGKernel << <grd, blk >> > (d_rng, seed, P * N);
+    initRNGKernel<<<grd, blk>>>(d_rng, seed, P * N);
     int tGrd = (P + blk - 1) / blk;
-    initRNGKernel << <tGrd, blk >> > (d_theta_rng, seed, P);
+    initRNGKernel<<<tGrd, blk>>>(d_theta_rng, seed, P);
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
@@ -105,17 +93,8 @@ void PRMPPIController::allocDevice()
 
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    CUDA_CHECK(cudaMemcpy(
-        d_nom_nominal,
-        h_nom_nominal.data(),
-        h_nom_nominal.size() * sizeof(float),
-        cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(
-        d_rob_nominal,
-        h_rob_nominal.data(),
-        h_rob_nominal.size() * sizeof(float),
-        cudaMemcpyHostToDevice
-    ));
+    CUDA_CHECK(cudaMemcpy(d_nom_nominal, h_nom_nominal.data(), h_nom_nominal.size() * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_rob_nominal, h_rob_nominal.data(), h_rob_nominal.size() * sizeof(float), cudaMemcpyHostToDevice));
 
     deviceReady = true;
 }
@@ -123,13 +102,13 @@ void PRMPPIController::allocDevice()
 void PRMPPIController::freeDevice()
 {
     auto safe_free = [](auto*& p)
+    {
+        if (p)
         {
-            if (p)
-            {
-                CUDA_CHECK(cudaFree(p));
-                p = nullptr;
-            }
-        };
+            CUDA_CHECK(cudaFree(p));
+            p = nullptr;
+        }
+    };
 
     safe_free(d_belief);
 
@@ -156,10 +135,7 @@ void PRMPPIController::freeDevice()
     deviceReady = false;
 }
 
-void PRMPPIController::getControl(
-    int agent,
-    const SimState& state,
-    float* outAction)
+void PRMPPIController::getControl(int agent, const SimState& state, float* outAction)
 {
     if (!engine)
         throw std::runtime_error("PRMPPI: engine not set");
@@ -194,18 +170,9 @@ void PRMPPIController::getControl(
         h_rob_nominal[(T - 1) * ACTION_DIM + d] = 0.0f;
     }
 
-    CUDA_CHECK(cudaMemcpy(
-        d_nom_nominal,
-        h_nom_nominal.data(),
-        T * ACTION_DIM * sizeof(float),
-        cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_nom_nominal, h_nom_nominal.data(), T * ACTION_DIM * sizeof(float), cudaMemcpyHostToDevice));
 
-    CUDA_CHECK(cudaMemcpy(
-        d_rob_nominal,
-        h_rob_nominal.data(),
-        T * ACTION_DIM * sizeof(float),
-        cudaMemcpyHostToDevice));
-
+    CUDA_CHECK(cudaMemcpy(d_rob_nominal, h_rob_nominal.data(), T * ACTION_DIM * sizeof(float), cudaMemcpyHostToDevice));
 
     // 1. upload belief (now, current state is passed as argument to the kernels)
     CUDA_CHECK(cudaMemcpy(d_belief, h_belief.data(), N_TRUE_MODELS * sizeof(float), cudaMemcpyHostToDevice));
@@ -216,12 +183,7 @@ void PRMPPIController::getControl(
 
     // 2. generate all noise at once: (T, N, dim)
     int noiseGrd = (N + blk - 1) / blk;
-    PRMPPIgenerateNoiseKernel << <noiseGrd, blk >> > (
-        d_noise,
-        d_rng,
-        mppiConfig.samplingNoise,
-        T,
-        N);
+    PRMPPIgenerateNoiseKernel<<<noiseGrd, blk>>>(d_noise, d_rng, mppiConfig.samplingNoise, T, N);
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
@@ -230,91 +192,43 @@ void PRMPPIController::getControl(
 
     // 3. generate values of thetas
     int thGenGrd = (P + blk - 1) / blk;
-    PRMPPIsampleThetaValues << <thGenGrd, blk >> > (
-        d_belief,
-        d_thetas,
-        d_theta_rng,
-        P
-        );
+    PRMPPIsampleThetaValues<<<thGenGrd, blk>>>(d_belief, d_thetas, d_theta_rng, P);
 
     // 4. rollout (2*N*P launches, first half for nom, second half for rob)
     int rollGrd = (2 * N * P + blk - 1) / blk;
-    PRMPPIfullRolloutKernel << <rollGrd, blk >> > (
-        agent,
-        envConfig,
-        mppiConfig,
-        state,
-        d_nom_nominal,
-        d_rob_nominal,
-        d_noise,
-        d_cost_nom,
-        d_cost_rob,
-        d_thetas,
-        d_rng);
+    PRMPPIfullRolloutKernel<<<rollGrd, blk>>>(agent, envConfig, mppiConfig, state, d_nom_nominal, d_rob_nominal, d_noise, d_cost_nom, d_cost_rob,
+                                              d_thetas, d_rng);
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 #endif
 
-    // 5. For each sample s, compute expCost := avg(cost[p, s, 0]) and safeCost := max(cost[p, s, 1]); stores cost[0, s, 0] := expCost + weight * (1 if safeCost < 0), cost[0, s, 1] = safeCost. 2*N threads (1st part for nom, 2nd part for rob)
+    // 5. For each sample s, compute expCost := avg(cost[p, s, 0]) and safeCost := max(cost[p, s, 1]); stores cost[0, s, 0] := expCost + weight * (1
+    // if safeCost < 0), cost[0, s, 1] = safeCost. 2*N threads (1st part for nom, 2nd part for rob)
     int avgGrid = (2 * N + blk - 1) / blk;
-    PRMPPIcostAvgKernel << <avgGrid, blk >> > (
-        d_cost_nom,
-        d_cost_rob,
-        N,
-        P,
-        mppiConfig.safetyWeight);
+    PRMPPIcostAvgKernel<<<avgGrid, blk>>>(d_cost_nom, d_cost_rob, N, P, mppiConfig.safetyWeight);
 
     // 6. compute min costs (3 blocks for nom_full, rob_full, rob_safe)
-    PRMPPIcomputeMinCostsKernel << <3, blk, blk * sizeof(float) >> > (
-        d_cost_nom,
-        d_cost_rob,
-        d_minCosts,
-        N);
+    PRMPPIcomputeMinCostsKernel<<<3, blk, blk * sizeof(float)>>>(d_cost_nom, d_cost_rob, d_minCosts, N);
 
-    // 7. compute weights, and update nominals (nom_nominal + cost_nom_full&minCosts[0] -> cand1; rob_nominal + cost_rob_full&mincosts[1] -> cand2; rob_nominal + cost_rob_safe&mincosts[2] -> rob_nominal), 3*T*ACTION_DIM blocks
-    PRMPPIWeightedAverageKernel << <3 * T * ACTION_DIM, blk, 2 * blk * sizeof(float) >> > (
-        d_nom_nominal,
-        d_rob_nominal,
-        d_noise,
-        d_cost_nom,
-        d_cost_rob,
-        d_minCosts,
-        d_cand1_nominal,
-        d_cand2_nominal,
-        d_new_rob_nominal,
-        N,
-        T,
-        invTempNomFull,
-        invTempRobFull,
-        invTempRobSafe,
-        d_nu);
+    // 7. compute weights, and update nominals (nom_nominal + cost_nom_full&minCosts[0] -> cand1; rob_nominal + cost_rob_full&mincosts[1] -> cand2;
+    // rob_nominal + cost_rob_safe&mincosts[2] -> rob_nominal), 3*T*ACTION_DIM blocks
+    PRMPPIWeightedAverageKernel<<<3 * T * ACTION_DIM, blk, 2 * blk * sizeof(float)>>>(d_nom_nominal, d_rob_nominal, d_noise, d_cost_nom, d_cost_rob,
+                                                                                      d_minCosts, d_cand1_nominal, d_cand2_nominal, d_new_rob_nominal,
+                                                                                      N, T, invTempNomFull, invTempRobFull, invTempRobSafe, d_nu);
 
     std::swap(d_rob_nominal, d_new_rob_nominal);
 
     // 8. compute full cost for the 2 candidates nominals and all models, 2 * P threads (using the rng of the first 2*P rollouts)
     int candGrd = (2 * P + blk - 1) / blk;
-    PRMPPIcomputeCandidateCostKernel << <candGrd, blk >> > (
-        agent,
-        envConfig,
-        mppiConfig,
-        state,
-        d_cand1_nominal,
-        d_cand2_nominal,
-        d_thetas,
-        d_candCosts,
-        d_rng
-        );
+    PRMPPIcomputeCandidateCostKernel<<<candGrd, blk>>>(agent, envConfig, mppiConfig, state, d_cand1_nominal, d_cand2_nominal, d_thetas, d_candCosts,
+                                                       d_rng);
 
     // 9. Compare the averaged cost of the two candidates, and copy the best one into d_nom_nominal (or rather swap the pointers)
     std::vector<float> candCosts(2 * P);
 
-    CUDA_CHECK(cudaMemcpy(
-        candCosts.data(),
-        d_candCosts,
-        2 * P * sizeof(float),
-        cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(candCosts.data(), d_candCosts, 2 * P * sizeof(float), cudaMemcpyDeviceToHost));
 
     float cand1Cost = 0.0f;
     float cand2Cost = 0.0f;
@@ -325,8 +239,8 @@ void PRMPPIController::getControl(
         cand2Cost += candCosts[P + p];
     }
 
-    cand1Cost /= (float) P;
-    cand2Cost /= (float) P;
+    cand1Cost /= (float)P;
+    cand2Cost /= (float)P;
 
     std::cout << "Averaged full cost for candidate 1 (from d_nom_nominal): " << cand1Cost << "\n";
     std::cout << "Averaged full cost for candidate 2 (from d_rob_nominal): " << cand2Cost << "\n";
@@ -340,25 +254,13 @@ void PRMPPIController::getControl(
 
     // 10. compute safe cost for the nominal model, P threads (using the rng of the first P rollouts)
     int safeGrd = (P + blk - 1) / blk;
-    PRMPPIcomputeSafeCostKernel << <safeGrd, blk >> > (
-        agent,
-        envConfig,
-        mppiConfig,
-        state,
-        d_nom_nominal,
-        d_thetas,
-        d_candCosts,
-        d_rng
-        );
+    PRMPPIcomputeSafeCostKernel<<<safeGrd, blk>>>(agent, envConfig, mppiConfig, state, d_nom_nominal, d_thetas, d_candCosts, d_rng);
 
-    // 11. Check safety: if any averaged over p safety costs is negative, then nominal model is unsafe, and copy d_rob_nominal into d_nom_nominal (and set useNomPlan to false, otherwise true)
+    // 11. Check safety: if any averaged over p safety costs is negative, then nominal model is unsafe, and copy d_rob_nominal into d_nom_nominal (and
+    // set useNomPlan to false, otherwise true)
     std::vector<float> safeCosts(P);
 
-    CUDA_CHECK(cudaMemcpy(
-        safeCosts.data(),
-        d_candCosts,
-        P * sizeof(float),
-        cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(safeCosts.data(), d_candCosts, P * sizeof(float), cudaMemcpyDeviceToHost));
 
     useNomPlan = true;
 
@@ -389,17 +291,9 @@ void PRMPPIController::getControl(
 
     // 12. Copy d_nom_nominal and d_rob_nominal into the corresponding host vectors; copy the first step of the chosen nominal into outAction
 
-    CUDA_CHECK(cudaMemcpy(
-        h_nom_nominal.data(),
-        d_nom_nominal,
-        T * ACTION_DIM * sizeof(float),
-        cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_nom_nominal.data(), d_nom_nominal, T * ACTION_DIM * sizeof(float), cudaMemcpyDeviceToHost));
 
-    CUDA_CHECK(cudaMemcpy(
-        h_rob_nominal.data(),
-        d_rob_nominal,
-        T * ACTION_DIM * sizeof(float),
-        cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_rob_nominal.data(), d_rob_nominal, T * ACTION_DIM * sizeof(float), cudaMemcpyDeviceToHost));
 
     if (useNomPlan)
         std::copy(h_nom_nominal.begin(), h_nom_nominal.begin() + ACTION_DIM, outAction);
@@ -410,11 +304,7 @@ void PRMPPIController::getControl(
 
     std::vector<float> nu(3);
 
-    CUDA_CHECK(cudaMemcpy(
-        nu.data(),
-        d_nu,
-        nu.size() * sizeof(float),
-        cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(nu.data(), d_nu, nu.size() * sizeof(float), cudaMemcpyDeviceToHost));
 
     std::cout << "\tSubmitted action: \t";
 
@@ -426,24 +316,21 @@ void PRMPPIController::getControl(
         std::cout << n << " ";
     std::cout << "\n";
 
-    auto adaptTemperature =
-        [&](float& invTemp,
-            float usedNu,
-            std::string name)
+    auto adaptTemperature = [&](float& invTemp, float usedNu, std::string name)
+    {
+        if (usedNu > max_nu * (float)N)
         {
-            if (usedNu > max_nu * (float) N)
-            {
-                std::cout << "\tdecreasing " << name << " inverse temperature from " << invTemp << " to ";
-                invTemp *= 0.9f;
-                std::cout << invTemp << "\n";
-            }
-            else if (usedNu < min_nu * (float) N)
-            {
-                std::cout << "\tincreasing " << name << " inverse temperature from " << invTemp << " to ";
-                invTemp *= 1.2f;
-                std::cout << invTemp << "\n";
-            }
-        };
+            std::cout << "\tdecreasing " << name << " inverse temperature from " << invTemp << " to ";
+            invTemp *= 0.9f;
+            std::cout << invTemp << "\n";
+        }
+        else if (usedNu < min_nu * (float)N)
+        {
+            std::cout << "\tincreasing " << name << " inverse temperature from " << invTemp << " to ";
+            invTemp *= 1.2f;
+            std::cout << invTemp << "\n";
+        }
+    };
 
     adaptTemperature(invTempNomFull, nu[0], "nom/full");
     adaptTemperature(invTempRobFull, nu[1], "rob/full");

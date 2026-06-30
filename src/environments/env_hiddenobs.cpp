@@ -1,13 +1,12 @@
-#include "config.h"
+#include "config.h" // IWYU pragma: export
 
-#ifdef USE_ENV_DRONERACE
+#ifdef USE_ENV_HIDDENOBS
 
 #include <iostream>
 
-#include "config.h"
 #include "protocol.h"
 
-namespace EnvDroneRace
+namespace EnvHiddenObs
 {
 EnvironmentConfig allocDeviceMemory(const EnvironmentConfig& hostConfig)
 {
@@ -128,11 +127,11 @@ std::pair<EnvironmentConfig, int> unpackEnvConfig(const void* buf, size_t len) /
             std::format("Expected header message type for environment config (type {}) but got type {} instead", static_cast<int>(MSG_HEADER), kind));
 
     int envKind = reader.readInt32();
-    if (envKind != ENV_DRONERACE)
+    if (envKind != ENV_HIDDENOBS)
         throw std::runtime_error(
-            std::format("Environment kind mismatch: received kind {}, but compiled environment is ENV_DRONERACE ({}). Recompile the code with the "
+            std::format("Environment kind mismatch: received kind {}, but compiled environment is ENV_HIDDENOBS ({}). Recompile the code with the "
                         "correct environment set in config.h",
-                        envKind, static_cast<int>(ENV_DRONERACE)));
+                        kind, static_cast<int>(ENV_DRONERACE)));
 
     int nAgents = (int)reader.readInt32();
     int dim = (int)reader.readInt32();
@@ -244,6 +243,6 @@ std::pair<EnvironmentConfig, int> unpackEnvConfig(const void* buf, size_t len) /
 
     return {envConfig, seed};
 }
-} // namespace EnvDroneRace
+} // namespace EnvHiddenObs
 
 #endif

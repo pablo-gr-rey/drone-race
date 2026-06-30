@@ -1,8 +1,8 @@
 #pragma once
 
 #include <cstdint>
-#include <vector>
 #include <span>
+#include <vector>
 #include <zmq.hpp>
 
 enum MsgType : uint32_t
@@ -30,8 +30,7 @@ struct Reader
 
     Reader(const void* buffer, size_t s);
 
-    template <typename T>
-    T readPod();
+    template <typename T> T readPod();
 
     int32_t readInt32();
     float readFloat();
@@ -39,8 +38,8 @@ struct Reader
     std::vector<float> readFloatArray();
     std::vector<int> readIntArray();
 
-    int readFloatArray(float* arr);    // returns length. assumes array is allocated and has the right size
-    int readIntArray(int* arr);        // returns length. assumes array is allocated and has the right size
+    int readFloatArray(float* arr); // returns length. assumes array is allocated and has the right size
+    int readIntArray(int* arr);     // returns length. assumes array is allocated and has the right size
 
     void assertFinished();
 };
@@ -50,23 +49,20 @@ struct Writer
 {
     std::vector<uint8_t> data;
 
-    template <typename T>
-    void pushPod(const T& v);
+    template <typename T> void pushPod(const T& v);
 
     void pushInt32(int32_t v);
     void pushFloat(float v);
 
     void pushFloatArray(std::span<const float> arr);
 
-    template<typename T>
-    void pushIntArray(std::span<const T> arr);
+    template <typename T> void pushIntArray(std::span<const T> arr);
 
     const uint8_t* bytes() const { return data.data(); }
     size_t size() const { return data.size(); }
 };
 
-template<typename T>
-void Writer::pushIntArray(std::span<const T> arr)
+template <typename T> void Writer::pushIntArray(std::span<const T> arr)
 {
     std::vector<float> n(arr.size());
 

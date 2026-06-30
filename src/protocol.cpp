@@ -1,12 +1,11 @@
 #include "protocol.h"
-#include <stdexcept>
-#include <cstring>
 #include <cmath>
+#include <cstring>
+#include <stdexcept>
 
-Reader::Reader(const void* buffer, size_t s) : data((const uint8_t*) buffer), size(s) {}
+Reader::Reader(const void* buffer, size_t s) : data((const uint8_t*)buffer), size(s) {}
 
-template <typename T>
-T Reader::readPod()
+template <typename T> T Reader::readPod()
 {
     if (offset + sizeof(T) > size)
         throw std::runtime_error("failed to read scalar from buffer (underflow)");
@@ -29,7 +28,7 @@ std::vector<float> Reader::readFloatArray()
     if (offset + nBytes > size)
         throw std::runtime_error("failed to read array from buffer (underflow)");
 
-    std::vector<float> out((const float*) (data + offset), (const float*) (data + offset) + n);
+    std::vector<float> out((const float*)(data + offset), (const float*)(data + offset) + n);
     offset += nBytes;
 
     return out;
@@ -45,7 +44,6 @@ std::vector<int> Reader::readIntArray()
 
     return ans;
 }
-
 
 int Reader::readFloatArray(float* arr)
 {
@@ -73,29 +71,21 @@ int Reader::readIntArray(int* arr)
     return temp.size();
 }
 
-
 void Reader::assertFinished()
 {
     if (offset != size)
         throw std::runtime_error("Header not fully parsed");
 }
 
-template <typename T>
-void Writer::pushPod(const T& v)
+template <typename T> void Writer::pushPod(const T& v)
 {
     const auto* p = reinterpret_cast<const uint8_t*>(&v);
     data.insert(data.end(), p, p + sizeof(T));
 }
 
-void Writer::pushInt32(int32_t v)
-{
-    pushPod<int32_t>(v);
-}
+void Writer::pushInt32(int32_t v) { pushPod<int32_t>(v); }
 
-void Writer::pushFloat(float v)
-{
-    pushPod<float>(v);
-}
+void Writer::pushFloat(float v) { pushPod<float>(v); }
 
 void Writer::pushFloatArray(std::span<const float> arr)
 {

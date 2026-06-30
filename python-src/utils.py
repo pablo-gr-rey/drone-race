@@ -74,8 +74,19 @@ class CONTROLLER_KIND(IntEnum):
     CONT_PRMPPI = 1
 
 
+class ENV_KIND(IntEnum):
+    ENV_INVALID = -1
+    ENV_DRONERACE = 0
+    ENV_HIDDENOBS = 1
+
+
 @dataclass
-class GateEnvironmentConfig:
+class BaseEnvironmentConfig:
+    envKind: ENV_KIND = field(init=False, default=ENV_KIND.ENV_INVALID)
+
+
+@dataclass
+class DroneRaceEnvConfig(BaseEnvironmentConfig):
     nAgents: int = 2
     dim: int = 2
     dt: float = 0.1
@@ -132,6 +143,8 @@ class GateEnvironmentConfig:
     trackPoints: Optional[np.ndarray] = None
 
     def __post_init__(self) -> None:
+        self.envKind = ENV_KIND.ENV_DRONERACE
+
         if self.trackPoints is None and self.nGates > 0:
             # sample simple centerline as linear points going through the gates
             self.trackPoints = np.concatenate(

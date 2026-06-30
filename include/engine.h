@@ -2,22 +2,15 @@
 
 #include "config.h"
 #include "controllers.h"
-#include "state.h"
 
-#include <vector>
 #include <memory>
-#include <random>
-#include <string>
 #include <optional>
+#include <random>
 
 class SimulationEngine
 {
-public:
-    SimulationEngine(
-        const EnvironmentConfig& config,
-        const AnyControllerConfig& contConfig,
-        const SimState& initSimState,
-        int seed);
+  public:
+    SimulationEngine(const EnvironmentConfig& config, const AnyControllerConfig& contConfig, const SimState& initSimState, int seed);
 
     ~SimulationEngine();
 
@@ -35,8 +28,8 @@ public:
     // current simulation state
     SimState state;
 
-private:
-    std::normal_distribution<float> nd{ 0.0f, 1.0f };
+  private:
+    std::normal_distribution<float> nd{0.0f, 1.0f};
 
     int seed;
     CONTROLLER_KIND contKind;
@@ -50,4 +43,3 @@ private:
 
     std::optional<std::pair<EventType, int>> parseTerm(TerminalType term, int egoAgent);
 };
- 

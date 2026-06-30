@@ -1,14 +1,15 @@
 #include "config.h"
-#include <iostream>
 #include <format>
+#include <iostream>
 
 void MPPIConfig::unpackHeader(Reader& reader)
 {
-    nSamples = (int) reader.readInt32();
-    nTimesteps = (int) reader.readInt32();
-    nKnots = (int) reader.readInt32();
+    nSamples = (int)reader.readInt32();
+    nTimesteps = (int)reader.readInt32();
+    nKnots = (int)reader.readInt32();
     if (nKnots > MAX_N_KNOTS)
-        throw std::runtime_error(std::format("Received invalid number of knots: got {}, but MAX_N_KNOTS is set to {}. Edit this constant and recompile", nKnots, MAX_N_KNOTS));
+        throw std::runtime_error(std::format(
+            "Received invalid number of knots: got {}, but MAX_N_KNOTS is set to {}. Edit this constant and recompile", nKnots, MAX_N_KNOTS));
 
     int nRecv = reader.readIntArray(knots);
     if (nRecv != nKnots)
@@ -16,10 +17,11 @@ void MPPIConfig::unpackHeader(Reader& reader)
 
     bool useSplines = reader.readInt32();
     if (useSplines != USE_SPLINES)
-        throw std::runtime_error(std::format("Received useSplines={}, but constexpr USE_SPLINES is set to {}. Edit this constant and recompile", useSplines, USE_SPLINES));
+        throw std::runtime_error(
+            std::format("Received useSplines={}, but constexpr USE_SPLINES is set to {}. Edit this constant and recompile", useSplines, USE_SPLINES));
 
     if (!USE_SPLINES)
-        nKnots = nTimesteps;        // for MPPI device array allocationsmy
+        nKnots = nTimesteps; // for MPPI device array allocationsmy
 
     invTemperature = reader.readFloat();
 
@@ -44,13 +46,14 @@ void MPPIConfig::unpackHeader(Reader& reader)
     verifHorizon = reader.readInt32();
     maxVerifEps = reader.readFloat();
 
-    std::cout << "loaded MPPI samples " << nSamples << " timesteps " << nTimesteps << " collDistFactor " << collDistFactor << " invTemp " << invTemperature << " with " << N_TRUE_MODELS << " opponent strats\n";
+    std::cout << "loaded MPPI samples " << nSamples << " timesteps " << nTimesteps << " collDistFactor " << collDistFactor << " invTemp "
+              << invTemperature << " with " << N_TRUE_MODELS << " opponent strats\n";
 }
 
 void PRMPPIConfig::unpackHeader(Reader& reader)
 {
-    nSamples = (int) reader.readInt32();
-    nTimesteps = (int) reader.readInt32();
+    nSamples = (int)reader.readInt32();
+    nTimesteps = (int)reader.readInt32();
 
     invTemperature = reader.readFloat();
 
@@ -73,7 +76,8 @@ void PRMPPIConfig::unpackHeader(Reader& reader)
     delta = reader.readFloat();
     P = reader.readInt32();
 
-    std::cout << "loaded PRMPPI samples " << nSamples << " timesteps " << nTimesteps << " safetyWeight " << safetyWeight << " with delta = " << delta << " P = " << P << "\n";
+    std::cout << "loaded PRMPPI samples " << nSamples << " timesteps " << nTimesteps << " safetyWeight " << safetyWeight << " with delta = " << delta
+              << " P = " << P << "\n";
 }
 
 AnyControllerConfig loadControllerConfig(const void* buf, size_t len)
@@ -82,7 +86,8 @@ AnyControllerConfig loadControllerConfig(const void* buf, size_t len)
 
     int msg_kind = reader.readInt32();
     if (msg_kind != MSG_HEADER)
-        throw std::runtime_error(std::format("Expected header message type for controller config (type {}) but got type {} instead", static_cast<int>(MSG_HEADER), msg_kind));
+        throw std::runtime_error(std::format("Expected header message type for controller config (type {}) but got type {} instead",
+                                             static_cast<int>(MSG_HEADER), msg_kind));
 
     int cont_kind = reader.readInt32();
 

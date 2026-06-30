@@ -1,41 +1,16 @@
 #pragma once
 
-#include "cuda_runtime.h"
+#include "config.h"
 #include "curand_kernel.h"
 
 #include <boost/math/distributions/beta.hpp>
 
-// #include <cmath>
 #include <math.h>
 #include <random>
 
-struct BranchState
-{
-    float belief[N_TRUE_MODELS];
-    int predTheta[N_MODEL_FACTORS];      // 0 if nominal for k, theta+1 if specialized (<=> marginal over theta_k=theta > threshold)
-    int branchingTime[N_MODEL_FACTORS];     // -1 if not branched, 0 if initially committed, otherwise t+1 if branched at global time t (i.e. origin of new branch)
-};
+__device__ INLINE float sampleNormal(DeviceRNG& rng) { return curand_normal(rng.state); }
 
-struct DeviceRNG
-{
-    curandState* state;
-};
-
-struct HostRNG
-{
-    std::normal_distribution<float>* nd;
-    std::mt19937* rng;
-};
-
-__device__ INLINE float sampleNormal(DeviceRNG& rng)
-{
-    return curand_normal(rng.state);
-}
-
-__host__ INLINE float sampleNormal(HostRNG& rng)
-{
-    return (*rng.nd)(*rng.rng);
-}
+__host__ INLINE float sampleNormal(HostRNG& rng) { return (*rng.nd)(*rng.rng); }
 
 // index helpers
 
@@ -107,7 +82,8 @@ HD INLINE void computeMarginal(const float* __restrict__ belief, int factor, flo
         marginal[getTrueModelIndex(theta, factor)] += belief[theta];
 }
 
-// fill predTheta (for k < N_MODEL_FACTORS predTheta[k] = theta+1 if there exists theta such that belief marginalized over theta_k=theta is > threshold, otherwise 0)
+// fill predTheta (for k < N_MODEL_FACTORS predTheta[k] = theta+1 if there exists theta such that belief marginalized over
+// theta_k=theta is > threshold, otherwise 0)
 HD INLINE void findConfident(const float* __restrict__ belief, float threshold, int* __restrict__ predTheta)
 {
     // for (int theta = 0; theta < N_MODELS; theta++)
@@ -169,10 +145,7 @@ __host__ inline double clopperPearsonUpperBound(uint k, uint n, double alpha)
 }
 
 // initialize branch state (copy belief, find confident, set branch times = -1 if not committed on parameter and 0 otherwise)
-HD INLINE void initBranchState(
-    BranchState& branchState,
-    const float* __restrict__ initBelief,
-    float threshold)
+HD INLINE void initBranchState(BranchState& branchState, const float* __restrict__ initBelief, float threshold)
 {
     for (int theta = 0; theta < N_TRUE_MODELS; theta++)
         branchState.belief[theta] = initBelief[theta];
@@ -194,7 +167,8 @@ HD INLINE int localBranchTimeOrigin(const int* __restrict__ predTheta, const int
     return max;
 }
 
-// return whether we are already committed to a plan which is compatible with trueTheta (<=> forall k, predTheta[k] == 0 or predTheta[k] == trueTheta[k] + 1)
+// return whether we are already committed to a plan which is compatible with trueTheta (<=> forall k, predTheta[k] == 0 or
+// predTheta[k] == trueTheta[k] + 1)
 HD INLINE bool branchCompatibleWithModel(const int* __restrict__ predTheta, const int* __restrict__ trueTheta)
 {
     for (int k = 0; k < N_MODEL_FACTORS; k++)
@@ -204,7 +178,8 @@ HD INLINE bool branchCompatibleWithModel(const int* __restrict__ predTheta, cons
     return true;
 }
 
-// return whether the considered branch is compatible with the initial pred theta (<=> forall k, initPredTheta[k] == 0 or initPredTheta[k] == branch[k])
+// return whether the considered branch is compatible with the initial pred theta (<=> forall k, initPredTheta[k] == 0 or
+// initPredTheta[k] == branch[k])
 HD INLINE bool branchCompatibleWithInitialModel(const int* __restrict__ branch, const int* __restrict__ initPredTheta)
 {
     for (int k = 0; k < N_MODEL_FACTORS; k++)
@@ -215,10 +190,12 @@ HD INLINE bool branchCompatibleWithInitialModel(const int* __restrict__ branch, 
 }
 
 // return whether a sample contributed to the given branch, at the given local time
-// this happens if: (1) branch is compatible with final sample pred theta (<=> forall k, branch[k] == 0 or branch[k] == samplePredTheta[k])
-// (2) we did not switch to a new branch before tLocal (<=> tGlobal <= min{sampleBranchTime[k] | branch[k] == 0 and samplePredTheta[k] != 0} where tGlobal = tLocal + localBranchTimeOrigin = tLocal + max{sampleBranchTime[k] | branch[k] != 0})
-// (3) the sample was not truncated before tLocal (<=> tGlobal < T)
-HD INLINE bool sampleContributed(const int* __restrict__ branch, int tLocal, const int* __restrict__ sampleBranchTime, const int* __restrict__ samplePredTheta, int T)
+// this happens if: (1) branch is compatible with final sample pred theta (<=> forall k, branch[k] == 0 or branch[k] ==
+// samplePredTheta[k]) (2) we did not switch to a new branch before tLocal (<=> tGlobal <= min{sampleBranchTime[k] | branch[k] ==
+// 0 and samplePredTheta[k] != 0} where tGlobal = tLocal + localBranchTimeOrigin = tLocal + max{sampleBranchTime[k] | branch[k] !=
+// 0}) (3) the sample was not truncated before tLocal (<=> tGlobal < T)
+HD INLINE bool sampleContributed(const int* __restrict__ branch, int tLocal, const int* __restrict__ sampleBranchTime,
+                                 const int* __restrict__ samplePredTheta, int T)
 {
     int tGlobal = tLocal + localBranchTimeOrigin(branch, sampleBranchTime);
 
@@ -227,8 +204,8 @@ HD INLINE bool sampleContributed(const int* __restrict__ branch, int tLocal, con
 
     for (int k = 0; k < N_MODEL_FACTORS; k++)
     {
-        if ((branch[k] != 0 && branch[k] != samplePredTheta[k])       // incompatible
-            || (branch[k] == 0 && samplePredTheta[k] != 0 && tGlobal >= sampleBranchTime[k]))     // we switch before tGlobal
+        if ((branch[k] != 0 && branch[k] != samplePredTheta[k])                               // incompatible
+            || (branch[k] == 0 && samplePredTheta[k] != 0 && tGlobal >= sampleBranchTime[k])) // we switch before tGlobal
             return false;
     }
 
@@ -236,10 +213,10 @@ HD INLINE bool sampleContributed(const int* __restrict__ branch, int tLocal, con
 }
 
 // return whether a spline knot contributed. for simplicity, we say that this is <=> tau[m-1], tau[m] or tau[m+1] contributed
-HD INLINE bool splineSampleContributed(const int* __restrict__ branch, int m, const int* __restrict__ sampleBranchTime, const int* __restrict__ samplePredTheta, int T, int M, const int* __restrict__ knots)
+HD INLINE bool splineSampleContributed(const int* __restrict__ branch, int m, const int* __restrict__ sampleBranchTime,
+                                       const int* __restrict__ samplePredTheta, int T, int M, const int* __restrict__ knots)
 {
-    return ((m > 0 && sampleContributed(branch, knots[m - 1], sampleBranchTime, samplePredTheta, T))
-        || sampleContributed(branch, knots[m], sampleBranchTime, samplePredTheta, T)
-        || (m < M - 1 && sampleContributed(branch, knots[m + 1], sampleBranchTime, samplePredTheta, T)));
+    return ((m > 0 && sampleContributed(branch, knots[m - 1], sampleBranchTime, samplePredTheta, T)) ||
+            sampleContributed(branch, knots[m], sampleBranchTime, samplePredTheta, T) ||
+            (m < M - 1 && sampleContributed(branch, knots[m + 1], sampleBranchTime, samplePredTheta, T)));
 }
- 

@@ -21,7 +21,7 @@ from utils import (
     EVENT_TYPE,
     ControllerConfig,
     FullStateInfo,
-    GateEnvironmentConfig,
+    DroneRaceEnvConfig,
     MPPIConfig,
     MPPIStateInfo,
     PRMPPIConfig,
@@ -32,7 +32,7 @@ from utils import (
 class ControllerRenderer[ConfigType](ABC):
     def __init__(
         self,
-        envConfig: GateEnvironmentConfig,
+        envConfig: DroneRaceEnvConfig,
         contConfig: ConfigType,
         oppNames: list[list[str]],
         ax: plt.Axes,  # type: ignore
@@ -590,7 +590,7 @@ class EnvironmentRenderer:
 
     def __init__(
         self,
-        envConfig: GateEnvironmentConfig,
+        envConfig: DroneRaceEnvConfig,
         contConfig: ControllerConfig,
         contNames: list[str],
         oppNames: list[list[str]],

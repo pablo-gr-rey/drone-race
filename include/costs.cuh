@@ -1,7 +1,6 @@
 #pragma once
 
 #include "config.h"
-#include "state.h"
 #include <cmath>
 
 // Running cost
@@ -67,7 +66,8 @@ HD INLINE float PRMPPIfinalCost(const SimState& state, const EnvironmentConfig& 
     return cost;
 }
 
-// Safety cost, < 0 iff state is safe (negative of min of distance to nearest obstacles and to other agents, if any, minus minSafeDist)
+// Safety cost, < 0 iff state is safe (negative of min of distance to nearest obstacles and to other agents, if any, minus
+// minSafeDist)
 HD INLINE float PRMPPIsafetyCost(const SimState& state, int /* timestep */, const EnvironmentConfig& envConfig, const PRMPPIConfig& mppiConfig)
 {
     return envConfig.minDist * mppiConfig.collDistFactor * 0.5f - Env::trackBoundaryDist(state, envConfig);

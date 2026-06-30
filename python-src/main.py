@@ -14,7 +14,7 @@ import numpy as np
 from protocol import ZMQRecv
 from utils import (
     ControllerConfig,
-    GateEnvironmentConfig,
+    DroneRaceEnvConfig,
     MPPIConfig,
     PIDConfig,
     PRMPPIConfig,
@@ -34,7 +34,7 @@ class NpJsonEncoder(json.JSONEncoder):
 
 def tinyGateEnv(
     roundObs: bool = True, afraid: bool = False, useSplines: bool = True, usePR: bool = False
-) -> tuple[GateEnvironmentConfig, SimState, ControllerConfig, list[list[str]]]:
+) -> tuple[DroneRaceEnvConfig, SimState, ControllerConfig, list[list[str]]]:
     nAgents = 2
     dim = 2
     nTrackSamples = 512
@@ -60,7 +60,7 @@ def tinyGateEnv(
     pid0 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=0, actionNoise=1)
     pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=1, actionNoise=1)
 
-    config = GateEnvironmentConfig(
+    config = DroneRaceEnvConfig(
         nAgents=nAgents,
         dim=dim,
         nRaceLines=2,
@@ -214,7 +214,7 @@ def tinyGateEnv(
 
 def tinyGateEnv2Models(
     roundObs: bool = True, useSplines: bool = True, usePR: bool = False
-) -> tuple[GateEnvironmentConfig, SimState, ControllerConfig, list[list[str]]]:
+) -> tuple[DroneRaceEnvConfig, SimState, ControllerConfig, list[list[str]]]:
     nAgents = 2
     dim = 2
     nTrackSamples = 512
@@ -260,7 +260,7 @@ def tinyGateEnv2Models(
         ]
     )
 
-    config = GateEnvironmentConfig(
+    config = DroneRaceEnvConfig(
         nAgents=nAgents,
         dim=dim,
         nRaceLines=4,
@@ -439,7 +439,7 @@ def tinyGateEnv2Models(
     return config, initState, mppiconfig, [["1st=Top", "1st=Bottom"], ["2nd=Top", "2nd=Bottom"]]
 
 
-def activeEnv() -> tuple[GateEnvironmentConfig, SimState, MPPIConfig, list[list[str]]]:
+def activeEnv() -> tuple[DroneRaceEnvConfig, SimState, MPPIConfig, list[list[str]]]:
     nAgents = 2
     dim = 2
     nTrackSamples = 1000
@@ -463,7 +463,7 @@ def activeEnv() -> tuple[GateEnvironmentConfig, SimState, MPPIConfig, list[list[
     )
     pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=0, racelineIndex=0, actionNoise=1, repulsionDistFactor=2.5)
 
-    config = GateEnvironmentConfig(
+    config = DroneRaceEnvConfig(
         nAgents=nAgents,
         dim=dim,
         nRaceLines=1,
@@ -527,7 +527,7 @@ def activeEnv() -> tuple[GateEnvironmentConfig, SimState, MPPIConfig, list[list[
 
 def highInertiaEnv(
     afraid: bool = False, usePR: bool = False, useSplines: bool = False
-) -> tuple[GateEnvironmentConfig, SimState, ControllerConfig, list[list[str]]]:
+) -> tuple[DroneRaceEnvConfig, SimState, ControllerConfig, list[list[str]]]:
     nAgents = 2
     dim = 2
     nTrackSamples = 512
@@ -553,7 +553,7 @@ def highInertiaEnv(
     pid0 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=0, actionNoise=0.01)
     pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=1, actionNoise=0.01)
 
-    config = GateEnvironmentConfig(
+    config = DroneRaceEnvConfig(
         nAgents=nAgents,
         dim=dim,
         dt=0.1,

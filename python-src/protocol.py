@@ -7,7 +7,7 @@ import typing
 import numpy as np
 import zmq
 from renderer import EnvironmentRenderer
-from utils import EVENT_TYPE, MSG_TYPE, ControllerConfig, FullStateInfo, GateEnvironmentConfig, SimState
+from utils import EVENT_TYPE, MSG_TYPE, ControllerConfig, FullStateInfo, DroneRaceEnvConfig, SimState
 
 
 class BytePacker:
@@ -167,7 +167,8 @@ def encodeConfig(config: Any, msg_type: Optional[int] = None, warn=True, log=Fal
     if log:
         print(f"Encoding {type(config)}...")
 
-    p.pushObj(config, warn, log)
+    if not p.pushObj(config, warn, log):
+        print(f"Warning: failed to write config of type {type(config)}")
 
     return p
 
@@ -191,7 +192,7 @@ class ZMQRecv:
 
     def runSim(
         self,
-        envConfig: GateEnvironmentConfig,
+        envConfig: DroneRaceEnvConfig,
         contConfig: ControllerConfig,
         initState: SimState,
         render: bool = True,

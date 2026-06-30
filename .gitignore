@@ -9,3 +9,5 @@ data/*
 
 *.md
 !README.md
+
+.clang*

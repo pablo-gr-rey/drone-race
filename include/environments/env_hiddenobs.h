@@ -1,11 +1,17 @@
 #pragma once
 
+#include "cuda_runtime.h"
+#include "curand_kernel.h"
+
+#include <format>
+#include <iostream>
 #include <math.h>
+#include <random>
 
 #include "protocol.h"
 #include "state.h"
 
-namespace EnvDroneRace
+namespace EnvHiddenObs
 {
 EnvironmentConfig allocDeviceMemory(const EnvironmentConfig& hostConfig);
 
@@ -137,7 +143,8 @@ HD INLINE int findMinAlongDirection(const float* __restrict__ trackPoints, int i
     return bestI;
 }
 
-// return the closest S, and writes the closest track point in closestOut and its distance in bestDist
+// return the closest S, and writes the closest track point in closestOut and
+// its distance in bestDist
 HD INLINE float fastProjectOnTrack(const float* __restrict__ trackPoints, const float* __restrict__ pos, float* __restrict__ closestOut,
                                    float& bestDist,
                                    float prevS = -1.0f // negative means unknown -> full scan
@@ -182,8 +189,8 @@ HD INLINE float fastProjectOnTrack(const float* __restrict__ trackPoints, const 
     }
 
 #ifdef CHECK_PROJECTION
-    // bool wrong = fabs(bestS - testS) > 1e-5 || fabsf(bestDist - testDist) > 1e-5;
-    // for (int d = 0; d < DIM && closestOut; d++)
+    // bool wrong = fabs(bestS - testS) > 1e-5 || fabsf(bestDist - testDist) >
+    // 1e-5; for (int d = 0; d < DIM && closestOut; d++)
     //     wrong = wrong || abs(closestOut[d] - testClosestOut[d] > 1e-5);
 
     bool wrong = fabs(bestDist - testDist) > 1e-5f;
@@ -206,14 +213,16 @@ HD INLINE float fastProjectOnTrack(const float* __restrict__ trackPoints, const 
     return bestS;
 }
 
-// Update belief if oppAction was observed, nomAction is the nominal action for each model (nTrueModels * dim)
+// Update belief if oppAction was observed, nomAction is the nominal action for
+// each model (nTrueModels * dim)
 HD INLINE void updateBelief(float* __restrict__ belief, const float* __restrict__ oppAction, const float* __restrict__ nomAction,
                             const PIDConfig* __restrict__ params, float maxPIDaccel)
 {
     float sum = 0.0f;
     const float sigmaEnv = 0.2f; // account for clamping + various imperfections
 
-    // opponent is following a normal distribution around nomAction, with given stddev
+    // opponent is following a normal distribution around nomAction, with given
+    // stddev
     for (int theta = 0; theta < N_TRUE_MODELS; theta++)
     {
         // compute sq value of nominal action
@@ -235,8 +244,8 @@ HD INLINE void updateBelief(float* __restrict__ belief, const float* __restrict_
         float sigma = sqrtf(sigmaEnv * sigmaEnv + params[theta].actionNoise * params[theta].actionNoise);
         // d-dimensional normal law with diagonal sigma matrix (sigma^2, ...)
 
-        // TODO: prob better to use other pow since dimension is integer & known (maybe even more efficient if dimension is known
-        // at compile time)
+        // TODO: prob better to use other pow since dimension is integer & known
+        // (maybe even more efficient if dimension is known at compile time)
         belief[theta] *= expf(-0.5f * sqDist / (sigma * sigma)) / (powf(2.0f * M_PIf32, (float)DIM / 2.0f) * powf(sigma, (float)DIM));
         sum += belief[theta];
     }
@@ -255,8 +264,9 @@ HD INLINE void updateBelief(float* __restrict__ belief, const float* __restrict_
     }
 }
 
-// Boundary distance = distance of point to closest boundary or opponent (<= 0 if outside), does not take into account agent's
-// radius. return -1.0f if other agent won
+// Boundary distance = distance of point to closest boundary or opponent (<= 0
+// if outside), does not take into account agent's radius. return -1.0f if other
+// agent won
 HD INLINE float trackBoundaryDist(const SimState& state, const EnvironmentConfig& envConfig)
 {
     if (state.laps[1 - envConfig.iMppi] >= envConfig.nWinLaps)
@@ -305,10 +315,12 @@ HD INLINE float trackBoundaryDist(const SimState& state, const EnvironmentConfig
 }
 
 HD INLINE bool isOutside(const SimState& state, const EnvironmentConfig& envConfig,
-                         float radius) // radius should be e.g. minDist/2 in the actual dynamics and (minDist * factor) / 2 for MPPI
+                         float radius) // radius should be e.g. minDist/2 in the actual
+                                       // dynamics and (minDist * factor) / 2 for MPPI
 {
     // for (int d = 0; d < DIM; d++)
-    //     if (pos[d] - margin < envConfig.arenaMin[d] || pos[d] + margin > envConfig.arenaMax[d])
+    //     if (pos[d] - margin < envConfig.arenaMin[d] || pos[d] + margin >
+    //     envConfig.arenaMax[d])
     //         return true;
 
     // for (int iObs = 0; iObs < N_OBSTACLES; iObs++)
@@ -316,8 +328,9 @@ HD INLINE bool isOutside(const SimState& state, const EnvironmentConfig& envConf
     //     float sqDist = 0.0f;
     //     for (int d = 0; d < DIM; d++)
     //     {
-    //         float dist = fmaxf(0.0f, fmaxf(envConfig.obstacles[iObs * 2 * DIM + d] - pos[d], pos[d] - envConfig.obstacles[(iObs
-    //         * 2 + 1) * DIM + d])); sqDist += dist * dist;
+    //         float dist = fmaxf(0.0f, fmaxf(envConfig.obstacles[iObs * 2 * DIM
+    //         + d] - pos[d], pos[d] - envConfig.obstacles[(iObs * 2 + 1) * DIM
+    //         + d])); sqDist += dist * dist;
     //     }
 
     //     if (sqDist <= margin * margin)
@@ -332,7 +345,8 @@ HD INLINE bool isOutside(const SimState& state, const EnvironmentConfig& envConf
     //         float dx = pos[d] - envConfig.roundObsCenters[iObs * DIM + d];
     //         sqDist += dx * dx;
     //     }
-    //     if (sqDist <= (margin + envConfig.roundObsRadius[iObs]) * (margin + envConfig.roundObsRadius[iObs]))
+    //     if (sqDist <= (margin + envConfig.roundObsRadius[iObs]) * (margin +
+    //     envConfig.roundObsRadius[iObs]))
     //         return true;
     // }
 
@@ -387,17 +401,20 @@ HD INLINE bool isWinner(const SimState& state, const EnvironmentConfig& envConfi
     return false;
 }
 
-// Advance = currentGate + nGates * laps + scale * (1 - normalizedDistToGate) (it is much better to pass through a gate than to
-// just be close to it) (this is a rough measure, it doesn't include speed for example) (expect pos to be of size d, ie. pos[0]
-// should be position of actual agent) 'pos' points to the agent's contiguous position array of length DIM
+// Advance = currentGate + nGates * laps + scale * (1 - normalizedDistToGate)
+// (it is much better to pass through a gate than to just be close to it) (this
+// is a rough measure, it doesn't include speed for example) (expect pos to be
+// of size d, ie. pos[0] should be position of actual agent) 'pos' points to the
+// agent's contiguous position array of length DIM
 HD INLINE float getAnyAdvance(const SimState& state, const EnvironmentConfig& envConfig, int agent)
 {
     float sqGateDist = 0.0f;     // sq dist between pos and next gate
     float sqConsGateDist = 0.0f; // sq dist between current gate and next gate
     int nextGate = (state.gates[agent] + 1) % N_GATES;
 
-    float scale = 0.8f; // 1.0f means reward is continuous when going through a gate; 0.5f for example means that reward will be
-                        // between 0.0 and 0.5 before the first gate, 1 and 1.5 between 1st and 2nd, etc
+    float scale = 0.8f; // 1.0f means reward is continuous when going through a gate; 0.5f
+                        // for example means that reward will be between 0.0 and 0.5
+                        // before the first gate, 1 and 1.5 between 1st and 2nd, etc
 
     const float* __restrict__ prevGateCenter = envConfig.gateCenters + state.gates[agent] * DIM;
     const float* __restrict__ nextGateCenter = envConfig.gateCenters + nextGate * DIM;
@@ -419,7 +436,8 @@ HD INLINE float getOppAdvance(const SimState& state, const EnvironmentConfig& en
     return getAnyAdvance(state, envConfig, 1 - envConfig.iMppi);
 }
 
-// if agent == marginAgent, use additional margin (we restrict to passing within gateRadius * margin of the gate center)
+// if agent == marginAgent, use additional margin (we restrict to passing within
+// gateRadius * margin of the gate center)
 HD INLINE void updateGates(const EnvironmentConfig& envConfig, const float* __restrict__ pos, const float* __restrict__ prevPos,
                            float* __restrict__ currentS, int* __restrict__ currentGates, int* __restrict__ nLaps, int marginAgent = -1,
                            float margin = 00.f)
@@ -436,7 +454,8 @@ HD INLINE void updateGates(const EnvironmentConfig& envConfig, const float* __re
                 currentS[iAgent * N_RACELINES + iRaceline] = s;
             }
 
-        // check if we passed through next gate: compute lambda = dot(vec, center - x_t) / dot(vec, x_{t+1} - x_t)
+        // check if we passed through next gate: compute lambda = dot(vec,
+        // center - x_t) / dot(vec, x_{t+1} - x_t)
         int nextGate = (currentGates[iAgent] + 1) % N_GATES;
         float num = 0.f, denom = 0.f;
         for (int d = 0; d < DIM; d++)
@@ -450,9 +469,12 @@ HD INLINE void updateGates(const EnvironmentConfig& envConfig, const float* __re
             continue;
 
         float lambda = num / denom;
-        // we cross if 0 <= lambda <= 1 and if the projection of the segment (x_t, x_t+1) on the gate plan (ie. (1 - lambda) * x_t
-        // + lambda * x_t+1) is at distance <= radius from the center if we want to make sure we cross the gate in the right
-        // direction, we have to check num >= 0 (<=> denom > 0). Here, we allows passing through in both directions
+        // we cross if 0 <= lambda <= 1 and if the projection of the segment
+        // (x_t, x_t+1) on the gate plan (ie. (1 - lambda) * x_t + lambda *
+        // x_t+1) is at distance <= radius from the center if we want to make
+        // sure we cross the gate in the right direction, we have to check num
+        // >= 0 (<=> denom > 0). Here, we allows passing through in both
+        // directions
 
         if (lambda < 0.f || lambda > 1.f)
             continue;
@@ -551,19 +573,22 @@ HD INLINE void computePIDAction(int agent, const SimState& state, const Environm
     }
 }
 
-// compute opp. nominal actions, PID noise + env noise (only if applyNoise is True), env dynamics, belief update (only if
-// shouldUpdateBelief) and branch update (only if considerBranching is true; if we become specialized, set corresponding branching
-// time to t+1)
+// compute opp. nominal actions, PID noise + env noise (only if applyNoise is
+// True), env dynamics, belief update (only if shouldUpdateBelief) and branch
+// update (only if considerBranching is true; if we become specialized, set
+// corresponding branching time to t+1)
 template <bool shouldUpdateBelief, bool considerBranching, typename RNG>
 HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentConfig& envConfig,
                                        const float* __restrict__ egoAction, // (dim)
-                                       bool applyNoise, // TODO: this could be a template (but probably doesn't matter if we're inlined anyway)
+                                       bool applyNoise,                     // TODO: this could be a template (but probably doesn't
+                                                                            // matter if we're inlined anyway)
                                        SimState& state,
-                                       BranchState& branchState, // belief is updated in-place if shouldUpdateBelief. branchingTime and branchUsed are
-                                                                 // updated if considerBranching is true
-                                       bool& branched, // set to true if we branched at this step. must be previously initialized to false. unused if
-                                                       // considerBranching is false
-                                       float minConfidence, // for branching. unused if considerBranching is false
+                                       BranchState& branchState, // belief is updated in-place if shouldUpdateBelief.
+                                                                 // branchingTime and branchUsed are updated if
+                                                                 // considerBranching is true
+                                       bool& branched,           // set to true if we branched at this step. must be previously
+                                                                 // initialized to false. unused if considerBranching is false
+                                       float minConfidence,      // for branching. unused if considerBranching is false
                                        // float* __restrict__ actions,                  // scratch: (nAgents, dim)
                                        // float* __restrict__ nomPidAction,             // scratch: (nModels, dim)
                                        ScratchEnvBuffer& scratch, RNG& rng, int gateMarginAgent = -1, float gateMargin = 0.0f)
@@ -700,7 +725,8 @@ HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentCo
     // if (isOutside(state, envConfig, envConfig.minDist / 2.0f))
     //     return TERM_EGO_OUTSIDE;
 
-    // if (N_AGENTS > 1 && isOutside(envConfig, state.pos + oppAgent * DIM, envConfig.minDist / 2.0f))
+    // if (N_AGENTS > 1 && isOutside(envConfig, state.pos + oppAgent * DIM,
+    // envConfig.minDist / 2.0f))
     //     return TERM_OPP_OUTSIDE;
 
     // if (state.laps[envConfig.iMppi] >= envConfig.nWinLaps)
@@ -717,4 +743,4 @@ HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentCo
 
     return TERM_NONE;
 }
-} // namespace EnvDroneRace
+} // namespace EnvHiddenObs

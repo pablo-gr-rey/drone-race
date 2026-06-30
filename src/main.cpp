@@ -1,11 +1,10 @@
 #include "config.h"
 #include "engine.h"
-#include <cmath>
-#include <cstdio>
-#include <zmq.hpp>
-#include <vector>
+
 #include <chrono>
+#include <cstdio>
 #include <iostream>
+#include <zmq.hpp>
 
 void runEngine(zmq::socket_t& sock)
 {
@@ -47,7 +46,9 @@ void runEngine(zmq::socket_t& sock)
 int main(int argc, char** argv)
 {
 #ifdef DEBUG
-    std::cout << "RUNNING IN DEBUG MODE. Warning: added synchronization will make code VERY slow" << std::endl;
+    std::cout << "RUNNING IN DEBUG MODE. Warning: added synchronization will "
+                 "make code VERY slow"
+              << std::endl;
 #else
     std::cout << "RUNNING IN RELEASE MODE" << std::endl;
 #endif
@@ -71,10 +72,11 @@ int main(int argc, char** argv)
     }
 
     std::string zmqAddr = "tcp://*:5555";
-    if (argc > 1) zmqAddr = argv[1];
+    if (argc > 1)
+        zmqAddr = argv[1];
 
-    zmq::context_t ctx{ 1 };
-    zmq::socket_t sock{ ctx, zmq::socket_type::pair };
+    zmq::context_t ctx{1};
+    zmq::socket_t sock{ctx, zmq::socket_type::pair};
     sock.set(zmq::sockopt::linger, 0);
 
     std::cout << "Binding ZMQ to addr " << zmqAddr << "...\n";
