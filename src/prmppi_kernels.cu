@@ -52,7 +52,7 @@ __global__ void PRMPPIsampleThetaValues(const float* __restrict__ belief,    // 
 
 // Full rollout for PRMPPI, one thread per (rob/nom, sample, theta). Stores running cost, safe cost in cost[p, s, 0:2]. note that safe cost is not
 // included in running cost (it is included in PRMPPIcostAvgKernel)
-__global__ void PRMPPIfullRolloutKernel(int agent, const EnvironmentConfig envConfig, const PRMPPIConfig mppiConfig, SimState initState,
+__global__ void PRMPPIfullRolloutKernel(const EnvironmentConfig envConfig, const PRMPPIConfig mppiConfig, SimState initState,
                                         const float* __restrict__ nom_nominal, // (T, dim)
                                         const float* __restrict__ rob_nominal, // (T, dim)
                                         const float* __restrict__ noise,       // (T, N, dim)
@@ -108,18 +108,18 @@ __global__ void PRMPPIfullRolloutKernel(int agent, const EnvironmentConfig envCo
 
         bool branched = false;
 
-        TerminalType term = environmentStep<false, false>(t, theta, envConfig, egoAction, true, state, branchState, branched, 0.0f, buffer, drng,
-                                                          agent, mppiConfig.gateTraversalMargin);
+        TerminalType term = environmentStep<false, false, true>(t, theta, envConfig, egoAction, true, state, branchState, branched, 0.0f, buffer,
+                                                                drng, mppiConfig.gateTraversalMargin);
 
         stop = (term != TERM_NONE);
 
-        runningCost += decay * PRMPPIstateCost(state, t, envConfig, mppiConfig);
-        safeCost = fmaxf(safeCost, PRMPPIsafetyCost(state, t, envConfig, mppiConfig));
+        runningCost += decay * PRMPPIstateCost(state, t, envConfig, mppiConfig, theta);
+        safeCost = fmaxf(safeCost, PRMPPIsafetyCost(state, t, envConfig, mppiConfig, theta));
 
         decay *= DECAY;
     }
 
-    runningCost += PRMPPIfinalCost(state, envConfig, mppiConfig);
+    runningCost += PRMPPIfinalCost(state, envConfig, mppiConfig, theta);
 
     float* out = robust ? cost_rob : cost_nom;
 
@@ -282,7 +282,7 @@ __global__ void PRMPPIWeightedAverageKernel(const float* __restrict__ nom_nomina
 }
 
 // Compute full cost for the 2 candidates nominals and all models, 2 * P threads (using the rng of the first 2 rollouts)
-__global__ void PRMPPIcomputeCandidateCostKernel(int agent, EnvironmentConfig envConfig, PRMPPIConfig mppiConfig, SimState initState,
+__global__ void PRMPPIcomputeCandidateCostKernel(EnvironmentConfig envConfig, PRMPPIConfig mppiConfig, SimState initState,
                                                  const float* __restrict__ cand1_nominal, // (T, dim)
                                                  const float* __restrict__ cand2_nominal, // (T, dim)
                                                  const int* __restrict__ thetas,          // (P)
@@ -325,19 +325,19 @@ __global__ void PRMPPIcomputeCandidateCostKernel(int agent, EnvironmentConfig en
 
         bool branched = false;
 
-        TerminalType term = environmentStep<false, false>(t, thetas[p], envConfig, egoAction, true, state, branchState, branched, 0.0f, buffer, drng,
-                                                          agent, mppiConfig.gateTraversalMargin);
+        TerminalType term = environmentStep<false, false, true>(t, thetas[p], envConfig, egoAction, true, state, branchState, branched, 0.0f, buffer,
+                                                                drng, mppiConfig.gateTraversalMargin);
 
         stop = (term != TERM_NONE);
 
-        cost += decay * PRMPPIstateCost(state, t, envConfig, mppiConfig);
+        cost += decay * PRMPPIstateCost(state, t, envConfig, mppiConfig, thetas[p]);
 
         decay *= DECAY;
 
-        safeCost = fmaxf(safeCost, PRMPPIsafetyCost(state, t, envConfig, mppiConfig));
+        safeCost = fmaxf(safeCost, PRMPPIsafetyCost(state, t, envConfig, mppiConfig, thetas[p]));
     }
 
-    cost += PRMPPIfinalCost(state, envConfig, mppiConfig);
+    cost += PRMPPIfinalCost(state, envConfig, mppiConfig, thetas[p]);
     if (safeCost > 0.0f)
         cost += mppiConfig.safetyWeight;
 
@@ -347,7 +347,7 @@ __global__ void PRMPPIcomputeCandidateCostKernel(int agent, EnvironmentConfig en
 }
 
 // Compute safe cost for the nominal and all models, P threads (using the rng of the first P rollouts). writes into candCosts[0:P]
-__global__ void PRMPPIcomputeSafeCostKernel(int agent, EnvironmentConfig envConfig, PRMPPIConfig mppiConfig, SimState initState,
+__global__ void PRMPPIcomputeSafeCostKernel(EnvironmentConfig envConfig, PRMPPIConfig mppiConfig, SimState initState,
                                             const float* __restrict__ nom_nominal, // (T, dim)
                                             const int* __restrict__ thetas,        // (P)
                                             float* __restrict__ candCosts,         // (P at least)
@@ -379,10 +379,10 @@ __global__ void PRMPPIcomputeSafeCostKernel(int agent, EnvironmentConfig envConf
 
         bool branched = false;
 
-        TerminalType term = environmentStep<false, false>(t, thetas[p], envConfig, egoAction, true, state, branchState, branched, 0.0f, buffer, drng,
-                                                          agent, mppiConfig.gateTraversalMargin);
+        TerminalType term = environmentStep<false, false, true>(t, thetas[p], envConfig, egoAction, true, state, branchState, branched, 0.0f, buffer,
+                                                                drng, mppiConfig.gateTraversalMargin);
 
-        safeCost = fmaxf(safeCost, PRMPPIsafetyCost(state, t, envConfig, mppiConfig));
+        safeCost = fmaxf(safeCost, PRMPPIsafetyCost(state, t, envConfig, mppiConfig, thetas[p]));
 
         stop = (term != TERM_NONE);
     }

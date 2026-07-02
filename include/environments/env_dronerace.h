@@ -2,6 +2,7 @@
 
 #include <math.h>
 
+#include "env_dronerace_defs.h"
 #include "protocol.h"
 #include "state.h"
 
@@ -22,7 +23,8 @@ SimState unpackSimState(const void* buf, size_t len, const EnvironmentConfig& en
 
 PIDConfig unpackPIDConfig(Reader& reader);
 
-std::pair<EnvironmentConfig, int> unpackEnvConfig(const void* buf, size_t len); // return seed
+// return (seed, trueTheta)
+std::tuple<EnvironmentConfig, int, int> unpackEnvConfig(const void* buf, size_t len);
 
 // Euclidean distance between two agents (positions only)
 HD INLINE float agentDist(const float* __restrict__ pos, int a, int b)
@@ -257,7 +259,7 @@ HD INLINE void updateBelief(float* __restrict__ belief, const float* __restrict_
 
 // Boundary distance = distance of point to closest boundary or opponent (<= 0 if outside), does not take into account agent's
 // radius. return -1.0f if other agent won
-HD INLINE float trackBoundaryDist(const SimState& state, const EnvironmentConfig& envConfig)
+HD INLINE float trackBoundaryDist(const SimState& state, const EnvironmentConfig& envConfig, int /* trueTheta */)
 {
     if (state.laps[1 - envConfig.iMppi] >= envConfig.nWinLaps)
         return -1.0f;
@@ -299,46 +301,15 @@ HD INLINE float trackBoundaryDist(const SimState& state, const EnvironmentConfig
         sqDist += dx * dx;
     }
 
-    minDist = fminf(minDist, sqrtf(sqDist) - envConfig.minDist * 0.5f);
+    minDist = fminf(minDist, sqrtf(sqDist) - envConfig.droneRadius);
 
     return minDist;
 }
 
-HD INLINE bool isOutside(const SimState& state, const EnvironmentConfig& envConfig,
-                         float radius) // radius should be e.g. minDist/2 in the actual dynamics and (minDist * factor) / 2 for MPPI
+HD INLINE bool isOutside(const SimState& state, const EnvironmentConfig& envConfig, float radius, int trueTheta)
+// radius should be e.g. minDist/2 in the actual dynamics and (minDist * factor) / 2 for MPPI
 {
-    // for (int d = 0; d < DIM; d++)
-    //     if (pos[d] - margin < envConfig.arenaMin[d] || pos[d] + margin > envConfig.arenaMax[d])
-    //         return true;
-
-    // for (int iObs = 0; iObs < N_OBSTACLES; iObs++)
-    // {
-    //     float sqDist = 0.0f;
-    //     for (int d = 0; d < DIM; d++)
-    //     {
-    //         float dist = fmaxf(0.0f, fmaxf(envConfig.obstacles[iObs * 2 * DIM + d] - pos[d], pos[d] - envConfig.obstacles[(iObs
-    //         * 2 + 1) * DIM + d])); sqDist += dist * dist;
-    //     }
-
-    //     if (sqDist <= margin * margin)
-    //         return true;
-    // }
-
-    // for (int iObs = 0; iObs < N_ROUND_OBSTACLES; iObs++)
-    // {
-    //     float sqDist = 0.0f;
-    //     for (int d = 0; d < DIM; d++)
-    //     {
-    //         float dx = pos[d] - envConfig.roundObsCenters[iObs * DIM + d];
-    //         sqDist += dx * dx;
-    //     }
-    //     if (sqDist <= (margin + envConfig.roundObsRadius[iObs]) * (margin + envConfig.roundObsRadius[iObs]))
-    //         return true;
-    // }
-
-    // return false;
-
-    return trackBoundaryDist(state, envConfig) < radius;
+    return trackBoundaryDist(state, envConfig, trueTheta) < radius;
 }
 
 HD INLINE bool isWinner(const SimState& state, const EnvironmentConfig& envConfig)
@@ -351,7 +322,7 @@ HD INLINE bool isWinner(const SimState& state, const EnvironmentConfig& envConfi
     // opponent outside?
 
     const float* __restrict__ curPos = state.pos + (1 - envConfig.iMppi) * DIM;
-    float radius = envConfig.minDist * 0.5f;
+    float radius = envConfig.droneRadius;
 
     for (int d = 0; d < DIM; d++)
         if (curPos[d] < envConfig.arenaMin[d] + radius || curPos[d] > envConfig.arenaMax[d] + radius)
@@ -412,17 +383,25 @@ HD INLINE float getAnyAdvance(const SimState& state, const EnvironmentConfig& en
     return state.gates[agent] + N_GATES * state.laps[agent] + scale * (1.0f - sqrtf(sqGateDist / sqConsGateDist));
 }
 
-HD INLINE float getAdvance(const SimState& state, const EnvironmentConfig& envConfig) { return getAnyAdvance(state, envConfig, envConfig.iMppi); }
+HD INLINE float getAdvance(const SimState& state, const EnvironmentConfig& envConfig)
+{
+    return getAnyAdvance(state, envConfig, envConfig.iMppi);
+}
 
 HD INLINE float getOppAdvance(const SimState& state, const EnvironmentConfig& envConfig)
 {
     return getAnyAdvance(state, envConfig, 1 - envConfig.iMppi);
 }
 
-// if agent == marginAgent, use additional margin (we restrict to passing within gateRadius * margin of the gate center)
+HD INLINE float getMaxAccel(const EnvironmentConfig& envConfig)
+{
+    return envConfig.maxAccel[envConfig.iMppi];
+}
+
+// if addMargin, use additional margin (we restrict to passing within gateRadius * margin of the gate center)
+template <bool addMargin>
 HD INLINE void updateGates(const EnvironmentConfig& envConfig, const float* __restrict__ pos, const float* __restrict__ prevPos,
-                           float* __restrict__ currentS, int* __restrict__ currentGates, int* __restrict__ nLaps, int marginAgent = -1,
-                           float margin = 00.f)
+                           float* __restrict__ currentS, int* __restrict__ currentGates, int* __restrict__ nLaps, float margin = 0.0f)
 {
     for (int iAgent = 0; iAgent < N_AGENTS; iAgent++)
     {
@@ -465,7 +444,7 @@ HD INLINE void updateGates(const EnvironmentConfig& envConfig, const float* __re
         }
 
         float rad = envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate];
-        if (iAgent == marginAgent)
+        if constexpr (addMargin)
             rad *= margin * margin;
 
         if (sqDist <= rad)
@@ -530,9 +509,9 @@ HD INLINE void computePIDAction(int agent, const SimState& state, const Environm
             }
 
             float dist = sqrtf(dist2) + 1e-8f;
-            if (dist < pid.repulsionDistFact * envConfig.minDist)
+            if (dist < pid.repulsionDistFact * envConfig.droneRadius * 2.0f)
             {
-                float scale = pid.repulsionFactor / powf(dist / envConfig.minDist, pid.repulsionPower + 1.0f);
+                float scale = pid.repulsionFactor / powf(dist * 0.5f / envConfig.droneRadius, pid.repulsionPower + 1.0f);
                 for (int d = 0; d < DIM; d++)
                     outAction[d] -= scale * diff[d];
             }
@@ -554,7 +533,7 @@ HD INLINE void computePIDAction(int agent, const SimState& state, const Environm
 // compute opp. nominal actions, PID noise + env noise (only if applyNoise is True), env dynamics, belief update (only if
 // shouldUpdateBelief) and branch update (only if considerBranching is true; if we become specialized, set corresponding branching
 // time to t+1)
-template <bool shouldUpdateBelief, bool considerBranching, typename RNG>
+template <bool shouldUpdateBelief, bool considerBranching, bool addMargin, typename RNG>
 HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentConfig& envConfig,
                                        const float* __restrict__ egoAction, // (dim)
                                        bool applyNoise, // TODO: this could be a template (but probably doesn't matter if we're inlined anyway)
@@ -564,9 +543,7 @@ HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentCo
                                        bool& branched, // set to true if we branched at this step. must be previously initialized to false. unused if
                                                        // considerBranching is false
                                        float minConfidence, // for branching. unused if considerBranching is false
-                                       // float* __restrict__ actions,                  // scratch: (nAgents, dim)
-                                       // float* __restrict__ nomPidAction,             // scratch: (nModels, dim)
-                                       ScratchEnvBuffer& scratch, RNG& rng, int gateMarginAgent = -1, float gateMargin = 0.0f)
+                                       ScratchEnvBuffer& scratch, RNG& rng, float gateMargin = 0.0f)
 {
     // 1. Copy current pos (for gate update)
     float prevPos[N_AGENTS * DIM];
@@ -654,7 +631,7 @@ HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentCo
     }
 
     // 8. Update gates with prev pos
-    updateGates(envConfig, state.pos, prevPos, state.S, state.gates, state.laps, gateMarginAgent, gateMargin);
+    updateGates<addMargin>(envConfig, state.pos, prevPos, state.S, state.gates, state.laps, gateMargin);
 
     int oppAgent = 1 - envConfig.iMppi;
 
@@ -676,40 +653,7 @@ HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentCo
             }
     }
 
-    // 10. Check for collisions, outside, or win
-    // bool collision = false;
-    // for (int a1 = 0; a1 < N_AGENTS && !collision; a1++)
-    //     for (int a2 = a1 + 1; a2 < N_AGENTS; a2++)
-    //     {
-    //         float dist2 = 0.0f;
-    //         for (int d = 0; d < DIM; d++)
-    //         {
-    //             float dx = state.pos[a1 * DIM + d] - state.pos[a2 * DIM + d];
-    //             dist2 += dx * dx;
-    //         }
-    //         if (dist2 < envConfig.minDist * envConfig.minDist)
-    //         {
-    //             collision = true;
-    //             break;
-    //         }
-    //     }
-
-    // if (collision)
-    //     return TERM_COLLISION;
-
-    // if (isOutside(state, envConfig, envConfig.minDist / 2.0f))
-    //     return TERM_EGO_OUTSIDE;
-
-    // if (N_AGENTS > 1 && isOutside(envConfig, state.pos + oppAgent * DIM, envConfig.minDist / 2.0f))
-    //     return TERM_OPP_OUTSIDE;
-
-    // if (state.laps[envConfig.iMppi] >= envConfig.nWinLaps)
-    //     return TERM_WIN;
-
-    // if (N_AGENTS > 1 && state.laps[oppAgent] >= envConfig.nWinLaps)
-    //     return TERM_OPP_WIN;
-
-    if (isOutside(state, envConfig, envConfig.minDist / 2.0f))
+    if (isOutside(state, envConfig, envConfig.droneRadius, trueTheta))
         return TERM_LOSE;
 
     if (isWinner(state, envConfig))

@@ -60,16 +60,14 @@ struct PIDConfig
 // this should have the same layout as GateEnvironmentConfig in the Python side
 struct EnvironmentConfig
 {
+    float arenaMin[DIM]; // (dim)
+    float arenaMax[DIM]; // (dim)
+
     float dt;
 
     bool sendStates;
 
-    // float initPos[N_AGENTS * DIM];
-    // float initSpeed[N_AGENTS * DIM];
-    // float initS[N_AGENTS * N_RACELINES];    // (nAgents * nRacelines). if == -1.0f, will not be updated (since it is only
-    // useful for PIDs) int initLaps[N_AGENTS]; int initGates[N_AGENTS];
-
-    float minDist;
+    float droneRadius;
     float posNoiseLevel;
     float speedNoiseLevel;
     float actionNoiseLevel;
@@ -85,9 +83,6 @@ struct EnvironmentConfig
     float gateVectors[N_GATES * DIM]; // (nGates * dim)
     float gateRadius[N_GATES];        // (nGates)
 
-    float arenaMin[DIM]; // (dim)
-    float arenaMax[DIM]; // (dim)
-
     float obstacles[N_OBSTACLES * DIM * 2];         // (nObstacles * dim * 2): rectangle obstacles, i.e. [xmin, ymin, xmax, ymax]
     float roundObsCenters[N_ROUND_OBSTACLES * DIM]; // (nRoundObstacles * dim): center of obstacles
     float roundObsRadius[N_ROUND_OBSTACLES];        // (nRoundObstacles): radius of obstacles
@@ -99,7 +94,6 @@ struct EnvironmentConfig
 
     PIDConfig oppPid[N_TRUE_MODELS];
     int iMppi;
-    int trueTheta;
 };
 
 struct SimState

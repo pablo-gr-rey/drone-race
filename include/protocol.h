@@ -15,10 +15,9 @@ enum MsgType : uint32_t
 
 enum EventType : uint32_t
 {
-    EVT_COLLISION = 0,
-    EVT_OUTSIDE = 1,
-    EVT_WINNER = 2,
-    EVT_TRUNCATED = 3,
+    EVT_OUTSIDE = 0,
+    EVT_WINNER = 1,
+    EVT_TRUNCATED = 2,
 };
 
 // byte reader util
@@ -58,8 +57,14 @@ struct Writer
 
     template <typename T> void pushIntArray(std::span<const T> arr);
 
-    const uint8_t* bytes() const { return data.data(); }
-    size_t size() const { return data.size(); }
+    const uint8_t* bytes() const
+    {
+        return data.data();
+    }
+    size_t size() const
+    {
+        return data.size();
+    }
 };
 
 template <typename T> void Writer::pushIntArray(std::span<const T> arr)

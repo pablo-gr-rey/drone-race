@@ -47,7 +47,10 @@ MPPIController::MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc,
         h_B = std::vector<float>(mppiConfig.nTimesteps * mppiConfig.nKnots, 0.0f);
 }
 
-MPPIController::~MPPIController() { freeDevice(); }
+MPPIController::~MPPIController()
+{
+    freeDevice();
+}
 
 std::vector<float> MPPIController::buildSplineMatrix()
 {
@@ -243,7 +246,7 @@ void MPPIController::freeDevice()
     deviceReady = false;
 }
 
-void MPPIController::getControl(int agent, const SimState& state, float* outAction)
+void MPPIController::getControl(const SimState& state, float* outAction)
 {
     if (!engine)
         throw std::runtime_error("MPPI: engine not set");
@@ -283,8 +286,8 @@ void MPPIController::getControl(int agent, const SimState& state, float* outActi
 #endif
 
     // 3. rollout
-    fullRolloutKernel<<<grd, blk>>>(agent, envConfig, mppiConfig, state, d_belief, USE_SPLINES ? d_splineNominal : d_nominal, d_noise, d_B,
-                                    d_costsTrue, d_branchUsed, d_branchTime, d_rng);
+    fullRolloutKernel<<<grd, blk>>>(envConfig, mppiConfig, state, d_belief, USE_SPLINES ? d_splineNominal : d_nominal, d_noise, d_B, d_costsTrue,
+                                    d_branchUsed, d_branchTime, d_rng);
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
@@ -338,7 +341,7 @@ void MPPIController::getControl(int agent, const SimState& state, float* outActi
     }
 
     int clampGrd = (N_BRANCH_PLANS * (USE_SPLINES ? M : T) + blk - 1) / blk;
-    clampNominalKernel<<<clampGrd, blk>>>(USE_SPLINES ? d_splineNominal : d_nominal, envConfig.maxAccel[agent], (USE_SPLINES ? M : T));
+    clampNominalKernel<<<clampGrd, blk>>>(USE_SPLINES ? d_splineNominal : d_nominal, Env::getMaxAccel(envConfig), (USE_SPLINES ? M : T));
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
@@ -399,17 +402,16 @@ void MPPIController::getControl(int agent, const SimState& state, float* outActi
     std::cout << "Chosen branch (-1=nominal, theta=committed to theta): ";
     for (int k = 0; k < N_MODEL_FACTORS; k++)
         std::cout << (predTheta[k] - 1) << ' ';
-    std::cout << "\n\tSubmitted action: \t";
+    std::cout << "\tSubmitted action: \t";
 
     for (int d = 0; d < ACTION_DIM; d++)
         std::cout << outAction[d] << " ";
-    std::cout << std::endl;
 
     float usedNu = nu[branchIdx];
 
-    std::cout << "Minimum cost (for submitted action): " << hostMin[branchIdx * (USE_SPLINES ? M : T)] << std::endl;
+    std::cout << "\nminimum cost (for submitted action): " << hostMin[branchIdx * (USE_SPLINES ? M : T)] << "\n";
 
-    std::cout << "Sum of computed sample costs w_k (nu) (for submitted action): " << usedNu << "\n";
+    std::cout << "Sum of computed sample costs w_k (nu): " << usedNu << "\n";
 
     if (usedNu > max_nu * (float)N)
     {
@@ -495,8 +497,8 @@ void MPPIController::computeCertifiedLoss()
     }
 
     std::cout << std::fixed << std::setprecision(5) << "Certified loss: " << certifiedLoss << " (obtained at timestep " << maxt << "): "
-              << " eps1 " << eps1max << " eps2 " << eps2max << "\ntotFailOld "
-              << std::accumulate(failCountOld.begin(), failCountOld.begin() + maxt + 1, 0u) << "\t(total over whole horizon " << totFailOld << ")\n"
+              << " eps1 " << eps1max << " eps2 " << eps2max << "\ttotFailOld "
+              << std::accumulate(failCountOld.begin(), failCountOld.begin() + maxt + 1, 0u) << "\t(total over whole horizon " << totFailOld << ")\t"
               << " totFailNew " << std::accumulate(failCountNew.begin(), failCountNew.begin() + maxt + 1, 0u) << "\t(total over whole horizon "
               << totFailNew << ")\n";
 }

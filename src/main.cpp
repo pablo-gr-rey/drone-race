@@ -16,7 +16,7 @@ void runEngine(zmq::socket_t& sock)
     if (!res)
         throw std::runtime_error("Track configuration zmq recv failed");
 
-    auto [envConfig, seed] = Env::unpackEnvConfig(msg.data(), msg.size());
+    auto [envConfig, seed, trueTheta] = Env::unpackEnvConfig(msg.data(), msg.size());
 
     res = sock.recv(msg);
     if (!res)
@@ -32,7 +32,7 @@ void runEngine(zmq::socket_t& sock)
 
     std::cout << "Header unpacked, starting simulation\n";
 
-    SimulationEngine engine(envConfig, contConfig, initSimState, seed);
+    SimulationEngine engine(envConfig, contConfig, initSimState, seed, trueTheta);
 
     auto begin = std::chrono::steady_clock::now();
 

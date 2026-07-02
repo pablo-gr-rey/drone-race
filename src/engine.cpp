@@ -12,10 +12,12 @@
 #include <variant>
 #include <zmq.h>
 
-SimulationEngine::SimulationEngine(const EnvironmentConfig& config, const AnyControllerConfig& contConfig, const SimState& initSimState, int s)
+SimulationEngine::SimulationEngine(const EnvironmentConfig& config, const AnyControllerConfig& contConfig, const SimState& initSimState, int s,
+                                   int tTheta)
     : rng(s)
 {
     seed = s;
+    trueTheta = tTheta;
 
     envConfig = config;
 
@@ -45,7 +47,10 @@ SimulationEngine::SimulationEngine(const EnvironmentConfig& config, const AnyCon
     controller->engine = this;
 }
 
-SimulationEngine::~SimulationEngine() { Env::freeDeviceConfig(d_envConfig); }
+SimulationEngine::~SimulationEngine()
+{
+    Env::freeDeviceConfig(d_envConfig);
+}
 
 void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array<float, ACTION_DIM>& egoAction, const SimState& prevState)
 {
@@ -65,8 +70,6 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
     if (auto mppiCont = dynamic_cast<MPPIController*>(controller.get()))
     {
-        std::cout << "controller " << envConfig.iMppi << " is MPPI controller" << std::endl;
-
         writer.pushFloatArray(mppiCont->h_belief);
 
         writer.pushInt32(std::accumulate(mppiCont->failCount.begin(), mppiCont->failCount.end(), 0u));
@@ -96,7 +99,6 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
             int stopTime = -1;
             EventType stopReason = EVT_TRUNCATED;
-            int stopAgent = -1;
 
             std::vector<float> egoActions(mppiConfig.nTimesteps * ACTION_DIM);
             std::vector<SimState> states;
@@ -114,16 +116,16 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
                 bool branched = false;
 
-                TerminalType term = environmentStep<true, true>(t, theta, envConfig, egoActions.data() + t * ACTION_DIM,
-                                                                false, // no PID noise for reproducible display
-                                                                predState, bstate, branched, mppiConfig.minConfidence, buffer, hrng);
+                TerminalType term = environmentStep<true, true, false>(t, theta, envConfig, egoActions.data() + t * ACTION_DIM,
+                                                                       false, // no PID noise for reproducible display
+                                                                       predState, bstate, branched, mppiConfig.minConfidence, buffer, hrng);
 
                 if (branched)
                     tOrigin = t + 1;
 
                 states.push_back(predState);
 
-                trajCost += stateCost(predState, t, envConfig, mppiConfig) * decay;
+                trajCost += stateCost(predState, t, envConfig, mppiConfig, trueTheta) * decay;
                 decay *= DECAY;
 
                 if (term != TERM_NONE)
@@ -133,26 +135,22 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
                     std::cout << "STOPPING SIMULATION at step " << t << " term " << (int)term << std::endl;
 
                     stopTime = t;
-                    std::optional<std::pair<EventType, int>> parsed = parseTerm(term, envConfig.iMppi);
-                    stopReason = parsed->first;
-                    stopAgent = parsed->second;
+                    std::optional<EventType> parsed = parseTerm(term);
+                    stopReason = *parsed;
 
                     break;
                 }
             }
 
-            trajCost += finalCost(predState, envConfig, mppiConfig);
+            trajCost += finalCost(predState, envConfig, mppiConfig, trueTheta);
 
-            std::cout << "Final cost for theta = " << theta << ": " << trajCost << std::endl;
-            std::cout << "Final belief for theta = " << theta << ": ";
+            std::cout << "Final cost for theta = " << theta << ": " << trajCost << "\tfinal belief for theta = " << theta << ": ";
             for (int k = 0; k < N_TRUE_MODELS; k++)
                 std::cout << bstate.belief[k] << " ";
-            std::cout << "\n";
-
-            std::cout << "Final branching time: ";
+            std::cout << "\tFinal branching time: ";
             for (int t : bstate.branchingTime)
                 std::cout << t << ' ';
-            std::cout << "\nFinal pred theta: ";
+            std::cout << "\tFinal pred theta: ";
             for (int t : bstate.predTheta)
                 std::cout << t << ' ';
             std::cout << "\n";
@@ -163,14 +161,11 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
             writer.pushFloatArray(egoActions);
             writer.pushInt32(stopReason);
             writer.pushInt32(stopTime);
-            writer.pushInt32(stopAgent);
         }
     }
 
     else if (auto prmppiCont = dynamic_cast<PRMPPIController*>(controller.get()))
     {
-        std::cout << "controller " << envConfig.iMppi << " is MPPI controller" << std::endl;
-
         writer.pushFloatArray(prevState.pos);
         writer.pushFloatArray(prmppiCont->h_belief);
 
@@ -197,7 +192,6 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
             int stopTime = -1;
             EventType stopReason = EVT_TRUNCATED;
-            int stopAgent = -1;
 
             std::vector<float> egoActions(prmppiConfig.nTimesteps * ACTION_DIM);
             std::vector<SimState> states;
@@ -214,9 +208,9 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
                 bool branched = false;
 
-                TerminalType term = Env::environmentStep<false, false>(t, theta, envConfig, egoActions.data() + t * ACTION_DIM,
-                                                                       false, // no PID noise for reproducible display
-                                                                       predState, bstate, branched, 0.0f, buffer, hrng);
+                TerminalType term = Env::environmentStep<false, false, false>(t, theta, envConfig, egoActions.data() + t * ACTION_DIM,
+                                                                              false, // no PID noise for reproducible display
+                                                                              predState, bstate, branched, 0.0f, buffer, hrng);
 
                 states.push_back(predState);
 
@@ -227,9 +221,8 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
                     std::cout << "STOPPING SIMULATION at step " << t << " term " << (int)term << std::endl;
 
                     stopTime = t;
-                    std::optional<std::pair<EventType, int>> parsed = parseTerm(term, envConfig.iMppi);
-                    stopReason = parsed->first;
-                    stopAgent = parsed->second;
+                    std::optional<EventType> parsed = parseTerm(term);
+                    stopReason = *parsed;
 
                     break;
                 }
@@ -241,7 +234,6 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
             writer.pushFloatArray(egoActions);
             writer.pushInt32(stopReason);
             writer.pushInt32(stopTime);
-            writer.pushInt32(stopAgent);
         }
     }
 
@@ -251,13 +243,12 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
     sock.send(zmq::buffer(writer.data));
 }
 
-void SimulationEngine::sendEvent(zmq::socket_t& sock, EventType type, int info)
+void SimulationEngine::sendEvent(zmq::socket_t& sock, EventType type)
 {
     Writer writer;
 
     writer.pushInt32(MSG_EVENT);
     writer.pushInt32(type);
-    writer.pushInt32(info);
 
     sock.send(zmq::buffer(writer.data));
 }
@@ -272,8 +263,7 @@ void SimulationEngine::sendDone(zmq::socket_t& sock)
 }
 
 // simulate one state for the given action. belief is updated in-place if given
-std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::array<float, ACTION_DIM>& action, int t,
-                                                                   std::array<float, N_TRUE_MODELS>& belief)
+std::optional<EventType> SimulationEngine::dynStep(const std::array<float, ACTION_DIM>& action, int t, std::array<float, N_TRUE_MODELS>& belief)
 {
     static ScratchEnvBuffer buffer;
 
@@ -289,15 +279,15 @@ std::optional<std::pair<EventType, int>> SimulationEngine::dynStep(const std::ar
 
     if (auto mppiCont = dynamic_cast<MPPIController*>(controller.get()))
         // MPPI needs belief & branching update
-        term = environmentStep<true, true>(t, envConfig.trueTheta, envConfig, action.data(), true, state, branchState, branched,
-                                           mppiCont->mppiConfig.minConfidence, buffer, hrng);
+        term = environmentStep<true, true, false>(t, trueTheta, envConfig, action.data(), true, state, branchState, branched,
+                                                  mppiCont->mppiConfig.minConfidence, buffer, hrng);
     else
         // other controllers may only use belief update
-        term = environmentStep<true, false>(t, envConfig.trueTheta, envConfig, action.data(), true, state, branchState, branched, 0.0f, buffer, hrng);
+        term = environmentStep<true, false, false>(t, trueTheta, envConfig, action.data(), true, state, branchState, branched, 0.0f, buffer, hrng);
 
     std::copy(std::begin(branchState.belief), std::end(branchState.belief), belief.begin());
 
-    return parseTerm(term, envConfig.iMppi);
+    return parseTerm(term);
 }
 
 void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
@@ -307,14 +297,14 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
 
     int step;
 
-    std::optional<std::pair<EventType, int>> stopInfo = std::nullopt;
+    std::optional<EventType> stopInfo = std::nullopt;
 
     for (step = 1; step <= maxSteps; step++)
     {
         std::cout << "\nSTEP " << step << "\n";
 
         std::array<float, ACTION_DIM> action;
-        controller->getControl(envConfig.iMppi, state, action.data());
+        controller->getControl(state, action.data());
 
         SimState prevState = state;
 
@@ -328,13 +318,13 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
 
         if (stopInfo)
         {
-            std::cout << "Event " << stopInfo->first << " (agent " << stopInfo->second << ")\n";
-            sendEvent(sock, stopInfo->first, stopInfo->second);
+            std::cout << "Event " << *stopInfo << "\n";
+            sendEvent(sock, *stopInfo);
             break;
         }
 
         if (step == maxSteps)
-            sendEvent(sock, EVT_TRUNCATED, -1);
+            sendEvent(sock, EVT_TRUNCATED);
     }
 
     sendDone(sock);
@@ -343,24 +333,22 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
 
     if (!stopInfo)
         std::cout << "Simulation truncated (maxSteps reached)\n";
-    else if (stopInfo->first == EVT_COLLISION)
-        std::cout << "Collision\n";
-    else if (stopInfo->first == EVT_OUTSIDE)
-        std::cout << "Agent " << (stopInfo->second + 1) << " is outside\n";
-    else if (stopInfo->first == EVT_WINNER)
-        std::cout << "Agent " << (stopInfo->second + 1) << " wins\n";
+    else if (*stopInfo == EVT_OUTSIDE)
+        std::cout << "Agent is outside\n";
+    else if (*stopInfo == EVT_WINNER)
+        std::cout << "Agent wins\n";
 }
 
-std::optional<std::pair<EventType, int>> SimulationEngine::parseTerm(TerminalType term, int egoAgent)
+std::optional<EventType> SimulationEngine::parseTerm(TerminalType term)
 {
     switch (term)
     {
     case TERM_NONE:
         return std::nullopt;
     case TERM_LOSE:
-        return {{EVT_OUTSIDE, egoAgent}};
+        return {EVT_OUTSIDE};
     case TERM_WIN:
-        return {{EVT_WINNER, 1 - egoAgent}};
+        return {EVT_WINNER};
     default:
         throw std::runtime_error("Unexpected TerminalType value");
     }

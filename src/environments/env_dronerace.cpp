@@ -1,10 +1,9 @@
-#include "config.h"
+#include "config.h" // IWYU pragma: export
 
 #ifdef USE_ENV_DRONERACE
 
 #include <iostream>
 
-#include "config.h"
 #include "protocol.h"
 
 namespace EnvDroneRace
@@ -116,7 +115,8 @@ PIDConfig unpackPIDConfig(Reader& reader)
     return pidconfig;
 }
 
-std::pair<EnvironmentConfig, int> unpackEnvConfig(const void* buf, size_t len) // return seed
+// return (seed, trueTheta)
+std::tuple<EnvironmentConfig, int, int> unpackEnvConfig(const void* buf, size_t len)
 {
     EnvironmentConfig envConfig;
 
@@ -133,6 +133,22 @@ std::pair<EnvironmentConfig, int> unpackEnvConfig(const void* buf, size_t len) /
             std::format("Environment kind mismatch: received kind {}, but compiled environment is ENV_DRONERACE ({}). Recompile the code with the "
                         "correct environment set in config.h",
                         envKind, static_cast<int>(ENV_DRONERACE)));
+
+    int nModelFactors = reader.readInt32();
+    if (nModelFactors != N_MODEL_FACTORS)
+        throw std::runtime_error(
+            std::format("Received MPPI config for {} environment parameters but N_MODEL_FACTORS is set to {}. Edit this constant and recompile",
+                        nModelFactors, N_MODEL_FACTORS));
+
+    std::vector<float> modelSizes = reader.readFloatArray();
+    for (int k = 0; k < N_MODEL_FACTORS; k++)
+        if ((int)modelSizes[k] != MODEL_SIZE(k))
+            throw std::runtime_error(
+                std::format("Received invalid model size for parameter {}: got {}, but MODEL_SIZE({}) is set to {}. Edit this constant and recompile",
+                            k, (int)modelSizes[k], k, MODEL_SIZE(k)));
+
+    reader.readFloatArray(envConfig.arenaMin);
+    reader.readFloatArray(envConfig.arenaMax);
 
     int nAgents = (int)reader.readInt32();
     int dim = (int)reader.readInt32();
@@ -154,7 +170,7 @@ std::pair<EnvironmentConfig, int> unpackEnvConfig(const void* buf, size_t len) /
         throw std::runtime_error(
             std::format("Received config for {} gates but N_GATES is set to {}. Edit this constant and recompile", nGates, N_GATES));
 
-    envConfig.minDist = reader.readFloat();
+    envConfig.droneRadius = reader.readFloat();
     envConfig.posNoiseLevel = reader.readFloat();
     envConfig.speedNoiseLevel = reader.readFloat();
     envConfig.actionNoiseLevel = reader.readFloat();
@@ -174,9 +190,6 @@ std::pair<EnvironmentConfig, int> unpackEnvConfig(const void* buf, size_t len) /
     reader.readFloatArray(envConfig.gateCenters);
     reader.readFloatArray(envConfig.gateVectors);
     reader.readFloatArray(envConfig.gateRadius);
-
-    reader.readFloatArray(envConfig.arenaMin);
-    reader.readFloatArray(envConfig.arenaMax);
 
     int nObstacles = reader.readInt32();
     if (nObstacles != N_OBSTACLES)
@@ -205,26 +218,14 @@ std::pair<EnvironmentConfig, int> unpackEnvConfig(const void* buf, size_t len) /
 
     int seed = reader.readInt32();
 
-    int nModelFactors = reader.readInt32();
-    if (nModelFactors != N_MODEL_FACTORS)
-        throw std::runtime_error(
-            std::format("Received MPPI config for {} environment parameters but N_MODEL_FACTORS is set to {}. Edit this constant and recompile",
-                        nModelFactors, N_MODEL_FACTORS));
-
-    std::vector<float> modelSizes = reader.readFloatArray();
-    for (int k = 0; k < N_MODEL_FACTORS; k++)
-        if ((int)modelSizes[k] != MODEL_SIZE(k))
-            throw std::runtime_error(
-                std::format("Received invalid model size for parameter {}: got {}, but MODEL_SIZE({}) is set to {}. Edit this constant and recompile",
-                            k, (int)modelSizes[k], k, MODEL_SIZE(k)));
-
     reader.readFloatArray(envConfig.initBelief);
 
     for (int i = 0; i < N_TRUE_MODELS; i++)
         envConfig.oppPid[i] = unpackPIDConfig(reader);
 
     envConfig.iMppi = reader.readInt32();
-    envConfig.trueTheta = reader.readInt32();
+
+    int trueTheta = reader.readInt32();
 
     std::vector<float> vecTrackPoints = reader.readFloatArray();
     if (vecTrackPoints.size() != N_RACELINES * N_TRACK_SAMPLES * DIM)
@@ -236,13 +237,13 @@ std::pair<EnvironmentConfig, int> unpackEnvConfig(const void* buf, size_t len) /
 
     reader.assertFinished();
 
-    std::cout << "loaded envConfig, nAgents " << nAgents << " nWinLaps " << envConfig.nWinLaps << " true theta " << envConfig.trueTheta
-              << " max speed " << envConfig.maxSpeed[0] << ' ' << envConfig.maxSpeed[1] << " nTrackSamples" << nTrackSamples << " gate vectors:";
+    std::cout << "loaded envConfig, nAgents " << nAgents << " nWinLaps " << envConfig.nWinLaps << " true theta " << trueTheta << " max speed "
+              << envConfig.maxSpeed[0] << ' ' << envConfig.maxSpeed[1] << " nTrackSamples" << nTrackSamples << " gate vectors:";
     for (int i = 0; i < nGates * dim; i++)
         std::cout << envConfig.gateVectors[i] << (i % dim ? " " : ";  ");
     std::cout << "\n";
 
-    return {envConfig, seed};
+    return {envConfig, seed, trueTheta};
 }
 } // namespace EnvDroneRace
 

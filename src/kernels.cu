@@ -31,8 +31,7 @@ __global__ void generateNoiseKernel(float* noise, curandState* rng, float stddev
 }
 
 // Fused rollout step (fills costsTrue, branchUsed, branchTime)
-__global__ void fullRolloutKernel(int controlAgent, const EnvironmentConfig envConfig, const MPPIConfig mc, SimState initState,
-                                  const float* __restrict__ initBelief,
+__global__ void fullRolloutKernel(const EnvironmentConfig envConfig, const MPPIConfig mc, SimState initState, const float* __restrict__ initBelief,
                                   const float* __restrict__ nominal, // if USE_SPLINES: (nBranchPlans, M, dim);
                                                                      // otherwise: (nBranchPlans, T, dim)
                                   const float* __restrict__ noise, const float* __restrict__ B, float* __restrict__ costsTrue,
@@ -139,21 +138,21 @@ __global__ void fullRolloutKernel(int controlAgent, const EnvironmentConfig envC
             bool branched = false;
 
             TerminalType term =
-                environmentStep<true, true>(t, trueThetaFlat, envConfig, egoAction,
-                                            true, // applyPidNoise
-                                            state, branchState, branched, mc.minConfidence, buffer, drng, controlAgent, mc.gateTraversalMargin);
+                environmentStep<true, true, false>(t, trueThetaFlat, envConfig, egoAction,
+                                                   true, // applyPidNoise
+                                                   state, branchState, branched, mc.minConfidence, buffer, drng, mc.gateTraversalMargin);
 
             if (branched)
                 tOrigin = t + 1;
 
             stop = (term != TERM_NONE);
 
-            cost += stateCost(state, t, envConfig, mc) * decay;
+            cost += stateCost(state, t, envConfig, mc, trueThetaFlat) * decay;
             decay *= DECAY;
         }
 
         // Terminal cost
-        cost += finalCost(state, envConfig, mc);
+        cost += finalCost(state, envConfig, mc, trueThetaFlat);
 
         // actual cost is dependent on the probability that the opponent is
         // actually following trueTheta, ie. initBelief[theta], unless we are
@@ -527,9 +526,9 @@ __global__ void verifyNominalFailureKernel(EnvironmentConfig envConfig, MPPIConf
 
         bool branched = false;
 
-        TerminalType term = environmentStep<true, true>(t, theta, envConfig, egoAction,
-                                                        true, // applyPidNoise in real verification
-                                                        state, branchState, branched, mc.minConfidence, buffer, drng);
+        TerminalType term = environmentStep<true, true, false>(t, theta, envConfig, egoAction,
+                                                               true, // applyPidNoise in real verification
+                                                               state, branchState, branched, mc.minConfidence, buffer, drng);
 
         if (branched)
             tOrigin = t + 1;

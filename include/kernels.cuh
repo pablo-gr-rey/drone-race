@@ -8,9 +8,7 @@ __global__ void initRNGKernel(curandState* states, unsigned long long seed, int 
 
 __global__ void generateNoiseKernel(float* noise, curandState* rng, float stddev, int M, int N);
 
-__global__ void fullRolloutKernel(int controlAgent,
-                                  // const DeviceEnvironmentConfig envConfig,
-                                  const EnvironmentConfig envConfig, const MPPIConfig mc, SimState initState, const float* __restrict__ initBelief,
+__global__ void fullRolloutKernel(const EnvironmentConfig envConfig, const MPPIConfig mc, SimState initState, const float* __restrict__ initBelief,
                                   const float* __restrict__ nominal, const float* __restrict__ noise, const float* __restrict__ B,
                                   float* __restrict__ costsTrue, int* __restrict__ branchUsed, int* __restrict__ branchTime,
                                   curandState* __restrict__ rngStates);
@@ -73,7 +71,7 @@ __global__ void PRMPPIsampleThetaValues(const float* __restrict__ belief,    // 
                                         int P);
 
 // Full rollout for PRMPPI, one thread per (rob/nom, sample, theta)
-__global__ void PRMPPIfullRolloutKernel(int agent, const EnvironmentConfig envConfig, const PRMPPIConfig mppiConfig, SimState initState,
+__global__ void PRMPPIfullRolloutKernel(const EnvironmentConfig envConfig, const PRMPPIConfig mppiConfig, SimState initState,
                                         const float* __restrict__ nom_nominal, // (T, dim)
                                         const float* __restrict__ rob_nominal, // (T, dim)
                                         const float* __restrict__ noise,       // (T, N, dim)
@@ -112,7 +110,7 @@ __global__ void PRMPPIWeightedAverageKernel(const float* __restrict__ nom_nomina
 );
 
 // Compute full cost for the 2 candidates nominals and all models, 2 * P threads (using the rng of the first 2 rollouts)
-__global__ void PRMPPIcomputeCandidateCostKernel(int agent, EnvironmentConfig envConfig, PRMPPIConfig mppiConfig, SimState initState,
+__global__ void PRMPPIcomputeCandidateCostKernel(EnvironmentConfig envConfig, PRMPPIConfig mppiConfig, SimState initState,
                                                  const float* __restrict__ cand1_nominal, // (T, dim)
                                                  const float* __restrict__ cand2_nominal, // (T, dim)
                                                  const int* __restrict__ thetas,          // (P)
@@ -121,7 +119,7 @@ __global__ void PRMPPIcomputeCandidateCostKernel(int agent, EnvironmentConfig en
 );
 
 // Compute safe cost for the nominal and all models, P threads (using the rng of the first P rollouts). writes into candCosts[0:P]
-__global__ void PRMPPIcomputeSafeCostKernel(int agent, EnvironmentConfig envConfig, PRMPPIConfig mppiConfig, SimState initState,
+__global__ void PRMPPIcomputeSafeCostKernel(EnvironmentConfig envConfig, PRMPPIConfig mppiConfig, SimState initState,
                                             const float* __restrict__ nom_nominal, // (T, dim)
                                             const int* __restrict__ thetas,        // (P)
                                             float* __restrict__ candCosts,         // (P at least)

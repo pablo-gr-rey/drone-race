@@ -14,7 +14,7 @@ class Controller
   public:
     virtual ~Controller() = default;
 
-    virtual void getControl(int agent, const SimState& state, float* outAction) = 0;
+    virtual void getControl(const SimState& state, float* outAction) = 0;
 
     SimulationEngine* engine = nullptr;
     std::array<float, N_TRUE_MODELS> h_belief; // host belief (nTrueModels). this is updated by the engine
@@ -30,7 +30,7 @@ class MPPIController : public Controller
 
     ~MPPIController();
 
-    void getControl(int agent, const SimState& state, float* outAction) override;
+    void getControl(const SimState& state, float* outAction) override;
 
     MPPIConfig mppiConfig;
 
@@ -121,7 +121,7 @@ class PRMPPIController : public Controller
 
     ~PRMPPIController();
 
-    void getControl(int agent, const SimState& state, float* outAction) override;
+    void getControl(const SimState& state, float* outAction) override;
 
     PRMPPIConfig mppiConfig;
 

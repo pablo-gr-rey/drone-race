@@ -38,7 +38,10 @@ PRMPPIController::PRMPPIController(const EnvironmentConfig& c, const PRMPPIConfi
     invTempNomFull = invTempRobFull = invTempRobSafe = mppiConfig.invTemperature;
 }
 
-PRMPPIController::~PRMPPIController() { freeDevice(); }
+PRMPPIController::~PRMPPIController()
+{
+    freeDevice();
+}
 
 void PRMPPIController::allocDevice()
 {
@@ -135,7 +138,7 @@ void PRMPPIController::freeDevice()
     deviceReady = false;
 }
 
-void PRMPPIController::getControl(int agent, const SimState& state, float* outAction)
+void PRMPPIController::getControl(const SimState& state, float* outAction)
 {
     if (!engine)
         throw std::runtime_error("PRMPPI: engine not set");
@@ -196,8 +199,8 @@ void PRMPPIController::getControl(int agent, const SimState& state, float* outAc
 
     // 4. rollout (2*N*P launches, first half for nom, second half for rob)
     int rollGrd = (2 * N * P + blk - 1) / blk;
-    PRMPPIfullRolloutKernel<<<rollGrd, blk>>>(agent, envConfig, mppiConfig, state, d_nom_nominal, d_rob_nominal, d_noise, d_cost_nom, d_cost_rob,
-                                              d_thetas, d_rng);
+    PRMPPIfullRolloutKernel<<<rollGrd, blk>>>(envConfig, mppiConfig, state, d_nom_nominal, d_rob_nominal, d_noise, d_cost_nom, d_cost_rob, d_thetas,
+                                              d_rng);
 
 #ifdef DEBUG
     CUDA_CHECK(cudaGetLastError());
@@ -222,8 +225,7 @@ void PRMPPIController::getControl(int agent, const SimState& state, float* outAc
 
     // 8. compute full cost for the 2 candidates nominals and all models, 2 * P threads (using the rng of the first 2*P rollouts)
     int candGrd = (2 * P + blk - 1) / blk;
-    PRMPPIcomputeCandidateCostKernel<<<candGrd, blk>>>(agent, envConfig, mppiConfig, state, d_cand1_nominal, d_cand2_nominal, d_thetas, d_candCosts,
-                                                       d_rng);
+    PRMPPIcomputeCandidateCostKernel<<<candGrd, blk>>>(envConfig, mppiConfig, state, d_cand1_nominal, d_cand2_nominal, d_thetas, d_candCosts, d_rng);
 
     // 9. Compare the averaged cost of the two candidates, and copy the best one into d_nom_nominal (or rather swap the pointers)
     std::vector<float> candCosts(2 * P);
@@ -254,7 +256,7 @@ void PRMPPIController::getControl(int agent, const SimState& state, float* outAc
 
     // 10. compute safe cost for the nominal model, P threads (using the rng of the first P rollouts)
     int safeGrd = (P + blk - 1) / blk;
-    PRMPPIcomputeSafeCostKernel<<<safeGrd, blk>>>(agent, envConfig, mppiConfig, state, d_nom_nominal, d_thetas, d_candCosts, d_rng);
+    PRMPPIcomputeSafeCostKernel<<<safeGrd, blk>>>(envConfig, mppiConfig, state, d_nom_nominal, d_thetas, d_candCosts, d_rng);
 
     // 11. Check safety: if any averaged over p safety costs is negative, then nominal model is unsafe, and copy d_rob_nominal into d_nom_nominal (and
     // set useNomPlan to false, otherwise true)

@@ -1,13 +1,8 @@
 #pragma once
 
-#include "cuda_runtime.h"
-#include "curand_kernel.h"
-
-#include <format>
-#include <iostream>
 #include <math.h>
-#include <random>
 
+#include "env_hiddenobs_defs.h"
 #include "protocol.h"
 #include "state.h"
 
@@ -26,666 +21,438 @@ void printState(const SimState& state);
 
 SimState unpackSimState(const void* buf, size_t len, const EnvironmentConfig& envConfig);
 
-PIDConfig unpackPIDConfig(Reader& reader);
+std::tuple<EnvironmentConfig, int, int> unpackEnvConfig(const void* buf, size_t len); // return seed, trueTheta
 
-std::pair<EnvironmentConfig, int> unpackEnvConfig(const void* buf, size_t len); // return seed
-
-// Euclidean distance between two agents (positions only)
-HD INLINE float agentDist(const float* __restrict__ pos, int a, int b)
+// square distance to rectangle (0 if inside)
+HD INLINE float sqDistToRectangle(float x, float y, float xmin, float ymin, float xmax, float ymax)
 {
-    float s = 0.0f;
-    for (int d = 0; d < DIM; d++)
-    {
-        float dx = pos[a * DIM + d] - pos[b * DIM + d];
-        s += dx * dx;
-    }
+    // dist to closest points
+    float dx = x - fminf(fmaxf(x, xmin), xmax);
+    float dy = y - fminf(fmaxf(y, ymin), ymax);
 
-    return sqrtf(s);
+    return dx * dx + dy * dy;
 }
 
-// Speed (L2 norm of velocity)
-HD INLINE float agentSpeed(const float* __restrict__ speed, int agent)
+// square distance from x,y to the region {xmin <= x <= xmax && x + y >= lambda}
+HD INLINE float sqDistToHalfPlane(float x, float y, float xmin, float xmax, float lambda)
 {
-    float s = 0.0f;
-    for (int d = 0; d < DIM; d++)
-    {
-        float v = speed[agent * DIM + d];
-        s += v * v;
-    }
-    return sqrtf(s);
+    if (xmin <= x && x <= xmax && x + y >= lambda)
+        return 0.0f;
+
+    // if we're outside, minDist is the min of distances to the 3 segments/half-lines on the boundary
+
+    // projection on diagonal
+    float projx = fmaxf(fminf((x - y + lambda) * 0.5f, xmax), xmin);
+    float projy = lambda - projx;
+
+    float sqMinDist = (x - projx) * (x - projx) + (y - projy) * (y - projy);
+
+    // projection on the two boundary half-lines
+    float y_left = fmaxf(y, lambda - xmin);
+    sqMinDist = fminf(sqMinDist, (x - xmin) * (x - xmin) + (y - y_left) * (y - y_left));
+
+    float y_right = fmaxf(y, lambda - xmax);
+    sqMinDist = fminf(sqMinDist, (x - xmax) * (x - xmax) + (y - y_right) * (y - y_right));
+
+    return sqMinDist;
 }
 
-// Linear interpolation of pre-sampled centerline
-HD INLINE void sampleCenterline(const float* __restrict__ trackPoints, float s, float* __restrict__ out)
+// distance from x,y to the region {x <= xcenter, y >= ycenter, dist((x,y), center) <= rmin or >= rmax}. if we are outside the quadrant, return
+// INFINITY (other primitives should handle it)
+HD INLINE float distToAnnulus(float x, float y, float xcenter, float ycenter, float rmin, float rmax)
 {
-    s = s - floorf(s); // wrap to [0,1)
-    float idx_f = s * N_TRACK_SAMPLES;
-    int idx0 = (int)idx_f;
-    int idx1 = (idx0 + 1) % N_TRACK_SAMPLES;
-    float t = idx_f - idx0;
-    for (int d = 0; d < DIM; d++)
-        out[d] = (1.0f - t) * trackPoints[idx0 * DIM + d] + t * trackPoints[idx1 * DIM + d];
+    // shift to center coordinates
+    x -= xcenter;
+    y -= ycenter;
+
+    // distance to center
+    float rSq = x * x + y * y;
+    float rminSq = rmin * rmin, rmaxSq = rmax * rmax;
+
+    // inside obstacle?
+    if (x <= 0 && y >= 0 && (rSq <= rminSq || rSq >= rmaxSq))
+        return 0.0f;
+
+    // inside quadrant?
+    if (x <= 0 && y >= 0)
+    {
+        float r = sqrtf(rSq);
+        float d = fminf(r - rmin, rmax - r);
+        return d;
+    }
+
+    return INFINITY;
 }
 
-// Project position onto sampled track
-// Returns best s in [0,1]; writes distance into bestDist
-// closestOut may be nullptr
-HD INLINE float projectOnTrack(const float* __restrict__ trackPoints, const float* __restrict__ pos, float* __restrict__ closestOut, float& bestDist)
+HD INLINE float distToCircle(float x, float y, float xcenter, float ycenter, float radius)
 {
-    float bestS = 0.0f;
-    float bestD2 = __FLT_MAX__;
-    float sStep = 1.0f / N_TRACK_SAMPLES;
-    for (int i = 0; i < N_TRACK_SAMPLES; i++)
-    {
-        float d2 = 0.0f;
-        for (int d = 0; d < DIM; d++)
-        {
-            float dx = trackPoints[i * DIM + d] - pos[d];
-            d2 += dx * dx;
-        }
-        if (d2 < bestD2)
-        {
-            bestD2 = d2;
-            bestS = i * sStep;
-            if (closestOut)
-                for (int d = 0; d < DIM; d++)
-                    closestOut[d] = trackPoints[i * DIM + d];
-        }
-    }
-    bestDist = sqrtf(bestD2);
-    return bestS;
+    return sqrtf((x - xcenter) * (x - xcenter) + (y - ycenter) * (y - ycenter)) - radius;
 }
 
-// util function to return the distance from pos to the given trackPoints
-HD INLINE float sqDistToSample(const float* __restrict__ trackPoints, int iTrack, const float* __restrict__ pos)
+// Boundary distance = distance of point to closest boundary or opponent (<= 0 if outside), does not take into account agent's radius
+HD INLINE float trackBoundaryDist(const SimState& state, const EnvironmentConfig& envConfig, int trueTheta)
 {
-    float sqdist = 0.f;
-    for (int d = 0; d < DIM; d++)
-        sqdist += (trackPoints[iTrack * DIM + d] - pos[d]) * (trackPoints[iTrack * DIM + d] - pos[d]);
-    return sqdist;
-}
+    float sqMinDist = INFINITY;
+    float x = state.pos[0], y = state.pos[1];
 
-// util function to keep going in one direction until local maximum
-HD INLINE int findMinAlongDirection(const float* __restrict__ trackPoints, int iTrack, const float* __restrict__ pos, int delta, float baseSqDist,
-                                    float& bestDist)
-{
-    // greedy search + margin (should work if the track is not too weird)
-    // TODO: maybe fixed window size is better (and more compiler friendly)
-    const int margin = 10;
+    // min distance to rectangle
+    for (int iRect = 0; iRect < N_RECT_OBSTACLES; iRect++)
+        sqMinDist = fminf(sqMinDist, sqDistToRectangle(x, y, envConfig.rectObstacles[4 * iRect], envConfig.rectObstacles[4 * iRect + 1],
+                                                       envConfig.rectObstacles[4 * iRect + 2], envConfig.rectObstacles[4 * iRect + 3]));
 
-    int bestI = iTrack;
-    bestDist = baseSqDist;
+    // min distance to the half-planes
+    // there are 2 double-half-plane obstacles, configured by minx1, maxx1, lambda1top, lambda1bot and same for 2nd one.
+    // 1st one is defined by minx1 <= x <= maxx1 AND (y - x > lambda1top OR -y - x > lambda1bot)
+    // 2nd one is defined by minx2 <= x <= maxx2 AND (x + y > lambda2top OR x - y > lambda2bot)
 
-    int currentI = (iTrack + delta + N_TRACK_SAMPLES) % N_TRACK_SAMPLES;
-    float currentDist = sqDistToSample(trackPoints, currentI, pos);
+    sqMinDist =
+        fminf(sqMinDist, fminf(fminf(sqDistToHalfPlane(-x, y, -envConfig.dblHpLimits[1], -envConfig.dblHpLimits[0], envConfig.dblHpLambdas[0]),
+                                     sqDistToHalfPlane(-x, -y, -envConfig.dblHpLimits[1], -envConfig.dblHpLimits[0], envConfig.dblHpLambdas[1])),
+                               fminf(sqDistToHalfPlane(x, y, envConfig.dblHpLimits[2], envConfig.dblHpLimits[3], envConfig.dblHpLambdas[2]),
+                                     sqDistToHalfPlane(x, -y, envConfig.dblHpLimits[2], envConfig.dblHpLimits[3], envConfig.dblHpLambdas[3]))));
 
-    while (currentDist < bestDist)
-    {
-        bestI = currentI;
-        bestDist = currentDist;
+    float minDist = sqrtf(sqMinDist);
 
-        currentI = (currentI + delta + N_TRACK_SAMPLES) % N_TRACK_SAMPLES;
-        currentDist = sqDistToSample(trackPoints, currentI, pos);
-    }
+    minDist = fminf(minDist,
+                    fminf(fminf(x - envConfig.arenaMin[0], envConfig.arenaMax[0] - x), fminf(y - envConfig.arenaMin[1], envConfig.arenaMax[1] - y)));
 
-    // additional margin
-    for (int i = 0; i < margin; i++)
-    {
-        currentDist = sqDistToSample(trackPoints, currentI, pos);
-        if (currentDist < bestDist)
-        {
-            bestI = currentI;
-            bestDist = currentDist;
-        }
-        currentI = (currentI + delta + N_TRACK_SAMPLES) % N_TRACK_SAMPLES;
-    }
+    minDist = fminf(
+        minDist, distToAnnulus(x, y, envConfig.annulusCenter[0], envConfig.annulusCenter[1], envConfig.annulusRadius[0], envConfig.annulusRadius[1]));
 
-    return bestI;
-}
+    // TODO: update for 4-thetas mode
 
-// return the closest S, and writes the closest track point in closestOut and
-// its distance in bestDist
-HD INLINE float fastProjectOnTrack(const float* __restrict__ trackPoints, const float* __restrict__ pos, float* __restrict__ closestOut,
-                                   float& bestDist,
-                                   float prevS = -1.0f // negative means unknown -> full scan
-)
-{
-#ifdef CHECK_PROJECTION
-    float testS, testDist;
-    float testClosestOut[MAX_DIM];
-    testS = projectOnTrack(trackPoints, pos, testClosestOut, testDist);
-#endif
-
-    if (prevS < 0)
-        return projectOnTrack(trackPoints, pos, closestOut, bestDist);
-
-    int baseI = (int)(prevS * N_TRACK_SAMPLES + 0.5f) % N_TRACK_SAMPLES;
-    float baseDist = sqDistToSample(trackPoints, baseI, pos);
-
-    // find best forwards and backwards distances
-    float bestFDist, bestBDist;
-    int bestBI = findMinAlongDirection(trackPoints, baseI, pos, -1, baseDist, bestBDist);
-    int bestFI = findMinAlongDirection(trackPoints, baseI, pos, +1, baseDist, bestFDist);
-
-    float bestS;
-
-    if (bestFDist < bestBDist)
-    {
-        bestDist = sqrtf(bestFDist);
-        if (closestOut)
-            for (int d = 0; d < DIM; d++)
-                closestOut[d] = trackPoints[bestFI * DIM + d];
-
-        bestS = ((float)bestFI) / N_TRACK_SAMPLES;
-    }
-    else
-    {
-        bestDist = sqrtf(bestBDist);
-        if (closestOut)
-            for (int d = 0; d < DIM; d++)
-                closestOut[d] = trackPoints[bestBI * DIM + d];
-
-        bestS = ((float)bestBI) / N_TRACK_SAMPLES;
-    }
-
-#ifdef CHECK_PROJECTION
-    // bool wrong = fabs(bestS - testS) > 1e-5 || fabsf(bestDist - testDist) >
-    // 1e-5; for (int d = 0; d < DIM && closestOut; d++)
-    //     wrong = wrong || abs(closestOut[d] - testClosestOut[d] > 1e-5);
-
-    bool wrong = fabs(bestDist - testDist) > 1e-5f;
-
-    if (wrong)
-    {
-        printf("WRONG PROJECTION for pos ");
-        for (int d = 0; d < DIM; d++)
-            printf("%f ", pos[d]);
-        printf(" prevS %f\n: computed bestS %f\tbestDist %f\tclosestOut ", prevS, bestS, bestDist);
-        for (int d = 0; d < DIM && closestOut; d++)
-            printf("%f ", closestOut[d]);
-        printf("\n: expected bestS %f\tbestDist %f\tclosestOut ", testS, testDist);
-        for (int d = 0; d < DIM; d++)
-            printf("%f ", testClosestOut[d]);
-        printf("\n");
-    }
-#endif
-
-    return bestS;
-}
-
-// Update belief if oppAction was observed, nomAction is the nominal action for
-// each model (nTrueModels * dim)
-HD INLINE void updateBelief(float* __restrict__ belief, const float* __restrict__ oppAction, const float* __restrict__ nomAction,
-                            const PIDConfig* __restrict__ params, float maxPIDaccel)
-{
-    float sum = 0.0f;
-    const float sigmaEnv = 0.2f; // account for clamping + various imperfections
-
-    // opponent is following a normal distribution around nomAction, with given
-    // stddev
-    for (int theta = 0; theta < N_TRUE_MODELS; theta++)
-    {
-        // compute sq value of nominal action
-        float sqAccel = 0.f;
-        for (int d = 0; d < DIM; d++)
-            sqAccel += nomAction[theta * DIM + d] * nomAction[theta * DIM + d];
-
-        float scale = 1.0f;
-        if (sqAccel > maxPIDaccel * maxPIDaccel)
-            scale = maxPIDaccel / sqrtf(sqAccel);
-
-        float sqDist = 0.f;
-        for (int d = 0; d < DIM; d++)
-        {
-            float dx = oppAction[d] - nomAction[theta * DIM + d] * scale;
-            sqDist += dx * dx;
-        }
-
-        float sigma = sqrtf(sigmaEnv * sigmaEnv + params[theta].actionNoise * params[theta].actionNoise);
-        // d-dimensional normal law with diagonal sigma matrix (sigma^2, ...)
-
-        // TODO: prob better to use other pow since dimension is integer & known
-        // (maybe even more efficient if dimension is known at compile time)
-        belief[theta] *= expf(-0.5f * sqDist / (sigma * sigma)) / (powf(2.0f * M_PIf32, (float)DIM / 2.0f) * powf(sigma, (float)DIM));
-        sum += belief[theta];
-    }
-
-    // normalize
-    if (sum < 1e-20f)
-    {
-        float uniform = 1.0f / N_TRUE_MODELS;
-        for (int theta = 0; theta < N_TRUE_MODELS; ++theta)
-            belief[theta] = uniform;
-    }
-    else
-    {
-        for (int theta = 0; theta < N_TRUE_MODELS; theta++)
-            belief[theta] /= sum;
-    }
-}
-
-// Boundary distance = distance of point to closest boundary or opponent (<= 0
-// if outside), does not take into account agent's radius. return -1.0f if other
-// agent won
-HD INLINE float trackBoundaryDist(const SimState& state, const EnvironmentConfig& envConfig)
-{
-    if (state.laps[1 - envConfig.iMppi] >= envConfig.nWinLaps)
-        return -1.0f;
-
-    const float* __restrict__ curPos = state.pos + envConfig.iMppi * DIM;
-
-    float minDist = INFINITY;
-    for (int d = 0; d < DIM; d++)
-        minDist = fminf(minDist, fminf(curPos[d] - envConfig.arenaMin[d], envConfig.arenaMax[d] - curPos[d]));
-
-    for (int iObs = 0; iObs < N_OBSTACLES; iObs++)
-    {
-        float sqDist = 0.0f;
-        for (int d = 0; d < DIM; d++)
-        {
-            float dist =
-                fmaxf(0.0f, fmaxf(envConfig.obstacles[iObs * 2 * DIM + d] - curPos[d], curPos[d] - envConfig.obstacles[(iObs * 2 + 1) * DIM + d]));
-            sqDist += dist * dist;
-        }
-        minDist = fminf(minDist, sqrtf(sqDist));
-    }
-
-    for (int iObs = 0; iObs < N_ROUND_OBSTACLES; iObs++)
-    {
-        float sqDist = 0.0f;
-        for (int d = 0; d < DIM; d++)
-        {
-            float dx = curPos[d] - envConfig.roundObsCenters[iObs * DIM + d];
-            sqDist += dx * dx;
-        }
-        minDist = fminf(minDist, sqrtf(sqDist) - envConfig.roundObsRadius[iObs]);
-    }
-
-    // distance to the other agent
-    float sqDist = 0.0f;
-    for (int d = 0; d < DIM; d++)
-    {
-        float dx = state.pos[d] - state.pos[d + DIM];
-        sqDist += dx * dx;
-    }
-
-    minDist = fminf(minDist, sqrtf(sqDist) - envConfig.minDist * 0.5f);
+    minDist = fminf(minDist, distToCircle(x, y, envConfig.hiddenObsCenters[trueTheta * 2], envConfig.hiddenObsCenters[trueTheta * 2 + 1],
+                                          envConfig.hiddenObsRadius[trueTheta]));
 
     return minDist;
 }
 
-HD INLINE bool isOutside(const SimState& state, const EnvironmentConfig& envConfig,
-                         float radius) // radius should be e.g. minDist/2 in the actual
-                                       // dynamics and (minDist * factor) / 2 for MPPI
+// radius should be e.g. droneRadius in the actual dynamics and droneRadius*factor for MPPI
+HD INLINE bool isOutside(const SimState& state, const EnvironmentConfig& envConfig, float radius, int trueTheta)
 {
-    // for (int d = 0; d < DIM; d++)
-    //     if (pos[d] - margin < envConfig.arenaMin[d] || pos[d] + margin >
-    //     envConfig.arenaMax[d])
-    //         return true;
-
-    // for (int iObs = 0; iObs < N_OBSTACLES; iObs++)
-    // {
-    //     float sqDist = 0.0f;
-    //     for (int d = 0; d < DIM; d++)
-    //     {
-    //         float dist = fmaxf(0.0f, fmaxf(envConfig.obstacles[iObs * 2 * DIM
-    //         + d] - pos[d], pos[d] - envConfig.obstacles[(iObs * 2 + 1) * DIM
-    //         + d])); sqDist += dist * dist;
-    //     }
-
-    //     if (sqDist <= margin * margin)
-    //         return true;
-    // }
-
-    // for (int iObs = 0; iObs < N_ROUND_OBSTACLES; iObs++)
-    // {
-    //     float sqDist = 0.0f;
-    //     for (int d = 0; d < DIM; d++)
-    //     {
-    //         float dx = pos[d] - envConfig.roundObsCenters[iObs * DIM + d];
-    //         sqDist += dx * dx;
-    //     }
-    //     if (sqDist <= (margin + envConfig.roundObsRadius[iObs]) * (margin +
-    //     envConfig.roundObsRadius[iObs]))
-    //         return true;
-    // }
-
-    // return false;
-
-    return trackBoundaryDist(state, envConfig) < radius;
+    return trackBoundaryDist(state, envConfig, trueTheta) < radius;
 }
 
 HD INLINE bool isWinner(const SimState& state, const EnvironmentConfig& envConfig)
 {
-    // did we complete enough laps?
-
-    if (state.laps[envConfig.iMppi] >= envConfig.nWinLaps)
-        return true;
-
-    // opponent outside?
-
-    const float* __restrict__ curPos = state.pos + (1 - envConfig.iMppi) * DIM;
-    float radius = envConfig.minDist * 0.5f;
-
-    for (int d = 0; d < DIM; d++)
-        if (curPos[d] < envConfig.arenaMin[d] + radius || curPos[d] > envConfig.arenaMax[d] + radius)
-            return true;
-
-    for (int iObs = 0; iObs < N_OBSTACLES; iObs++)
-    {
-        float sqDist = 0.0f;
-        for (int d = 0; d < DIM; d++)
-        {
-            float dist =
-                fmaxf(0.0f, fmaxf(envConfig.obstacles[iObs * 2 * DIM + d] - curPos[d], curPos[d] - envConfig.obstacles[(iObs * 2 + 1) * DIM + d]));
-            sqDist += dist * dist;
-        }
-
-        if (sqDist < radius * radius)
-            return true;
-    }
-
-    for (int iObs = 0; iObs < N_ROUND_OBSTACLES; iObs++)
-    {
-        float sqDist = 0.0f;
-        for (int d = 0; d < DIM; d++)
-        {
-            float dx = curPos[d] - envConfig.roundObsCenters[iObs * DIM + d];
-            sqDist += dx * dx;
-        }
-
-        if (sqDist < (radius + envConfig.roundObsRadius[iObs]) * (radius + envConfig.roundObsRadius[iObs]))
-            return true;
-    }
-
-    return false;
+    return state.laps >= envConfig.nWinLaps;
 }
 
-// Advance = currentGate + nGates * laps + scale * (1 - normalizedDistToGate)
-// (it is much better to pass through a gate than to just be close to it) (this
-// is a rough measure, it doesn't include speed for example) (expect pos to be
-// of size d, ie. pos[0] should be position of actual agent) 'pos' points to the
-// agent's contiguous position array of length DIM
-HD INLINE float getAnyAdvance(const SimState& state, const EnvironmentConfig& envConfig, int agent)
+// return true if line from (px, py) to (qx, qy) intersects the rectangle
+HD INLINE bool segmentIntersectsRectangle(float px, float py, float qx, float qy, float xmin, float ymin, float xmax, float ymax)
+{
+    // Liang-Barsky algorithm
+    float dx = qx - px;
+    float dy = qy - py;
+
+    float tmin = 0.0f;
+    float tmax = 1.0f;
+
+    // x slabs
+    if (fabsf(dx) < 1e-12f)
+    {
+        // Segment is vertical
+        if (px < xmin || px > xmax)
+            return false;
+    }
+    else
+    {
+        float t1 = (xmin - px) / dx;
+        float t2 = (xmax - px) / dx;
+        if (t1 > t2)
+        {
+            float tmp = t1;
+            t1 = t2;
+            t2 = tmp;
+        }
+        tmin = fmaxf(tmin, t1);
+        tmax = fminf(tmax, t2);
+        if (tmin > tmax)
+            return false;
+    }
+
+    // y slabs
+    if (fabsf(dy) < 1e-12f)
+    {
+        if (py < ymin || py > ymax)
+            return false;
+    }
+    else
+    {
+        float t1 = (ymin - py) / dy;
+        float t2 = (ymax - py) / dy;
+        if (t1 > t2)
+        {
+            float tmp = t1;
+            t1 = t2;
+            t2 = tmp;
+        }
+        tmin = fmaxf(tmin, t1);
+        tmax = fminf(tmax, t2);
+        if (tmin > tmax)
+            return false;
+    }
+
+    return true;
+}
+
+// return true if line from (px, py) to (qx, qy) intersects annulus of given center and radius in its part (x <= xcenter, y >= ycenter)
+HD INLINE bool segmentIntersectsAnnulus(float px, float py, float qx, float qy, float xcenter, float ycenter, float rmin, float rmax)
+{
+    // shift to center-oriented coordinates
+    px -= xcenter;
+    py -= ycenter;
+    qx -= xcenter;
+    qy -= ycenter;
+
+    // we parametrize the segment: x(t) = px + t(qx-px), y(t) = py + t(qy-py)
+
+    // first, compute tmin, tmax such that the intersection of the segment with the quadrant (x <= 0, y >= 0) is [tmin, tmax]
+    float tmin = 0.0f, tmax = 1.0f;
+
+    // intersection with quadrant x <= 0
+    if (fabsf(px - qx) > 1e-12f)
+    {
+        float threshold = px / (px - qx);
+        if (qx > px)
+            tmax = fminf(tmax, threshold);
+        else
+            tmin = fmaxf(tmin, threshold);
+    }
+    else if (px > 0)
+        return false;
+
+    if (tmax < tmin)
+        return false;
+
+    // intersection with quadrant y >= 0
+    if (fabsf(py - qy) > 1e-12f)
+    {
+        float threshold = py / (py - qy);
+        if (qy > py)
+            tmin = fmaxf(tmin, threshold);
+        else
+            tmax = fminf(tmax, threshold);
+    }
+    else if (py > 0)
+        return false;
+
+    if (tmax < tmin)
+        return false;
+
+    // intersection with the inner arc
+    // we compute t such that x^2(t) + y^2(t) is minimal, clamp it to the boundaries to get the min of the interval (since this function of t is
+    // convex), and check if this value is less than rmin x^2(t) + y^2(t) = t^2 ((px-qx)^2 + (py-qy)^2) + 2t(px(qx-px) + py(qy-py)) + constant
+
+    float sqDistp2q = (px - qx) * (px - qx) + (py - qy) * (py - qy);
+    if (sqDistp2q > 1e-12f) // if p and q are close, then they can see each other (if they are both inside the obstacle, then the drone will be marked
+                            // as outside the arena and the simulation stops anyway)
+    {
+        float t_mindist = (px * (px - qx) + py * (py - qy)) / sqDistp2q;
+        t_mindist = fmaxf(tmin, fminf(tmax, t_mindist));
+
+        float x_mindist = px + t_mindist * (qx - px);
+        float y_mindist = py + t_mindist * (qy - py);
+        if (x_mindist * x_mindist + y_mindist * y_mindist < rmin * rmin)
+            return true;
+    }
+
+    // intersection with the outer arc
+    // since x^2(t) + y^2(t) is convex, we can just check on the boundaries
+
+    float xt = px + tmin * (qx - px);
+    float yt = py + tmin * (qy - py);
+    if (xt * xt + yt * yt > rmax * rmax)
+        return true;
+
+    xt = px + tmax * (qx - px);
+    yt = py + tmax * (qy - py);
+    return xt * xt + yt * yt > rmax * rmax;
+}
+
+HD INLINE bool canSeeHiddenObs(const SimState& state, const EnvironmentConfig& envConfig, int hiddenObsId)
+{
+    float px = state.pos[0], py = state.pos[1];
+    float qx = envConfig.hiddenObsCenters[hiddenObsId * 2], qy = envConfig.hiddenObsCenters[hiddenObsId * 2 + 1];
+
+    for (int iRect = 0; iRect < N_RECT_OBSTACLES; iRect++)
+        if (segmentIntersectsRectangle(px, py, qx, qy, envConfig.rectObstacles[4 * iRect], envConfig.rectObstacles[4 * iRect + 1],
+                                       envConfig.rectObstacles[4 * iRect + 2], envConfig.rectObstacles[4 * iRect + 3]))
+            return false;
+
+    if (segmentIntersectsAnnulus(px, py, qx, qy, envConfig.annulusCenter[0], envConfig.annulusCenter[1], envConfig.annulusRadius[0],
+                                 envConfig.annulusRadius[1]))
+        return false;
+
+    return true;
+}
+
+// Advance = currentGate + nGates * laps + scale * (1 - normalizedDistToGate)// (it is much better to pass through a gate than to just be close to it)
+// (this is a rough measure, it doesn't include speed for example)
+HD INLINE float getAdvance(const SimState& state, const EnvironmentConfig& envConfig)
 {
     float sqGateDist = 0.0f;     // sq dist between pos and next gate
     float sqConsGateDist = 0.0f; // sq dist between current gate and next gate
-    int nextGate = (state.gates[agent] + 1) % N_GATES;
+    int nextGate = (state.gates + 1) % N_GATES;
 
     float scale = 0.8f; // 1.0f means reward is continuous when going through a gate; 0.5f
                         // for example means that reward will be between 0.0 and 0.5
                         // before the first gate, 1 and 1.5 between 1st and 2nd, etc
 
-    const float* __restrict__ prevGateCenter = envConfig.gateCenters + state.gates[agent] * DIM;
+    const float* __restrict__ prevGateCenter = envConfig.gateCenters + state.gates * DIM;
     const float* __restrict__ nextGateCenter = envConfig.gateCenters + nextGate * DIM;
-    const float* __restrict__ pos = state.pos + agent * DIM;
 
     for (int d = 0; d < DIM; d++)
     {
-        sqGateDist += (nextGateCenter[d] - pos[d]) * (nextGateCenter[d] - pos[d]);
+        sqGateDist += (nextGateCenter[d] - state.pos[d]) * (nextGateCenter[d] - state.pos[d]);
         sqConsGateDist += (nextGateCenter[d] - prevGateCenter[d]) * (nextGateCenter[d] - prevGateCenter[d]);
     }
 
-    return state.gates[agent] + N_GATES * state.laps[agent] + scale * (1.0f - sqrtf(sqGateDist / sqConsGateDist));
+    return state.gates + N_GATES * state.laps + scale * (1.0f - sqrtf(sqGateDist / sqConsGateDist));
 }
 
-HD INLINE float getAdvance(const SimState& state, const EnvironmentConfig& envConfig) { return getAnyAdvance(state, envConfig, envConfig.iMppi); }
-
-HD INLINE float getOppAdvance(const SimState& state, const EnvironmentConfig& envConfig)
+// for this environment, always return 0.0f
+HD INLINE float getOppAdvance(const SimState& /* state */, const EnvironmentConfig& /* envConfig */)
 {
-    return getAnyAdvance(state, envConfig, 1 - envConfig.iMppi);
+    return 0.0f;
 }
 
-// if agent == marginAgent, use additional margin (we restrict to passing within
-// gateRadius * margin of the gate center)
-HD INLINE void updateGates(const EnvironmentConfig& envConfig, const float* __restrict__ pos, const float* __restrict__ prevPos,
-                           float* __restrict__ currentS, int* __restrict__ currentGates, int* __restrict__ nLaps, int marginAgent = -1,
-                           float margin = 00.f)
+HD INLINE float getMaxAccel(const EnvironmentConfig& envConfig)
 {
-    for (int iAgent = 0; iAgent < N_AGENTS; iAgent++)
+    return envConfig.maxAccel;
+}
+
+template <bool addMargin>
+HD INLINE void updateGates(const EnvironmentConfig& envConfig, SimState& state, const float* __restrict__ prevPos, float margin = 1.0f)
+{
+    // check if we passed through next gate: compute lambda = dot(vec, center - x_t) / dot(vec, x_{t+1} - x_t)
+    int nextGate = (state.gates + 1) % N_GATES;
+    float num = 0.f, denom = 0.f;
+    for (int d = 0; d < DIM; d++)
     {
-        float dist;
+        num += envConfig.gateVectors[nextGate * DIM + d] * (envConfig.gateCenters[nextGate * DIM + d] - prevPos[d]);
+        denom += envConfig.gateVectors[nextGate * DIM + d] * (state.pos[d] - prevPos[d]);
+    }
 
-        if (currentS[iAgent * N_RACELINES] >= 0.0f)
-            for (int iRaceline = 0; iRaceline < N_RACELINES; iRaceline++)
-            {
-                float s = fastProjectOnTrack(envConfig.trackPoints + iRaceline * N_TRACK_SAMPLES * DIM, pos + iAgent * DIM, nullptr, dist,
-                                             currentS[iAgent * N_RACELINES + iRaceline]);
-                currentS[iAgent * N_RACELINES + iRaceline] = s;
-            }
+    // direction is inside the gate plan: cannot cross
+    if (fabsf(denom) < 1e-10f)
+        return;
 
-        // check if we passed through next gate: compute lambda = dot(vec,
-        // center - x_t) / dot(vec, x_{t+1} - x_t)
-        int nextGate = (currentGates[iAgent] + 1) % N_GATES;
-        float num = 0.f, denom = 0.f;
-        for (int d = 0; d < DIM; d++)
+    float lambda = num / denom;
+    // we cross if 0 <= lambda <= 1 and if the projection of the segment (x_t, x_t+1) on the gate plan (ie. (1 - lambda) * x_t + lambda * x_t+1) is at
+    // distance <= radius from the center if we want to make sure we cross the gate in the right direction, we have to check num >= 0 (<=> denom > 0).
+    // Here, we allows passing through in both directions
+
+    if (lambda < 0.f || lambda > 1.f)
+        return;
+
+    float sqDist = 0.f;
+    for (int d = 0; d < DIM; d++)
+    {
+        float dx = (1.f - lambda) * prevPos[d] + lambda * state.pos[d] - envConfig.gateCenters[nextGate * DIM + d];
+        sqDist += dx * dx;
+    }
+
+    float rad = envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate];
+    if constexpr (addMargin)
+        rad *= margin * margin;
+
+    if (sqDist <= rad)
+    {
+        state.gates++;
+        if (state.gates == N_GATES)
         {
-            num += envConfig.gateVectors[nextGate * DIM + d] * (envConfig.gateCenters[nextGate * DIM + d] - prevPos[iAgent * DIM + d]);
-            denom += envConfig.gateVectors[nextGate * DIM + d] * (pos[iAgent * DIM + d] - prevPos[iAgent * DIM + d]);
-        }
-
-        // direction is inside the gate plan: cannot cross
-        if (fabsf(denom) < 1e-10f)
-            continue;
-
-        float lambda = num / denom;
-        // we cross if 0 <= lambda <= 1 and if the projection of the segment
-        // (x_t, x_t+1) on the gate plan (ie. (1 - lambda) * x_t + lambda *
-        // x_t+1) is at distance <= radius from the center if we want to make
-        // sure we cross the gate in the right direction, we have to check num
-        // >= 0 (<=> denom > 0). Here, we allows passing through in both
-        // directions
-
-        if (lambda < 0.f || lambda > 1.f)
-            continue;
-
-        float sqDist = 0.f;
-        for (int d = 0; d < DIM; d++)
-        {
-            float dx = (1.f - lambda) * prevPos[iAgent * DIM + d] + lambda * pos[iAgent * DIM + d] - envConfig.gateCenters[nextGate * DIM + d];
-            sqDist += dx * dx;
-        }
-
-        float rad = envConfig.gateRadius[nextGate] * envConfig.gateRadius[nextGate];
-        if (iAgent == marginAgent)
-            rad *= margin * margin;
-
-        if (sqDist <= rad)
-        {
-            currentGates[iAgent]++;
-            if (currentGates[iAgent] == N_GATES)
-            {
-                currentGates[iAgent] = 0;
-                nLaps[iAgent]++;
-            }
+            state.gates = 0;
+            state.laps++;
         }
     }
 }
 
-// Control function.Does not add noise, since this is different on CPU and GPU.
-HD INLINE void computePIDAction(int agent, const SimState& state, const EnvironmentConfig& envConfig, const PIDConfig& pid, float* outAction)
+// compute env dynamics, belief update (only if shouldUpdateBelief) and branch update (only if considerBranching is true; if we become specialized,
+// set corresponding branching time to t+1)
+template <bool shouldUpdateBelief, bool considerBranching, bool addMargin, typename RNG>
+HD INLINE TerminalType environmentStep(
+    int t, int trueTheta, const EnvironmentConfig& envConfig,
+    const float* __restrict__ egoAction, // (dim)
+    bool applyNoise,                     // TODO: this could be a template (but probably doesn't matter if we're inlined anyway)
+    SimState& state,
+    BranchState&
+        branchState,     // belief is updated in-place if shouldUpdateBelief. branchingTime and branchUsed are updated if considerBranching is true
+    bool& branched,      // set to true if we branched at this step. must be previously initialized to false. unused if considerBranching is false
+    float minConfidence, // for branching. unused if considerBranching is false
+    ScratchEnvBuffer& scratch, RNG& rng, float gateMargin = 0.0f)
 {
-    float target[DIM] = {};
-
-    sampleCenterline(envConfig.trackPoints + N_TRACK_SAMPLES * pid.racelineIndex * DIM,
-                     state.S[agent * N_RACELINES + pid.racelineIndex] + envConfig.targetDistance, target);
-
-    const float* curPos = state.pos + agent * DIM;
-    const float* curVel = state.vel + agent * DIM;
-
-    float sqError = 0.0f;
-    for (int d = 0; d < DIM; d++)
+    // 1. Copy current pos (for gate update) and action
+    for (int i = 0; i < DIM; i++)
     {
-        float e = target[d] - curPos[d];
-        sqError += e * e;
+        scratch.prevPos[i] = state.pos[i];
+        scratch.action[i] = egoAction[i];
     }
 
-    float invDist = 1.0f / sqrtf(sqError + 1e-5f);
-
-    float vParallelMag = 0.0f;
+    // 2. Clamp action and add env action noise
+    float sqNorm = 0.0f;
     for (int d = 0; d < DIM; d++)
-    {
-        float dirD = (target[d] - curPos[d]) * invDist;
-        vParallelMag += curVel[d] * dirD;
-    }
+        sqNorm += scratch.action[d] * scratch.action[d];
+
+    float factor = 1.0f;
+    float maxSq = envConfig.maxAccel * envConfig.maxAccel;
+    if (sqNorm > maxSq)
+        factor = envConfig.maxAccel / sqrtf(sqNorm);
 
     for (int d = 0; d < DIM; d++)
     {
-        float error = (target[d] - curPos[d]) * invDist;
-        float latVelError = curVel[d] - vParallelMag * error;
-        outAction[d] = pid.kp * error + pid.kd * (-latVelError);
+        scratch.action[d] *= factor;
+
+        if (envConfig.actionNoiseLevel != 0.0f && applyNoise)
+            scratch.action[d] += sampleNormal(rng) * envConfig.actionNoiseLevel;
     }
 
-    // repulsion
-    if (pid.repulsionFactor != 0.0f)
-        for (int other = 0; other < N_AGENTS; other++)
-        {
-            if (other == agent)
-                continue;
-
-            float diff[DIM];
-            float dist2 = 0.0f;
-            for (int d = 0; d < DIM; d++)
-            {
-                diff[d] = state.pos[other * DIM + d] - curPos[d];
-                dist2 += diff[d] * diff[d];
-            }
-
-            float dist = sqrtf(dist2) + 1e-8f;
-            if (dist < pid.repulsionDistFact * envConfig.minDist)
-            {
-                float scale = pid.repulsionFactor / powf(dist / envConfig.minDist, pid.repulsionPower + 1.0f);
-                for (int d = 0; d < DIM; d++)
-                    outAction[d] -= scale * diff[d];
-            }
-        }
-
-    // normalize
-    float sqAccel = 0.0f;
+    // 3. Integrate position
     for (int d = 0; d < DIM; d++)
-        sqAccel += outAction[d] * outAction[d];
+        state.pos[d] += envConfig.dt * state.vel[d];
 
-    if (sqAccel > envConfig.maxAccel[agent] * envConfig.maxAccel[agent])
+    // 4. Integrate speed
+    for (int d = 0; d < DIM; d++)
+        state.vel[d] += envConfig.dt * scratch.action[d];
+
+    // 5. Cap speed
+    float sqSpeed = 0.0f;
+    for (int d = 0; d < DIM; d++)
+        sqSpeed += state.vel[d] * state.vel[d];
+
+    if (sqSpeed > envConfig.maxSpeed * envConfig.maxSpeed)
     {
-        float fact = envConfig.maxAccel[agent] / sqrtf(sqAccel);
+        float sc = envConfig.maxSpeed / sqrtf(sqSpeed);
         for (int d = 0; d < DIM; d++)
-            outAction[d] *= fact;
-    }
-}
-
-// compute opp. nominal actions, PID noise + env noise (only if applyNoise is
-// True), env dynamics, belief update (only if shouldUpdateBelief) and branch
-// update (only if considerBranching is true; if we become specialized, set
-// corresponding branching time to t+1)
-template <bool shouldUpdateBelief, bool considerBranching, typename RNG>
-HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentConfig& envConfig,
-                                       const float* __restrict__ egoAction, // (dim)
-                                       bool applyNoise,                     // TODO: this could be a template (but probably doesn't
-                                                                            // matter if we're inlined anyway)
-                                       SimState& state,
-                                       BranchState& branchState, // belief is updated in-place if shouldUpdateBelief.
-                                                                 // branchingTime and branchUsed are updated if
-                                                                 // considerBranching is true
-                                       bool& branched,           // set to true if we branched at this step. must be previously
-                                                                 // initialized to false. unused if considerBranching is false
-                                       float minConfidence,      // for branching. unused if considerBranching is false
-                                       // float* __restrict__ actions,                  // scratch: (nAgents, dim)
-                                       // float* __restrict__ nomPidAction,             // scratch: (nModels, dim)
-                                       ScratchEnvBuffer& scratch, RNG& rng, int gateMarginAgent = -1, float gateMargin = 0.0f)
-{
-    // 1. Copy current pos (for gate update)
-    float prevPos[N_AGENTS * DIM];
-    for (int i = 0; i < N_AGENTS * DIM; i++)
-        prevPos[i] = state.pos[i];
-
-    // 2. Build actions and nominal PID actions (for belief update)
-    // TODO: with 2 agents, this should be optimized
-    for (int a = 0; a < N_AGENTS; a++)
-    {
-        if (a == envConfig.iMppi)
-            for (int d = 0; d < DIM; d++)
-                scratch.actions[a * DIM + d] = egoAction[d];
-        else
-        {
-            for (int thetaT = 0; thetaT < N_TRUE_MODELS; thetaT++)
-                computePIDAction(a, state, envConfig, envConfig.oppPid[thetaT], scratch.nomPidActions + thetaT * DIM);
-
-            for (int d = 0; d < DIM; d++)
-            {
-                float u = scratch.nomPidActions[trueTheta * DIM + d];
-                if (applyNoise && envConfig.oppPid[trueTheta].actionNoise != 0.0f)
-                    u += envConfig.oppPid[trueTheta].actionNoise * sampleNormal(rng);
-
-                scratch.actions[a * DIM + d] = u;
-            }
-        }
-    }
-
-    // 3. Clamp actions and add env action noise
-    for (int a = 0; a < N_AGENTS; a++)
-    {
-        float sqNorm = 0.0f;
-        for (int d = 0; d < DIM; d++)
-            sqNorm += scratch.actions[a * DIM + d] * scratch.actions[a * DIM + d];
-
-        float factor = 1.0f;
-        float maxSq = envConfig.maxAccel[a] * envConfig.maxAccel[a];
-        if (sqNorm > maxSq)
-            factor = envConfig.maxAccel[a] / sqrtf(sqNorm);
-
-        for (int d = 0; d < DIM; d++)
-        {
-            float& v = scratch.actions[a * DIM + d];
-            v *= factor;
-
-            if (envConfig.actionNoiseLevel != 0.0f && applyNoise)
-                v += sampleNormal(rng) * envConfig.actionNoiseLevel;
-        }
-    }
-
-    // 4. Integrate position
-    for (int a = 0; a < N_AGENTS; a++)
-        for (int d = 0; d < DIM; d++)
-            state.pos[a * DIM + d] += envConfig.dt * state.vel[a * DIM + d];
-
-    // 5. Integrate speed
-    for (int a = 0; a < N_AGENTS; a++)
-        for (int d = 0; d < DIM; d++)
-            state.vel[a * DIM + d] += envConfig.dt * scratch.actions[a * DIM + d];
-
-    // 6. Cap speed
-    for (int a = 0; a < N_AGENTS; a++)
-    {
-        float spd = agentSpeed(state.vel, a);
-        if (spd > envConfig.maxSpeed[a])
-        {
-            float sc = envConfig.maxSpeed[a] / spd;
-            for (int d = 0; d < DIM; d++)
-                state.vel[a * DIM + d] *= sc;
-        }
+            state.vel[d] *= sc;
     }
 
     // 7. State noise (pos + speed)
-    if ((envConfig.posNoiseLevel != 0.0f || envConfig.speedNoiseLevel != 0.0f) && applyNoise)
-    {
-        for (int a = 0; a < N_AGENTS; a++)
-            for (int d = 0; d < DIM; d++)
-            {
-                if (envConfig.posNoiseLevel != 0.0f)
-                    state.pos[a * DIM + d] += sampleNormal(rng) * envConfig.posNoiseLevel;
-                if (envConfig.speedNoiseLevel != 0.0f)
-                    state.vel[a * DIM + d] += sampleNormal(rng) * envConfig.speedNoiseLevel;
-            }
-    }
+    if (applyNoise && (envConfig.posNoiseLevel != 0.0f || envConfig.speedNoiseLevel != 0.0f))
+        for (int d = 0; d < DIM; d++)
+        {
+            if (envConfig.posNoiseLevel != 0.0f)
+                state.pos[d] += sampleNormal(rng) * envConfig.posNoiseLevel;
+            if (envConfig.speedNoiseLevel != 0.0f)
+                state.vel[d] += sampleNormal(rng) * envConfig.speedNoiseLevel;
+        }
 
     // 8. Update gates with prev pos
-    updateGates(envConfig, state.pos, prevPos, state.S, state.gates, state.laps, gateMarginAgent, gateMargin);
-
-    int oppAgent = 1 - envConfig.iMppi;
+    updateGates<addMargin>(envConfig, state, scratch.prevPos, gateMargin);
 
     // 9. Update belief & branching time
     if constexpr (shouldUpdateBelief)
-        updateBelief(branchState.belief, scratch.actions + oppAgent * DIM, scratch.nomPidActions, envConfig.oppPid, envConfig.maxAccel[oppAgent]);
+    {
+        // TODO: will change if 2 independant obstacles
+
+        // if we are not sure yet, then update. here, since we know that 1 of them is blocked, if we can see either then we will know
+        if (branchState.belief[0] < minConfidence && branchState.belief[1] < minConfidence &&
+            (canSeeHiddenObs(state, envConfig, trueTheta) || canSeeHiddenObs(state, envConfig, 1 - trueTheta)))
+        {
+            branchState.belief[trueTheta] = 1.0f;
+            branchState.belief[1 - trueTheta] = 0.0f;
+        }
+    }
 
     if constexpr (considerBranching)
     {
@@ -701,41 +468,7 @@ HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentCo
             }
     }
 
-    // 10. Check for collisions, outside, or win
-    // bool collision = false;
-    // for (int a1 = 0; a1 < N_AGENTS && !collision; a1++)
-    //     for (int a2 = a1 + 1; a2 < N_AGENTS; a2++)
-    //     {
-    //         float dist2 = 0.0f;
-    //         for (int d = 0; d < DIM; d++)
-    //         {
-    //             float dx = state.pos[a1 * DIM + d] - state.pos[a2 * DIM + d];
-    //             dist2 += dx * dx;
-    //         }
-    //         if (dist2 < envConfig.minDist * envConfig.minDist)
-    //         {
-    //             collision = true;
-    //             break;
-    //         }
-    //     }
-
-    // if (collision)
-    //     return TERM_COLLISION;
-
-    // if (isOutside(state, envConfig, envConfig.minDist / 2.0f))
-    //     return TERM_EGO_OUTSIDE;
-
-    // if (N_AGENTS > 1 && isOutside(envConfig, state.pos + oppAgent * DIM,
-    // envConfig.minDist / 2.0f))
-    //     return TERM_OPP_OUTSIDE;
-
-    // if (state.laps[envConfig.iMppi] >= envConfig.nWinLaps)
-    //     return TERM_WIN;
-
-    // if (N_AGENTS > 1 && state.laps[oppAgent] >= envConfig.nWinLaps)
-    //     return TERM_OPP_WIN;
-
-    if (isOutside(state, envConfig, envConfig.minDist / 2.0f))
+    if (isOutside(state, envConfig, envConfig.droneRadius, trueTheta))
         return TERM_LOSE;
 
     if (isWinner(state, envConfig))

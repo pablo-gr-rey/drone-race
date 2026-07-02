@@ -7,7 +7,7 @@ import typing
 import numpy as np
 import zmq
 from renderer import EnvironmentRenderer
-from utils import EVENT_TYPE, MSG_TYPE, ControllerConfig, FullStateInfo, DroneRaceEnvConfig, SimState
+from utils import EVENT_TYPE, MSG_TYPE, BaseEnvironmentConfig, BaseSimState, BaseControllerConfig, FullStateInfo
 
 
 class BytePacker:
@@ -135,7 +135,7 @@ class ByteUnpacker:
 
                 attrs[field.name] = [self.readAny(elem_type) for i in range(length)]
 
-            elif typing.get_origin(field.type) is typing.Union:
+            elif isinstance(field.type, typing.TypeVar) or typing.get_origin(field.type) is typing.Union:
                 if "class" not in field.metadata:
                     raise ValueError(f"Missing source class information in metadata for field {field.name} of type {field.type}")
                 if not hasattr(cl, field.metadata["class"]):
@@ -192,49 +192,29 @@ class ZMQRecv:
 
     def runSim(
         self,
-        envConfig: DroneRaceEnvConfig,
-        contConfig: ControllerConfig,
-        initState: SimState,
+        envConfig: BaseEnvironmentConfig,
+        contConfig: BaseControllerConfig,
+        initState: BaseSimState,
         render: bool = True,
-        contNames: Optional[list[str]] = None,
         oppNames: Optional[list[list[str]]] = None,
-    ) -> tuple[EVENT_TYPE, int]:
+        **kwargs: Any,
+    ) -> EVENT_TYPE:
         if render:
-            # only display the racelines which are actually used
-            used = [False] * envConfig.nRaceLines
-            for cfg in envConfig.opponentPidConfigs:
-                used[cfg.racelineIndex] = True
-
-            if contNames is None:
-                # contNames = [cfg.getDefaultName() for cfg in contConfigs]
-                contNames = [
-                    contConfig.getDefaultName()
-                    if i == envConfig.iMppi
-                    else envConfig.opponentPidConfigs[envConfig.trueTheta].getDefaultName()
-                    for i in range(2)
-                ]
-
-            if oppNames is None:
-                oppNames = [[f"Param {k}={i}" for i in range(envConfig.modelSizes[k])] for k in range(envConfig.nModelFactors)]
-
             renderer = EnvironmentRenderer(
                 envConfig,
                 contConfig,
-                contNames,
                 oppNames,
                 interval=0,
                 frameSkipWaiting=2,
                 frameSkipPlayback=2,
                 defaultZoomAgent=-1,
-                display_raceline=used,
-                # display_raceline=False,
-                renderTrails=False,
+                **kwargs,
             )
         else:
             renderer = None
 
         # update controller type in FullStateInfo
-        FullStateInfo.updateContType(contConfig)
+        FullStateInfo.updateTypes(envConfig, contConfig)
 
         # send header
         print("Sending header...")
@@ -246,7 +226,7 @@ class ZMQRecv:
         self.sock.send(encodeConfig(initState, MSG_TYPE.MSG_HEADER).toBytes())
         print("header sent OK, waiting for first state...")
 
-        result = None
+        result: Optional[EVENT_TYPE] = None
 
         while True:
             unpack = ByteUnpacker(self.sock.recv())
@@ -264,19 +244,6 @@ class ZMQRecv:
                 if state.step != len(self.stateLog):
                     print(f"expected step number {len(self.stateLog)} but received step {state.step}")
 
-                if state.step == 0:
-                    # we confirm that the first state is equal to the initial state we sent (to detect early potential transmission bugs)
-                    if (
-                        not np.all(np.isclose(state.state.pos, initState.pos))
-                        or not np.all(np.isclose(state.state.vel, initState.vel))
-                        # or not np.all(np.isclose(state.state.currentS, config.initS))     # for non-PID agents, engine sets S to -1
-                        or not np.all(np.isclose(state.state.laps, initState.laps))
-                        or not np.all(np.isclose(state.state.gates, initState.gates))
-                    ):
-                        print(state.state.pos, state.state.vel, state.state.S, state.state.laps, state.state.gates)
-                        print(initState.pos, initState.vel, initState.S, initState.laps, initState.gates)
-                        raise ValueError("First state sent back by C++ backend did not match initial state")
-
                 self.stateLog.append(state)
 
                 if renderer is not None:
@@ -286,22 +253,20 @@ class ZMQRecv:
                     renderer.onNewState(state, pendingState=bool(hasPending))
 
             elif msg_type == MSG_TYPE.MSG_EVENT:
-                evt_type, agent_id = unpack.readInt(), unpack.readInt()
+                evt_type = unpack.readInt()
                 unpack.assert_finished()
 
                 ename = EVENT_TYPE(evt_type)
-                print(f"Event: {ename.name} " + f"agent={agent_id + 1}" if agent_id != -1 else "")
+                print(f"Event: {ename.name}")
 
                 if renderer is not None:
-                    if ename == EVENT_TYPE.EVT_COLLISION:
-                        renderer.collision = True
-                    elif ename == EVENT_TYPE.EVT_OUTSIDE:
-                        renderer.outside = agent_id
+                    if ename == EVENT_TYPE.EVT_OUTSIDE:
+                        renderer.outside = True
                     elif ename == EVENT_TYPE.EVT_WINNER:
-                        renderer.winner = agent_id
+                        renderer.winner = True
                 # nothing to do if truncation
 
-                result = (ename, agent_id)
+                result = ename
 
             elif msg_type == MSG_TYPE.MSG_DONE:
                 unpack.assert_finished()

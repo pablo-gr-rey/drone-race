@@ -8,8 +8,8 @@
 
 #include "common.h"
 
-#define USE_ENV_DRONERACE
-// #define USE_ENV_HIDDENOBS
+// #define USE_ENV_DRONERACE
+#define USE_ENV_HIDDENOBS
 
 inline constexpr bool USE_SPLINES = true;
 
@@ -39,9 +39,15 @@ inline constexpr int N_TRUE_MODELS = Env::N_TRUE_MODELS;
 inline constexpr int N_BRANCH_PLANS = Env::N_BRANCH_PLANS;
 inline constexpr int MAX_MODEL_SIZE = Env::MAX_MODEL_SIZE;
 
-HD INLINE constexpr int MODEL_SIZE(int k) { return Env::MODEL_SIZE(k); }
+HD INLINE constexpr int MODEL_SIZE(int k)
+{
+    return Env::MODEL_SIZE(k);
+}
 
-HD INLINE constexpr int BRANCH_SIZE(int k) { return Env::BRANCH_SIZE(k); }
+HD INLINE constexpr int BRANCH_SIZE(int k)
+{
+    return Env::BRANCH_SIZE(k);
+}
 
 enum CONTROLLER_KIND : int32_t
 {
@@ -84,7 +90,6 @@ struct HostRNG
 #include "environments/env_dronerace.h" // IWYU pragma: export
 #elif defined(USE_ENV_HIDDENOBS)
 #include "environments/env_hiddenobs.h" // IWYU pragma: export
-namespace Env = EnvHiddenObs;
 #else
 #error "must define a valid environment!"
 #endif

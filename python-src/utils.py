@@ -3,55 +3,12 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 import math
 import random
-from typing import TYPE_CHECKING, ClassVar, Optional
+from typing import Any, ClassVar, Optional
+from matplotlib import patches
+from matplotlib.path import Path
+import matplotlib.pyplot as plt
 
 import numpy as np
-
-if TYPE_CHECKING:
-    pass
-
-
-def roundTrack(s: float) -> np.ndarray:
-    return np.array([np.cos(2 * np.pi * s), np.sin(2 * np.pi * s)]) * 10
-
-
-def lissajous(s: float, radius: float, s_radius: float, period: int) -> np.ndarray:
-    R = radius + s_radius * np.sin(period * np.pi * s)
-    return np.array([np.cos(2 * np.pi * s), np.sin(2 * np.pi * s)]) * R
-
-
-def flower(s: float, radius: float, s_radius: float) -> np.ndarray:
-    theta = 2 * np.pi * s
-    x, y = np.cos(theta) * radius, np.sin(theta) * radius
-    return np.array([x + s_radius * np.sin(theta * theta), y + s_radius * np.cos(theta * theta)])
-
-
-def circularGateTrack(
-    nGates: int, trackRadius: float, gateRadius: float, height: Optional[float] = None
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Returns gateCenters, gateVectors, gateRadius for nGates around a circle of given radius.
-    If height is None, returns 2D gates; otherwise, returns 3D gates with given height.
-    """
-
-    angles = np.linspace(0, 2 * np.pi, nGates, endpoint=False)
-
-    dir_x = -np.sin(angles)
-    dir_y = np.cos(angles)
-
-    cent_x = trackRadius * np.cos(angles)
-    cent_y = trackRadius * np.sin(angles)
-
-    if height is not None:  # 3D
-        centers = np.stack([cent_x, cent_y, np.full(nGates, height)], axis=1)
-        vectors = np.stack([dir_x, dir_y, np.zeros(nGates)], axis=1)
-    else:  # 2D
-        centers = np.stack([cent_x, cent_y], axis=1)
-        vectors = np.stack([dir_x, dir_y], axis=1)
-
-    radius = np.full(nGates, gateRadius)
-
-    return centers, vectors, radius
 
 
 class MSG_TYPE(IntEnum):
@@ -62,10 +19,9 @@ class MSG_TYPE(IntEnum):
 
 
 class EVENT_TYPE(IntEnum):
-    EVT_COLLISION = 0
-    EVT_OUTSIDE = 1
-    EVT_WINNER = 2
-    EVT_TRUNCATED = 3
+    EVT_OUTSIDE = 0
+    EVT_WINNER = 1
+    EVT_TRUNCATED = 2
 
 
 class CONTROLLER_KIND(IntEnum):
@@ -81,95 +37,32 @@ class ENV_KIND(IntEnum):
 
 
 @dataclass
-class BaseEnvironmentConfig:
-    envKind: ENV_KIND = field(init=False, default=ENV_KIND.ENV_INVALID)
+class BaseControllerConfig(ABC):
+    contKind: CONTROLLER_KIND = field(init=False, default=CONTROLLER_KIND.CONT_INVALID)
+
+    @abstractmethod
+    def getDefaultName(self) -> str: ...
 
 
 @dataclass
-class DroneRaceEnvConfig(BaseEnvironmentConfig):
-    nAgents: int = 2
-    dim: int = 2
-    dt: float = 0.1
+class BaseEnvironmentConfig(ABC):
+    envKind: ENV_KIND = field(init=False, default=ENV_KIND.ENV_INVALID)
 
-    sendStates: bool = True
-    nRaceLines: int = 1  # number of race lines (at least 1, centerline; can specify more for PID following a given line)
-    # they all should be concatenated & specified in trackPoints (which contains nLines arrays of size nSamples * dim), and then the line config in PID specifies the offset (offset=0: following centerline from 0 to nSamples-1; offset=1: following arbitrary raceline from nSamples to 2*nSamples-1, etc)
-    nGates: int = 0
+    actionDim: int = field(init=False, default=-1, metadata={"send": False})
 
-    # init_pos: list | np.ndarray = field(default_factory=lambda: [])
-    # init_vel: list | np.ndarray = field(default_factory=lambda: [])
-    # initS: np.ndarray = field(default_factory=lambda: np.array([]))
-    # initnLaps: np.ndarray = field(default_factory=lambda: np.array([]))
-    # initGates: np.ndarray = field(default_factory=lambda: np.array([]))
-
-    minDist: float = 0.2
-    posNoiseLevel: float = 0.0
-    speedNoiseLevel: float = 0.0
-    actionNoiseLevel: float = 0.0
-
-    maxSpeed: np.ndarray = field(default_factory=lambda: np.array([]))  # in L_2 norm
-    maxAccel: np.ndarray = field(default_factory=lambda: np.array([]))  # in L_inf norm
-
-    nTrackSamples: int = 500  # track is discretized with this number of samples
-    nWinLaps: int = 1
-
-    targetDistance: float = 0.1  # simple controllers will try to go to the track point at s + targetDistance
-
-    gateCenters: np.ndarray = field(default_factory=lambda: np.array([]))  # (nGates, dim)
-    gateVectors: np.ndarray = field(default_factory=lambda: np.array([]))  # (nGates, dim)
-    gateRadius: np.ndarray = field(default_factory=lambda: np.array([]))  # (nGates)
+    nModelFactors: int = 1
+    modelSizes: np.ndarray = field(default_factory=lambda: np.array([]))
+    nTrueModels: int = field(init=False, metadata={"send": False})
 
     arenaMin: np.ndarray = field(default_factory=lambda: np.array([]))
     arenaMax: np.ndarray = field(default_factory=lambda: np.array([]))
 
-    nObstacles: int = 0
-    obstacles: np.ndarray = field(default_factory=lambda: np.array([]))
-
-    nRoundObstacles: int = 0
-    roundObsCenters: np.ndarray = field(default_factory=lambda: np.array([]))
-    roundObsRadius: np.ndarray = field(default_factory=lambda: np.array([]))
-
-    seed: int = 42  # if -1, then it will be set to a random value
-
-    nModelFactors: int = 1
-    nTrueModels: int = field(init=False, metadata={"send": False})
-    modelSizes: np.ndarray = field(default_factory=lambda: np.array([]))
-    initBelief: np.ndarray = field(default_factory=lambda: np.array([]))
-
-    opponentPidConfigs: tuple["PIDConfig", ...] = ()
-    iMppi: int = 0
-    trueTheta: int = 0
-
-    trackPoints: Optional[np.ndarray] = None
-
-    def __post_init__(self) -> None:
-        self.envKind = ENV_KIND.ENV_DRONERACE
-
-        if self.trackPoints is None and self.nGates > 0:
-            # sample simple centerline as linear points going through the gates
-            self.trackPoints = np.concatenate(
-                [
-                    np.linspace(
-                        self.gateCenters[i],
-                        self.gateCenters[(i + 1) % self.nGates],
-                        self.nTrackSamples // self.nGates + (i >= self.nGates - self.nTrackSamples % self.nGates),
-                    )
-                    for i in range(self.nGates)
-                ]
-            )
-
-        if self.arenaMin.shape == (0,):
-            self.arenaMin = np.min(self.gateCenters, axis=0) - np.max(self.gateRadius) * 5
-            self.arenaMax = np.max(self.gateCenters, axis=0) + np.max(self.gateRadius) * 5
-
-        if self.seed == -1:
-            self.seed = random.randrange(2**31)
-
+    def __post_init__(self):
         self.modelSizes = self.modelSizes.astype(np.int32)
         self.nTrueModels = int(np.prod(self.modelSizes))
 
-        if self.initBelief.size == 0:
-            self.initBelief = np.full(self.nTrueModels, 1.0 / self.nTrueModels)
+    @abstractmethod
+    def getMaxAccel(self) -> float: ...
 
     def flattenTheta(self, thetaTuple: list[int]) -> int:
         "Flatten thetaTuple (0 <= theta[k] < modelSize[k]) into 0 <= trueTheta < nTrueModels"
@@ -201,32 +94,317 @@ class DroneRaceEnvConfig(BaseEnvironmentConfig):
 
 
 @dataclass
-class PIDConfig:  # not considered as a ControllerConfig, as these are meant to represent independant controllers (and PID isn't really interesting as a main character)
-    kp: float = 1.0
-    kd: float = 0.5
-
-    repulsionFactor: float = 0.5
-    repulsionPower: float = 2.0
-    repulsionDistFactor: float = 5.0
-
-    racelineIndex: int = 0
-
-    actionNoise: float = 0.0
-
-    def getDefaultName(self) -> str:
-        return "PID"
+class BaseSimState: ...
 
 
-@dataclass
-class ControllerConfig(ABC):
-    contKind: CONTROLLER_KIND = field(init=False, default=CONTROLLER_KIND.CONT_INVALID)
+class BaseEnvironmentRenderer[EnvConfigT: BaseEnvironmentConfig](ABC):
+    def __init__(
+        self,
+        envConfig: EnvConfigT,
+        contConfig: BaseControllerConfig,
+        ax: plt.Axes,  # type: ignore
+        ax_status: plt.Axes,  # type: ignore
+        oppNames: list[list[str]],
+        **kwargs: Any,
+    ):
+        self.envConfig = envConfig
+        self.contConfig = contConfig
+        self.ax = ax
+        self.ax_status = ax_status
+        self.oppNames = oppNames
+
+        self.postInit(**kwargs)
 
     @abstractmethod
-    def getDefaultName(self) -> str: ...
+    def postInit(self, **kwargs) -> None: ...
+
+    @abstractmethod
+    def drawBackground(self) -> None: ...
+
+    @abstractmethod
+    def drawFrame(self, stateLog: list["FullStateInfo"], iFrame: int) -> None: ...
+
+    @abstractmethod
+    def getZoomPos(self, stateLog: list["FullStateInfo"], iFrame: int) -> tuple[float, float]: ...
+
+    def drawRectangle(self, omin: tuple[float, float], omax: tuple[float, float]) -> None:
+        self.ax.add_patch(
+            patches.Rectangle(
+                omin,
+                width=omax[0] - omin[0],
+                height=omax[1] - omin[1],
+                facecolor="gray",
+                hatch="/",
+                fill=True,
+            )
+        )
+
+    def drawCircle(
+        self, center: tuple[float, float], radius: float, fill: bool = True, edge: bool = True, dottedEdge: bool = False
+    ) -> None:
+        self.ax.add_patch(
+            patches.Circle(
+                center,
+                radius,
+                linewidth=3 if edge else 0,
+                edgecolor="black",
+                facecolor="gray",
+                hatch="/",
+                fill=fill,
+                linestyle="dotted" if dottedEdge else "solid",
+            )
+        )
+
+    def drawTriangle(self, p1: tuple[float, float], p2: tuple[float, float], p3: tuple[float, float]) -> None:
+        self.ax.add_patch(
+            patches.Polygon(
+                [p1, p2, p3],
+                facecolor="gray",
+                hatch="/",
+                fill=True,
+            )
+        )
+
+    def drawHalfPlane(self, minx: float, maxx: float, lambdaTop: float, lambdaBot: float, isRight: bool) -> None:
+        "isRight should be False for first dbl-half-plane and True for 2nd"
+
+        xFact = 1 if isRight else -1  # plane is xFact*x +- y = lambdaTop/Bot
+
+        # top part
+        yTop = lambdaTop + (-minx if isRight else maxx)
+        self.drawTriangle((minx, lambdaTop - xFact * minx), (maxx, lambdaTop - xFact * maxx), (maxx if isRight else minx, yTop))
+        self.drawRectangle((minx, yTop), (maxx, self.envConfig.arenaMax[1] + 1))
+
+        # bottom part
+        yBot = -lambdaBot + (minx if isRight else -maxx)
+        self.drawTriangle((minx, -lambdaBot + xFact * minx), (maxx, -lambdaBot + xFact * maxx), (maxx if isRight else minx, yBot))
+        self.drawRectangle((minx, self.envConfig.arenaMin[1] - 1), (maxx, yBot))
+
+    def drawAnnulus(self, xcenter: float, ycenter: float, minr: float, maxr: float) -> None:
+        # inner circle
+        self.ax.add_patch(
+            patches.Wedge(
+                (xcenter, ycenter),
+                minr,
+                90,
+                180,
+                facecolor="gray",
+                hatch="/",
+                fill=True,
+                linewidth=0,
+            )
+        )
+
+        # outer circle: we have to discretize the path
+        nThetas = 20
+
+        thetas = np.linspace(np.pi / 2, np.pi, nThetas)
+        arc_x = maxr * np.cos(thetas) + xcenter
+        arc_y = maxr * np.sin(thetas) + ycenter
+
+        # path: topleft -> topright -> arc -> bottomleft -> back to topleft
+        minx = self.envConfig.arenaMin[0] - 1
+        maxy = self.envConfig.arenaMax[1] + 1
+
+        path = Path(
+            [
+                (minx, maxy),
+                (xcenter, maxy),
+                (xcenter, maxr + ycenter),
+                *zip(arc_x, arc_y),
+                (-maxr + xcenter, ycenter),
+                (minx, ycenter),
+                (minx, maxy),
+            ],
+            closed=True,
+        )
+
+        self.ax.add_patch(
+            patches.PathPatch(
+                path,
+                facecolor="gray",
+                hatch="/",
+                fill=True,
+            )
+        )
 
 
 @dataclass
-class MPPIConfig(ControllerConfig):
+class DroneRaceEnvironmentConfig(BaseEnvironmentConfig):
+    @dataclass
+    class PIDConfig:  # not considered as a ControllerConfig, as these are meant to represent independant controllers (and PID isn't really interesting as a main character)
+        kp: float = 1.0
+        kd: float = 0.5
+
+        repulsionFactor: float = 0.5
+        repulsionPower: float = 2.0
+        repulsionDistFactor: float = 5.0
+
+        racelineIndex: int = 0
+
+        actionNoise: float = 0.0
+
+        def getDefaultName(self) -> str:
+            return "PID"
+
+    nAgents: int = 2
+    dim: int = 2
+    dt: float = 0.1
+
+    sendStates: bool = True
+    nRaceLines: int = 1  # number of race lines (at least 1, centerline; can specify more for PID following a given line)
+    # they all should be concatenated & specified in trackPoints (which contains nLines arrays of size nSamples * dim), and then the line config in PID specifies the offset (offset=0: following centerline from 0 to nSamples-1; offset=1: following arbitrary raceline from nSamples to 2*nSamples-1, etc)
+    nGates: int = 0
+
+    droneRadius: float = 0.2
+    posNoiseLevel: float = 0.0
+    speedNoiseLevel: float = 0.0
+    actionNoiseLevel: float = 0.0
+
+    maxSpeed: np.ndarray = field(default_factory=lambda: np.array([]))  # in L_2 norm
+    maxAccel: np.ndarray = field(default_factory=lambda: np.array([]))  # in L_inf norm
+
+    nTrackSamples: int = 500  # track is discretized with this number of samples
+    nWinLaps: int = 1
+
+    targetDistance: float = 0.1  # simple controllers will try to go to the track point at s + targetDistance
+
+    gateCenters: np.ndarray = field(default_factory=lambda: np.array([]))  # (nGates, dim)
+    gateVectors: np.ndarray = field(default_factory=lambda: np.array([]))  # (nGates, dim)
+    gateRadius: np.ndarray = field(default_factory=lambda: np.array([]))  # (nGates)
+
+    nObstacles: int = 0
+    obstacles: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    nRoundObstacles: int = 0
+    roundObsCenters: np.ndarray = field(default_factory=lambda: np.array([]))
+    roundObsRadius: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    seed: int = 42  # if -1, then it will be set to a random value
+
+    initBelief: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    opponentPidConfigs: tuple[PIDConfig, ...] = ()
+    iMppi: int = 0
+    trueTheta: int = 0
+
+    trackPoints: Optional[np.ndarray] = None
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.envKind = ENV_KIND.ENV_DRONERACE
+        self.actionDim = self.dim
+
+        if self.trackPoints is None and self.nGates > 0:
+            # sample simple centerline as linear points going through the gates
+            self.trackPoints = np.concatenate(
+                [
+                    np.linspace(
+                        self.gateCenters[i],
+                        self.gateCenters[(i + 1) % self.nGates],
+                        self.nTrackSamples // self.nGates + (i >= self.nGates - self.nTrackSamples % self.nGates),
+                    )
+                    for i in range(self.nGates)
+                ]
+            )
+
+        if self.arenaMin.shape == (0,):
+            self.arenaMin = np.min(self.gateCenters, axis=0) - np.max(self.gateRadius) * 5
+            self.arenaMax = np.max(self.gateCenters, axis=0) + np.max(self.gateRadius) * 5
+
+        if self.seed == -1:
+            self.seed = random.randrange(2**31)
+
+        if self.initBelief.size == 0:
+            self.initBelief = np.full(self.nTrueModels, 1.0 / self.nTrueModels)
+
+    def getMaxAccel(self) -> float:
+        return self.maxAccel[self.iMppi]
+
+
+@dataclass
+class DroneRaceSimState(BaseSimState):
+    pos: np.ndarray
+    vel: np.ndarray
+    S: np.ndarray
+    laps: np.ndarray
+    gates: np.ndarray
+
+
+@dataclass
+class HiddenObsEnvironmentConfig(BaseEnvironmentConfig):
+    dim: int = 2
+    dt: float = 0.1
+
+    sendStates: bool = True
+
+    nGates: int = 0
+
+    droneRadius: float = 0.2
+
+    posNoiseLevel: float = 0.0
+    speedNoiseLevel: float = 0.0
+    actionNoiseLevel: float = 0.0
+
+    maxSpeed: float = 1.0
+    maxAccel: float = 2.0
+
+    nWinLaps: int = 1
+
+    gateCenters: np.ndarray = field(default_factory=lambda: np.array([]))  # (nGates, dim)
+    gateVectors: np.ndarray = field(default_factory=lambda: np.array([]))  # (nGates, dim)
+    gateRadius: np.ndarray = field(default_factory=lambda: np.array([]))  # (nGates)
+
+    nRectObstacles: int = 0
+    rectObstacles: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    nHiddenObstacles: int = 0
+    hiddenObsCenters: np.ndarray = field(default_factory=lambda: np.array([]))
+    hiddenObsRadius: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    dblHpLimits: np.ndarray = field(default_factory=lambda: np.array([]))
+    dblHpLambdas: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    annulusCenter: np.ndarray = field(default_factory=lambda: np.array([]))
+    annulusRadius: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    seed: int = 42  # if -1, then it will be set to a random value
+
+    initBelief: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    trueTheta: int = 0
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+
+        self.envKind = ENV_KIND.ENV_HIDDENOBS
+        self.actionDim = self.dim
+
+        if self.arenaMin.shape == (0,):
+            self.arenaMin = np.min(self.gateCenters, axis=0) - np.max(self.gateRadius) * 5
+            self.arenaMax = np.max(self.gateCenters, axis=0) + np.max(self.gateRadius) * 5
+
+        if self.seed == -1:
+            self.seed = random.randrange(2**31)
+
+        if self.initBelief.size == 0:
+            self.initBelief = np.full(self.nTrueModels, 1.0 / self.nTrueModels)
+
+    def getMaxAccel(self) -> float:
+        return self.maxAccel
+
+
+@dataclass
+class HiddenObsSimState(BaseSimState):
+    pos: np.ndarray
+    vel: np.ndarray
+
+    laps: int
+    gates: int
+
+
+@dataclass
+class MPPIConfig(BaseControllerConfig):
     nSamples: int = 10000
     nTimesteps: int = 60
     nKnots: int = 6
@@ -273,7 +451,7 @@ class MPPIConfig(ControllerConfig):
 
 
 @dataclass
-class PRMPPIConfig(ControllerConfig):
+class PRMPPIConfig(BaseControllerConfig):
     nSamples: int = 100
     nTimesteps: int = 20
 
@@ -320,7 +498,6 @@ class MPPIStatePredInfo:
     egoActions: np.ndarray
     stopReason: EVENT_TYPE
     stopTime: int
-    stopAgent: int
 
 
 @dataclass
@@ -343,7 +520,6 @@ class PRMPPIStatePredInfo:
     egoActions: np.ndarray
     stopReason: EVENT_TYPE
     stopTime: int
-    stopAgent: int
 
 
 @dataclass
@@ -359,33 +535,32 @@ class PRMPPIStateInfo:
 
 
 @dataclass
-class SimState:
-    pos: np.ndarray
-    vel: np.ndarray
-    S: np.ndarray
-    laps: np.ndarray
-    gates: np.ndarray
-
-
-@dataclass
-class FullStateInfo:
+class FullStateInfo[SimStateT: BaseSimState, contInfoT]:
     # kind of a hack, but this is a class member which should be set by the protocol part based on the actual controller type
     # this way, we can automatically unpack the state information corresponding to the given controller
+    SimStateType: ClassVar[type[DroneRaceSimState] | type[HiddenObsSimState]]
     ContStateType: ClassVar[type[MPPIStateInfo] | type[PRMPPIStateInfo]]
 
     step: int
 
-    state: SimState
+    state: SimStateT = field(metadata={"class": "SimStateType"})
 
     egoAction: np.ndarray
 
-    contInfo: MPPIStateInfo | PRMPPIStateInfo = field(metadata={"class": "ContStateType"})
+    contInfo: contInfoT = field(metadata={"class": "ContStateType"})
 
     @classmethod
-    def updateContType(cls, config: ControllerConfig) -> None:
-        if config.contKind == CONTROLLER_KIND.CONT_MPPI:
+    def updateTypes(cls, envConfig: BaseEnvironmentConfig, contConfig: BaseControllerConfig) -> None:
+        if envConfig.envKind == ENV_KIND.ENV_DRONERACE:
+            cls.SimStateType = DroneRaceSimState
+        elif envConfig.envKind == ENV_KIND.ENV_HIDDENOBS:
+            cls.SimStateType = HiddenObsSimState
+        else:
+            raise ValueError(f"Unknown environment kind {envConfig.envKind}")
+
+        if contConfig.contKind == CONTROLLER_KIND.CONT_MPPI:
             cls.ContStateType = MPPIStateInfo
-        elif config.contKind == CONTROLLER_KIND.CONT_PRMPPI:
+        elif contConfig.contKind == CONTROLLER_KIND.CONT_PRMPPI:
             cls.ContStateType = PRMPPIStateInfo
         else:
-            raise ValueError(f"Unknown controller kind {config.contKind}")
+            raise ValueError(f"Unknown controller kind {contConfig.contKind}")
