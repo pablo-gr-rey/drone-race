@@ -27,7 +27,13 @@ from utils import (
     MPPIConfig,
     PRMPPIConfig,
 )
-from controller_renderers import ControllerRenderer, MPPIDroneRaceRenderer, MPPIHiddenObsRenderer, PRMPPIDroneRaceRenderer
+from controller_renderers import (
+    ControllerRenderer,
+    MPPIDroneRaceRenderer,
+    MPPIHiddenObsRenderer,
+    PRMPPIDroneRaceRenderer,
+    PRMPPIHiddenObsRenderer,
+)
 
 
 def getRendererClass(
@@ -42,8 +48,8 @@ def getRendererClass(
     elif isinstance(envConfig, HiddenObsEnvironmentConfig):
         if isinstance(contConfig, MPPIConfig):
             return HiddenObsEnvRenderer, MPPIHiddenObsRenderer
-    #     elif isinstance(contConfig, PRMPPIConfig):
-    #         return HiddenObsEnvRenderer, PRMPPIHiddenObsRenderer
+        elif isinstance(contConfig, PRMPPIConfig):
+            return HiddenObsEnvRenderer, PRMPPIHiddenObsRenderer
 
     raise ValueError(f"Unknown env & cont config classes {type(envConfig)}, {type(contConfig)}")
 

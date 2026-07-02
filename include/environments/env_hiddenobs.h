@@ -446,7 +446,7 @@ HD INLINE TerminalType environmentStep(
         // TODO: will change if 2 independant obstacles
 
         // if we are not sure yet, then update. here, since we know that 1 of them is blocked, if we can see either then we will know
-        if (branchState.belief[0] < minConfidence && branchState.belief[1] < minConfidence &&
+        if (branchState.belief[0] < 0.9f && branchState.belief[1] < 0.9f &&
             (canSeeHiddenObs(state, envConfig, trueTheta) || canSeeHiddenObs(state, envConfig, 1 - trueTheta)))
         {
             branchState.belief[trueTheta] = 1.0f;

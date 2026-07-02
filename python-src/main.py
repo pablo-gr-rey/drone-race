@@ -771,6 +771,7 @@ def hiddenObsEnv(
         ),
         annulusCenter=np.array([maxAnnR, firstCorrHeight]),
         annulusRadius=np.array([minAnnR, maxAnnR]),
+        seed=2,
     )
 
     initState = HiddenObsSimState(pos=np.array([negAvgAnnR, envConfig.droneRadius * 1.5]), vel=np.zeros(2), laps=0, gates=0)
@@ -808,7 +809,7 @@ def hiddenObsEnv(
             # nSamples=1,
             nTimesteps=80,
             inv_temperature=10,
-            samplingNoise=0.5,
+            samplingNoise=0.8,
             # samplingNoise=0.5,
             gateTraversalMargin=0.9,  # restrict 5% on each side
             collDistFactor=1.2,
@@ -832,8 +833,8 @@ def hiddenObsEnv(
             nSamples=2**16,
             # nSamples=1,
             nTimesteps=60,
-            inv_temperature=1,
-            samplingNoise=0.3,
+            inv_temperature=10,
+            samplingNoise=2,
             # samplingNoise=0.5,
             gateTraversalMargin=0.9,  # restrict 5% on each side
             collDistFactor=1.1,
@@ -861,9 +862,9 @@ def mainGate():
     # envConfig, mppiconfig, pids, oppNames = tinyGateEnv2Models(roundObs=True, usePR=False)
     # envConfig, mppiconfig, pid0, pid1, oppNames = activeEnv()  # pid0 = afraid; pid1 = bold
 
-    # envConfig, initState, mppiconfig, oppNames = highInertiaEnv(usePR=False, useSplines=True)
+    # envConfig, initState, mppiconfig, oppNames = highInertiaEnv(usePR=True, useSplines=True)
 
-    envConfig, initState, mppiconfig, oppNames = hiddenObsEnv(usePR=False, useSplines=True)
+    envConfig, initState, mppiconfig, oppNames = hiddenObsEnv(usePR=True, useSplines=True)
 
     envConfig.trueTheta = 1
     # envConfig.iMppi = 1

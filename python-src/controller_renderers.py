@@ -130,9 +130,7 @@ class ControllerRenderer[EnvConfigT: BaseEnvironmentConfig, ContConfigT: BaseCon
         return coords + perp
 
 
-class BaseMPPIDroneRaceRenderer[EnvConfigT: BaseEnvironmentConfig, SimStateT: BaseSimState](
-    ControllerRenderer[EnvConfigT, MPPIConfig]
-):
+class BaseMPPIRenderer[EnvConfigT: BaseEnvironmentConfig, SimStateT: BaseSimState](ControllerRenderer[EnvConfigT, MPPIConfig]):
     def baseInit(self, nAdditionalTrajs: int = 0, **kwargs: Any) -> None:
         "nAdditionalTrajs should be the number of lines (other than MPPI's) we should create, for example 1 if there's another agent/moving stuff and 0 otherwise"
         self.severalModels = self.envConfig.nModelFactors > 1
@@ -375,7 +373,7 @@ class BaseMPPIDroneRaceRenderer[EnvConfigT: BaseEnvironmentConfig, SimStateT: Ba
         return ans
 
 
-class MPPIDroneRaceRenderer(BaseMPPIDroneRaceRenderer[DroneRaceEnvironmentConfig, DroneRaceSimState]):
+class MPPIDroneRaceRenderer(BaseMPPIRenderer[DroneRaceEnvironmentConfig, DroneRaceSimState]):
     def init(self, **kwargs: Any):
         super().baseInit(1, **kwargs)  # one additional trajectory for PID
 
@@ -399,7 +397,7 @@ class MPPIDroneRaceRenderer(BaseMPPIDroneRaceRenderer[DroneRaceEnvironmentConfig
         super().baseUpdate(state, curPos, fullPoss)
 
 
-class MPPIHiddenObsRenderer(BaseMPPIDroneRaceRenderer[HiddenObsEnvironmentConfig, HiddenObsSimState]):
+class MPPIHiddenObsRenderer(BaseMPPIRenderer[HiddenObsEnvironmentConfig, HiddenObsSimState]):
     def init(self, **kwargs: Any):
         super().baseInit(0, **kwargs)  # no additional trajectory
 
@@ -412,10 +410,13 @@ class MPPIHiddenObsRenderer(BaseMPPIDroneRaceRenderer[HiddenObsEnvironmentConfig
         super().baseUpdate(state, curPos, fullPoss)
 
 
-class PRMPPIDroneRaceRenderer(ControllerRenderer[DroneRaceEnvironmentConfig, PRMPPIConfig]):
-    def init(self, **kwargs: Any) -> None:
+class BasePRMPPIRenderer[EnvConfigT: BaseEnvironmentConfig, SimStateT: BaseSimState](
+    ControllerRenderer[EnvConfigT, PRMPPIConfig]
+):
+    def baseInit(self, nAdditionalTrajs: int = 0, **kwargs: Any) -> None:
         self.min_show_confidence = 0.01  # if confidence is less than this amount, do not show the trajectories
         self.severalModels = self.envConfig.nModelFactors > 1
+        self.nAddTrajs = nAdditionalTrajs
 
         gs_mppi = self.base_gs.subgridspec(
             2 + int(self.severalModels), 1, height_ratios=[1, 3, 3] if self.severalModels else [1, 3], hspace=0.1
@@ -434,27 +435,30 @@ class PRMPPIDroneRaceRenderer(ControllerRenderer[DroneRaceEnvironmentConfig, PRM
         self.rob_color = "brown"
 
         # line collections for MPPI predictions
-        # length: nTrueModels * nModelFactors (each list of size nModelFactors should represent one global theta by parallel lines, one line color represent that specific parameter value)
+        # length: nTrueModels * nTrajs * nModelFactors (each list of size nModelFactors should represent one global theta by parallel lines, one line color represent that specific parameter value)
         # since in this case the nominal action is not reactive to the environment, PRMPPI's trajectory is the same for all branches
-        self.lcs_pred: list[list[Line2D]] = []
+        self.lcs_pred: list[list[list[Line2D]]] = []
         self.nom_pred = self.ax.plot([], color=self.nom_color, marker=None, linewidth=4, alpha=0.8)[0]
         self.rob_pred = self.ax.plot([], color=self.rob_color, marker=None, linewidth=4, alpha=0.8)[0]
 
         for theta in range(self.envConfig.nTrueModels):
-            preds: list[Line2D] = []
-            for k in range(self.envConfig.nModelFactors):
-                thetaList = self.envConfig.unflattenTheta(theta)
+            a_preds: list[list[Line2D]] = []
+            for iAdd in range(self.nAddTrajs):
+                preds: list[Line2D] = []
+                for k in range(self.envConfig.nModelFactors):
+                    thetaList = self.envConfig.unflattenTheta(theta)
 
-                preds.append(
-                    self.ax.plot(
-                        [], color=self.pred_colors[k][thetaList[k]], marker=None, linewidth=3, alpha=0.8, linestyle="-."
-                    )[0]
-                )
+                    preds.append(
+                        self.ax.plot(
+                            [], color=self.pred_colors[k][thetaList[k]], marker=None, linewidth=3, alpha=0.8, linestyle="-."
+                        )[0]
+                    )
+                a_preds.append(preds)
 
-            self.lcs_pred.append(preds)
+            self.lcs_pred.append(a_preds)
 
         # crash marker (initially empty)
-        maxCollMarkers = self.envConfig.nAgents * self.envConfig.nTrueModels
+        maxCollMarkers = (1 + self.nAddTrajs) * self.envConfig.nTrueModels
         self.collMarkers = [
             self.ax.plot(
                 [], [], marker="*", markersize=20, color="yellow", markeredgecolor="red", markeredgewidth=1, zorder=5, alpha=0.8
@@ -526,7 +530,7 @@ class PRMPPIDroneRaceRenderer(ControllerRenderer[DroneRaceEnvironmentConfig, PRM
             for k, (ax, names, colors) in enumerate(zip(self.axs_marg_belief, self.oppNames, self.pred_colors))
         ]
 
-    def update(self, state: FullStateInfo) -> None:
+    def baseUpdate(self, state: FullStateInfo[SimStateT, PRMPPIStateInfo], fullPoss: list[np.ndarray]):
         collMarkers = iter(self.collMarkers)
 
         mppiState = state.contInfo
@@ -540,45 +544,52 @@ class PRMPPIDroneRaceRenderer(ControllerRenderer[DroneRaceEnvironmentConfig, PRM
 
         # update MPPI predictions
 
-        for theta, (lTrajs, pred) in enumerate(zip(self.lcs_pred, mppiState.preds[:-1])):
+        for theta, (lTrajs, pred, fullPos) in enumerate(zip(self.lcs_pred, mppiState.preds[:-1], fullPoss[:-1])):
             thetaTuple = self.envConfig.unflattenTheta(theta)
 
             # curPos = state.pos.reshape((self.envConfig.nAgents, self.envConfig.dim))
-            fullPos = pred.fullPos.reshape((self.config.nTimesteps, self.envConfig.nAgents, self.envConfig.dim))
+            # fullPos = pred.fullPos.reshape((self.config.nTimesteps, self.envConfig.nAgents, self.envConfig.dim))
             # fullPosConc = np.concat([[mppiState.prevPos.reshape((self.envConfig.nAgents, self.envConfig.dim))], fullPos])
 
             sides = np.arange(-self.envConfig.nModelFactors + 1, self.envConfig.nModelFactors, 2)
 
-            for k, pid in enumerate(lTrajs):
-                if mppiState.belief[theta] > self.min_show_confidence:
-                    # TODO: set_data is useless here (we only should keep one trajectory)
-                    # self.set_data(*self.nom_pred, fullPos[:, self.envConfig.iMppi, :], vHor, sides[k])
-                    self.nom_pred.set_data(
-                        fullPos[:, self.envConfig.iMppi, self.axis[0]], fullPos[:, self.envConfig.iMppi, self.axis[1]]
-                    )
+            if mppiState.belief[theta] > self.min_show_confidence:
+                # TODO: set_data is useless here (we only should keep one trajectory)
+                # self.set_data(*self.nom_pred, fullPos[:, self.envConfig.iMppi, :], vHor, sides[k])
+                # self.nom_pred.set_data(
+                #     fullPos[:, self.envConfig.iMppi, self.axis[0]], fullPos[:, self.envConfig.iMppi, self.axis[1]]
+                # )
+                self.nom_pred.set_data(fullPos[:, 0, self.axis[0]], fullPos[:, 0, self.axis[1]])
 
-                    color = self.pred_colors[k][thetaTuple[k]]
+                for iAddTraj, trajs in enumerate(lTrajs):
+                    for k, pid in enumerate(trajs):
+                        color = self.pred_colors[k][thetaTuple[k]]
 
-                    # self.set_data(*pid, fullPos[:, 1 - self.envConfig.iMppi, :], vHor, sides[k])
-                    arr_offset = self.apply_offset(fullPos[:, 1 - self.envConfig.iMppi, self.axis], sides[k])
-                    pid.set_data(arr_offset[:, 0], arr_offset[:, 1])
+                        # self.set_data(*pid, fullPos[:, 1 - self.envConfig.iMppi, :], vHor, sides[k])
+                        arr_offset = self.apply_offset(fullPos[:, iAddTraj + 1, self.axis], sides[k])
+                        pid.set_data(arr_offset[:, 0], arr_offset[:, 1])
 
-                    if pred.stopReason == EVENT_TYPE.EVT_OUTSIDE:
-                        marker = next(collMarkers)
-                        marker.set_data(
-                            [fullPos[pred.stopTime, self.envConfig.iMppi, self.axis[0]]],
-                            [fullPos[pred.stopTime, self.envConfig.iMppi, self.axis[1]]],
-                        )
+                        print(f"drawing for {theta=} {iAddTraj=} {k=}")
 
-                        marker.set_alpha(0.8)
-                        marker.set_markersize(20)
-                else:
-                    # self.set_data(*pid, None, 0)
-                    pid.set_data([[], []])
+                        if pred.stopReason == EVENT_TYPE.EVT_OUTSIDE:
+                            marker = next(collMarkers)
+                            marker.set_data(
+                                [fullPos[pred.stopTime, 0, self.axis[0]]],
+                                [fullPos[pred.stopTime, 0, self.axis[1]]],
+                            )
+
+                            marker.set_alpha(0.8)
+                            marker.set_markersize(20)
+            else:
+                for trajs in lTrajs:
+                    for pid in trajs:
+                        # self.set_data(*pid, None, 0)
+                        pid.set_data([[], []])
 
         # show robust nominal
-        fullPos = mppiState.preds[-1].fullPos.reshape((self.config.nTimesteps, self.envConfig.nAgents, self.envConfig.dim))
-        self.rob_pred.set_data(fullPos[:, self.envConfig.iMppi, self.axis[0]], fullPos[:, self.envConfig.iMppi, self.axis[1]])
+        # fullPos = mppiState.preds[-1].fullPos.reshape((self.config.nTimesteps, 1 + self.nAddTrajs, self.envConfig.dim))
+        fullPos = fullPoss[-1]
+        self.rob_pred.set_data(fullPos[:, 0, self.axis[0]], fullPos[:, 0, self.axis[1]])
 
         # hide remaining coll markers
         for marker in collMarkers:
@@ -616,3 +627,40 @@ class PRMPPIDroneRaceRenderer(ControllerRenderer[DroneRaceEnvironmentConfig, PRM
         if self.ax_joint_belief is not None:
             ans.append(self.ax_joint_belief)
         return ans
+
+
+class PRMPPIDroneRaceRenderer(BasePRMPPIRenderer[DroneRaceEnvironmentConfig, DroneRaceSimState]):
+    def init(self, **kwargs: Any):
+        super().baseInit(1, **kwargs)  # one additional trajectory for PID
+
+    def update(self, state: FullStateInfo[DroneRaceSimState, PRMPPIStateInfo]) -> None:
+        assert isinstance(state.contInfo, PRMPPIStateInfo), (
+            f"got {type(state.contInfo)} controller info, expected PRMPPIStateInfo"
+        )
+
+        fullPoss = [
+            pred.fullPos.copy().reshape((self.config.nTimesteps, self.envConfig.nAgents, self.envConfig.dim))
+            for pred in state.contInfo.preds
+        ]
+
+        # we need to make sure that mppi is at spot 0
+        iMppi = self.envConfig.iMppi
+        if iMppi != 0:
+            for i in range(len(state.contInfo.preds)):
+                fullPoss[i][:, [0, iMppi], :] = fullPoss[i][:, [iMppi, 0], :]
+
+        super().baseUpdate(state, fullPoss)
+
+
+class PRMPPIHiddenObsRenderer(BasePRMPPIRenderer[HiddenObsEnvironmentConfig, HiddenObsSimState]):
+    def init(self, **kwargs: Any):
+        super().baseInit(0, **kwargs)  # no additional trajectory
+
+    def update(self, state: FullStateInfo[HiddenObsSimState, PRMPPIStateInfo]) -> None:
+        assert isinstance(state.contInfo, PRMPPIStateInfo), (
+            f"got {type(state.contInfo)} controller info, expected PRMPPIStateInfo"
+        )
+
+        fullPoss = [pred.fullPos.reshape((self.config.nTimesteps, 1, self.envConfig.dim)) for pred in state.contInfo.preds]
+
+        super().baseUpdate(state, fullPoss)
