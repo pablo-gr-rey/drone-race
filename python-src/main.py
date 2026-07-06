@@ -864,7 +864,7 @@ def mainGate():
 
     # envConfig, initState, mppiconfig, oppNames = highInertiaEnv(usePR=True, useSplines=True)
 
-    envConfig, initState, mppiconfig, oppNames = hiddenObsEnv(usePR=True, useSplines=True)
+    envConfig, initState, mppiconfig, oppNames = hiddenObsEnv(usePR=False, useSplines=True)
 
     envConfig.trueTheta = 1
     # envConfig.iMppi = 1
