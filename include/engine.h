@@ -2,27 +2,20 @@
 
 #include "config.h"
 #include "controllers.h"
-#include "state.h"
 
-#include <vector>
 #include <memory>
-#include <random>
-#include <string>
 #include <optional>
+#include <random>
 
 class SimulationEngine
 {
-public:
-    SimulationEngine(
-        const EnvironmentConfig& config,
-        const AnyControllerConfig& contConfig,
-        const SimState& initSimState,
-        int seed);
+  public:
+    SimulationEngine(const EnvironmentConfig& config, const AnyControllerConfig& contConfig, const SimState& initSimState, int seed, int tTheta);
 
     ~SimulationEngine();
 
     void sendState(zmq::socket_t& sock, int step, const std::array<float, ACTION_DIM>& egoAction, const SimState& prevState);
-    void sendEvent(zmq::socket_t& sock, EventType type, int info);
+    void sendEvent(zmq::socket_t& sock, EventType type);
     void sendDone(zmq::socket_t& sock);
 
     // Run until termination or maxSteps. Publishes over ZMQ.
@@ -35,10 +28,11 @@ public:
     // current simulation state
     SimState state;
 
-private:
-    std::normal_distribution<float> nd{ 0.0f, 1.0f };
+  private:
+    std::normal_distribution<float> nd{0.0f, 1.0f};
 
     int seed;
+    int trueTheta;
     CONTROLLER_KIND contKind;
 
     // controllers
@@ -46,8 +40,7 @@ private:
 
     std::mt19937 rng;
 
-    std::optional<std::pair<EventType, int>> dynStep(const std::array<float, ACTION_DIM>& action, int t, std::array<float, N_TRUE_MODELS>& belief);
+    std::optional<EventType> dynStep(const std::array<float, ACTION_DIM>& action, int t, std::array<float, N_TRUE_MODELS>& belief);
 
-    std::optional<std::pair<EventType, int>> parseTerm(TerminalType term, int egoAgent);
+    std::optional<EventType> parseTerm(TerminalType term);
 };
- 

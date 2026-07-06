@@ -1,48 +1,29 @@
 #pragma once
 
 #include <cstring>
-#include <stdexcept>
-#include <string>
 #include <cuda_runtime.h>
-#include <vector>
-#include <protocol.h>
+#include <curand_kernel.h>
+#include <random>
 #include <variant>
-#include <type_traits>
 
-#ifdef __CUDACC__
-#define HD __host__ __device__
-#define INLINE static __forceinline__ 
-#else
-#define HD
-#define INLINE inline
-#endif
+#include "common.h"
 
-#define USE_ENV_DRONERACE
+// #define USE_ENV_DRONERACE
+#define USE_ENV_HIDDENOBS
 
-constexpr bool USE_SPLINES = true;
+inline constexpr bool USE_SPLINES = true;
 
-constexpr int MAX_N_KNOTS = 60;
+inline constexpr int MAX_N_KNOTS = 60;
 
-constexpr float MIN_COEFF_THRESHOLD = 0.01f;        // minimum probability threshold for samples to contribute
-constexpr float DECAY = 0.95f;
-
-#ifdef DEBUG
-#define CUDA_CHECK(call)                                                   \
-    do {                                                                   \
-        cudaError_t err = (call);                                          \
-        if (err != cudaSuccess)                                            \
-            throw std::runtime_error(std::string("CUDA error at ")         \
-                + __FILE__ + ":" + std::to_string(__LINE__) + " - "        \
-                + cudaGetErrorString(err));                                \
-    } while (0)
-#else
-#define CUDA_CHECK(call) (call)
-#endif
-
-#include "environments/env_dronerace_defs.h"
+inline constexpr float MIN_COEFF_THRESHOLD = 0.01f; // minimum probability threshold for samples to contribute
+inline constexpr float DECAY = 0.95f;
 
 #ifdef USE_ENV_DRONERACE
+#include "environments/env_dronerace_defs.h"
 namespace Env = EnvDroneRace;
+#elif defined(USE_ENV_HIDDENOBS)
+#include "environments/env_hiddenobs_defs.h"
+namespace Env = EnvHiddenObs;
 #else
 #error "must define a valid environment!"
 #endif
@@ -51,12 +32,12 @@ using EnvironmentConfig = Env::EnvironmentConfig;
 using SimState = Env::SimState;
 using ScratchEnvBuffer = Env::ScratchEnvBuffer;
 
-constexpr int ACTION_DIM = Env::ACTION_DIM;
+inline constexpr int ACTION_DIM = Env::ACTION_DIM;
 
-constexpr int N_MODEL_FACTORS = Env::N_MODEL_FACTORS;
-constexpr int N_TRUE_MODELS = Env::N_TRUE_MODELS;
-constexpr int N_BRANCH_PLANS = Env::N_BRANCH_PLANS;
-constexpr int MAX_MODEL_SIZE = Env::MAX_MODEL_SIZE;
+inline constexpr int N_MODEL_FACTORS = Env::N_MODEL_FACTORS;
+inline constexpr int N_TRUE_MODELS = Env::N_TRUE_MODELS;
+inline constexpr int N_BRANCH_PLANS = Env::N_BRANCH_PLANS;
+inline constexpr int MAX_MODEL_SIZE = Env::MAX_MODEL_SIZE;
 
 HD INLINE constexpr int MODEL_SIZE(int k)
 {
@@ -68,7 +49,16 @@ HD INLINE constexpr int BRANCH_SIZE(int k)
     return Env::BRANCH_SIZE(k);
 }
 
-enum CONTROLLER_KIND : int32_t { CONT_MPPI, CONT_PRMPPI };
+enum CONTROLLER_KIND : int32_t
+{
+    CONT_MPPI,
+    CONT_PRMPPI
+};
+enum ENV_KIND : int32_t
+{
+    ENV_DRONERACE,
+    ENV_HIDDENOBS
+};
 
 enum TerminalType
 {
@@ -77,7 +67,32 @@ enum TerminalType
     TERM_WIN,
 };
 
-#include "environments/env_dronerace.h"
+struct BranchState
+{
+    float belief[N_TRUE_MODELS];
+    int predTheta[N_MODEL_FACTORS];     // 0 if nominal for k, theta+1 if specialized (<=> marginal over theta_k=theta > threshold)
+    int branchingTime[N_MODEL_FACTORS]; // -1 if not branched, 0 if initially committed, otherwise t+1 if branched at global time
+                                        // t (i.e. origin of new branch)
+};
+
+struct DeviceRNG
+{
+    curandState* state;
+};
+
+struct HostRNG
+{
+    std::normal_distribution<float>* nd;
+    std::mt19937* rng;
+};
+
+#ifdef USE_ENV_DRONERACE
+#include "environments/env_dronerace.h" // IWYU pragma: export
+#elif defined(USE_ENV_HIDDENOBS)
+#include "environments/env_hiddenobs.h" // IWYU pragma: export
+#else
+#error "must define a valid environment!"
+#endif
 
 // MPPI configuration
 struct MPPIConfig
@@ -87,8 +102,8 @@ struct MPPIConfig
     int nTimesteps = 20;
 
     // spline configuration
-    int nKnots;     // M
-    int knots[MAX_N_KNOTS];       // tau_i for 0 <= i < M
+    int nKnots;             // M
+    int knots[MAX_N_KNOTS]; // tau_i for 0 <= i < M
 
     float invTemperature = 10.0f;
 
@@ -145,9 +160,11 @@ struct PRMPPIConfig
 
     // safety cost
     float safetyWeight = 10000.0f;
-    float minSafeDist = 0.0f;      // safety cost is lessened by this amount (i.e. we must be at distance at least minSafeDist from obstacles & opponents)
+    float minSafeDist = 0.0f; // safety cost is lessened by this amount (i.e. we must be at
+                              // distance at least minSafeDist from obstacles & opponents)
 
-    // safety assurance (delta), and number of model samples P (=ceil((1-delta)/delta))
+    // safety assurance (delta), and number of model samples P
+    // (=ceil((1-delta)/delta))
     float delta = 0.1f;
     float P = 10;
 

@@ -13,13 +13,16 @@ from typing import Any
 import numpy as np
 from protocol import ZMQRecv
 from utils import (
-    ControllerConfig,
-    GateEnvironmentConfig,
+    BaseControllerConfig,
+    DroneRaceEnvironmentConfig,
+    HiddenObsEnvironmentConfig,
+    HiddenObsSimState,
     MPPIConfig,
-    PIDConfig,
     PRMPPIConfig,
-    SimState,
+    DroneRaceSimState,
 )
+
+PIDConfig = DroneRaceEnvironmentConfig.PIDConfig
 
 
 class NpJsonEncoder(json.JSONEncoder):
@@ -34,7 +37,7 @@ class NpJsonEncoder(json.JSONEncoder):
 
 def tinyGateEnv(
     roundObs: bool = True, afraid: bool = False, useSplines: bool = True, usePR: bool = False
-) -> tuple[GateEnvironmentConfig, SimState, ControllerConfig, list[list[str]]]:
+) -> tuple[DroneRaceEnvironmentConfig, DroneRaceSimState, BaseControllerConfig, list[list[str]]]:
     nAgents = 2
     dim = 2
     nTrackSamples = 512
@@ -60,7 +63,7 @@ def tinyGateEnv(
     pid0 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=0, actionNoise=1)
     pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=1, actionNoise=1)
 
-    config = GateEnvironmentConfig(
+    config = DroneRaceEnvironmentConfig(
         nAgents=nAgents,
         dim=dim,
         nRaceLines=2,
@@ -74,7 +77,7 @@ def tinyGateEnv(
         gateCenters=gateCenters,
         gateVectors=gateVectors,
         gateRadius=gateRadius,
-        minDist=1.5,
+        droneRadius=0.75,
         arenaMin=np.array([-0.1 * length, -2 * height * heightFactor]),
         arenaMax=np.array([1.1 * length, 2 * height * heightFactor]),
         seed=42,
@@ -122,7 +125,7 @@ def tinyGateEnv(
         ]
     )
 
-    initState = SimState(
+    initState = DroneRaceSimState(
         pos=np.array([config.trackPoints[int(s * config.nTrackSamples)] for s in startS]).flatten(),
         vel=np.zeros(config.dim * config.nAgents),
         S=np.repeat(startS, 2),
@@ -214,7 +217,7 @@ def tinyGateEnv(
 
 def tinyGateEnv2Models(
     roundObs: bool = True, useSplines: bool = True, usePR: bool = False
-) -> tuple[GateEnvironmentConfig, SimState, ControllerConfig, list[list[str]]]:
+) -> tuple[DroneRaceEnvironmentConfig, DroneRaceSimState, BaseControllerConfig, list[list[str]]]:
     nAgents = 2
     dim = 2
     nTrackSamples = 512
@@ -260,7 +263,7 @@ def tinyGateEnv2Models(
         ]
     )
 
-    config = GateEnvironmentConfig(
+    config = DroneRaceEnvironmentConfig(
         nAgents=nAgents,
         dim=dim,
         nRaceLines=4,
@@ -274,7 +277,7 @@ def tinyGateEnv2Models(
         gateCenters=gateCenters,
         gateVectors=gateVectors,
         gateRadius=gateRadius,
-        minDist=0.6,
+        droneRadius=0.3,
         arenaMin=np.array([-0.1 * totLength, -2 * height * heightFactor]),
         arenaMax=np.array([1.1 * totLength, 2 * height * heightFactor]),
         seed=42,
@@ -352,7 +355,7 @@ def tinyGateEnv2Models(
         ]
     )
 
-    initState = SimState(
+    initState = DroneRaceSimState(
         pos=np.array([config.trackPoints[int(s * config.nTrackSamples)] for s in startS]).flatten(),
         vel=np.zeros(2),
         S=np.repeat(startS, 2),
@@ -439,7 +442,7 @@ def tinyGateEnv2Models(
     return config, initState, mppiconfig, [["1st=Top", "1st=Bottom"], ["2nd=Top", "2nd=Bottom"]]
 
 
-def activeEnv() -> tuple[GateEnvironmentConfig, SimState, MPPIConfig, list[list[str]]]:
+def activeEnv() -> tuple[DroneRaceEnvironmentConfig, DroneRaceSimState, MPPIConfig, list[list[str]]]:
     nAgents = 2
     dim = 2
     nTrackSamples = 1000
@@ -463,7 +466,7 @@ def activeEnv() -> tuple[GateEnvironmentConfig, SimState, MPPIConfig, list[list[
     )
     pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=0, racelineIndex=0, actionNoise=1, repulsionDistFactor=2.5)
 
-    config = GateEnvironmentConfig(
+    config = DroneRaceEnvironmentConfig(
         nAgents=nAgents,
         dim=dim,
         nRaceLines=1,
@@ -476,7 +479,7 @@ def activeEnv() -> tuple[GateEnvironmentConfig, SimState, MPPIConfig, list[list[
         gateCenters=gateCenters,
         gateVectors=gateVectors,
         gateRadius=gateRadius,
-        minDist=1.9,
+        droneRadius=0.95,
         arenaMin=np.array([-0.1 * length, -fullHeight]),
         arenaMax=np.array([1.1 * length, fullHeight]),
         nObstacles=2,
@@ -494,7 +497,7 @@ def activeEnv() -> tuple[GateEnvironmentConfig, SimState, MPPIConfig, list[list[
 
     config.trackPoints = np.column_stack([np.linspace(0, length * 1.2, nTrackSamples), np.zeros(nTrackSamples)])
 
-    initState = SimState(
+    initState = DroneRaceSimState(
         pos=np.array([config.trackPoints[int(s * config.nTrackSamples)] for s in startS]).flatten(),
         vel=np.zeros(2),
         S=np.repeat(startS, 2),
@@ -527,7 +530,7 @@ def activeEnv() -> tuple[GateEnvironmentConfig, SimState, MPPIConfig, list[list[
 
 def highInertiaEnv(
     afraid: bool = False, usePR: bool = False, useSplines: bool = False
-) -> tuple[GateEnvironmentConfig, SimState, ControllerConfig, list[list[str]]]:
+) -> tuple[DroneRaceEnvironmentConfig, DroneRaceSimState, BaseControllerConfig, list[list[str]]]:
     nAgents = 2
     dim = 2
     nTrackSamples = 512
@@ -553,7 +556,7 @@ def highInertiaEnv(
     pid0 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=0, actionNoise=0.01)
     pid1 = PIDConfig(kp=5, kd=20, repulsionFactor=repulsion, racelineIndex=1, actionNoise=0.01)
 
-    config = GateEnvironmentConfig(
+    config = DroneRaceEnvironmentConfig(
         nAgents=nAgents,
         dim=dim,
         dt=0.1,
@@ -568,7 +571,7 @@ def highInertiaEnv(
         gateCenters=gateCenters,
         gateVectors=gateVectors,
         gateRadius=gateRadius,
-        minDist=2.2,
+        droneRadius=1.1,
         arenaMin=np.array([-0.1 * length, -trackHeight]),
         arenaMax=np.array([1.1 * length, trackHeight]),
         seed=42,
@@ -606,7 +609,7 @@ def highInertiaEnv(
         ]
     )
 
-    initState = SimState(
+    initState = DroneRaceSimState(
         pos=np.array([config.trackPoints[int(s * config.nTrackSamples)] for s in startS]).flatten(),
         vel=np.zeros(config.dim * config.nAgents),
         S=np.repeat(startS, 2),
@@ -693,6 +696,164 @@ def highInertiaEnv(
     return config, initState, mppiconfig, [["Top", "Bottom"]]
 
 
+def hiddenObsEnv(
+    usePR=False, useSplines=True
+) -> tuple[HiddenObsEnvironmentConfig, HiddenObsSimState, MPPIConfig | PRMPPIConfig, list[list[str]]]:
+    minAnnR = 3
+    maxAnnR = 5
+    diagWidth = 1.5
+    middleWidth = 4
+    hiddenPosWTop = hiddenPosWBot = 4
+    hiddenRadTop = hiddenRadBot = 0.8
+    smallRectWidth = 4
+    smallRectWOffset = 1.5
+
+    firstCorrHeight = 3
+    smallRectHeight = 1
+    smallRectHOffset = 0
+    hiddenPosHTop = hiddenPosHBot = 1.5
+
+    avgAnnR = (minAnnR + maxAnnR) / 2
+    negAvgAnnR = (maxAnnR - minAnnR) / 2
+
+    maxx = maxAnnR + diagWidth + middleWidth + diagWidth
+    maxy = firstCorrHeight + maxAnnR + diagWidth
+
+    envConfig = HiddenObsEnvironmentConfig(
+        nModelFactors=1,
+        modelSizes=np.array([2]),
+        arenaMin=np.array([0.0, 0.0]),
+        arenaMax=np.array([maxx + 1, maxy]),
+        dt=0.1,
+        droneRadius=0.3,
+        maxSpeed=2,
+        maxAccel=3,
+        nWinLaps=1,
+        nGates=3,
+        gateCenters=np.array(
+            [
+                [maxx, firstCorrHeight + avgAnnR],
+                [negAvgAnnR, firstCorrHeight],
+                [maxAnnR, firstCorrHeight + avgAnnR],
+            ]
+        ),
+        gateVectors=np.array([[1, 0], [0, 1], [1, 0]]),
+        gateRadius=np.array([maxAnnR - minAnnR, maxAnnR - minAnnR, maxAnnR - minAnnR]) / 2.0,
+        nRectObstacles=3,
+        rectObstacles=np.array(
+            [
+                [maxAnnR - minAnnR, 0, maxx, firstCorrHeight],
+                [maxAnnR, firstCorrHeight, maxx, firstCorrHeight + minAnnR - diagWidth],
+                [
+                    maxAnnR + smallRectWOffset,
+                    firstCorrHeight + avgAnnR + smallRectHOffset - smallRectHeight / 2,
+                    maxAnnR + smallRectWOffset + smallRectWidth,
+                    firstCorrHeight + avgAnnR + smallRectHOffset + smallRectHeight / 2,
+                ],
+            ]
+        ).flatten(),
+        nHiddenObstacles=2,
+        hiddenObsCenters=np.array(
+            [
+                [maxAnnR + hiddenPosWBot, avgAnnR + firstCorrHeight - hiddenPosHBot],
+                [maxAnnR + hiddenPosWTop, avgAnnR + firstCorrHeight + hiddenPosHTop],
+            ]
+        ).flatten(),
+        hiddenObsRadius=np.array([hiddenRadBot, hiddenRadTop]),
+        dblHpLimits=np.array([maxAnnR, maxAnnR + diagWidth, maxAnnR + diagWidth + middleWidth, maxx]),
+        dblHpLambdas=np.array(
+            [
+                firstCorrHeight,
+                -firstCorrHeight - maxAnnR - minAnnR,
+                maxx + firstCorrHeight + maxAnnR,
+                maxx - firstCorrHeight - minAnnR,
+            ]
+        ),
+        annulusCenter=np.array([maxAnnR, firstCorrHeight]),
+        annulusRadius=np.array([minAnnR, maxAnnR]),
+        seed=2,
+    )
+
+    initState = HiddenObsSimState(pos=np.array([negAvgAnnR, envConfig.droneRadius * 1.5]), vel=np.zeros(2), laps=0, gates=0)
+
+    mppiConfig: MPPIConfig | PRMPPIConfig
+
+    if not usePR and not useSplines:
+        mppiConfig = MPPIConfig(
+            useSplines=False,
+            nSamples=2**16,
+            # nSamples=1,
+            nTimesteps=70,
+            inv_temperature=2,
+            samplingNoise=envConfig.maxAccel / 3,
+            # samplingNoise=0.5,
+            gateTraversalMargin=0.9,  # restrict 5% on each side
+            collDistFactor=1.2,
+            # collDistFactor=1.3,
+            finalAdvWeight=500,
+            # finalAdvWeight=0,
+            finalOppAdvWeight=0,
+            # finalOppAdvWeight=500,
+            boundaryCost=0,
+            # boundaryCost=0.0,
+            boundaryThresholdFactor=1,
+            outsideCost=1e6,
+            winCost=1e6,
+            minConfidence=0.95,
+        )
+
+    elif not usePR:
+        mppiConfig = MPPIConfig(
+            useSplines=True,
+            nSamples=2**16,
+            # nSamples=1,
+            nTimesteps=80,
+            inv_temperature=10,
+            samplingNoise=0.8,
+            # samplingNoise=0.5,
+            gateTraversalMargin=0.9,  # restrict 5% on each side
+            collDistFactor=1.2,
+            # collDistFactor=1.2,
+            finalAdvWeight=500,
+            # finalAdvWeight=0,
+            finalOppAdvWeight=0,
+            # finalOppAdvWeight=500,
+            # boundaryCost=5,
+            # boundaryCost=0.0,
+            boundaryCost=10.0,
+            boundaryThresholdFactor=1.4,
+            outsideCost=1e7,
+            winCost=1e6,
+            minConfidence=0.95,
+            nKnots=20,
+        )
+
+    else:
+        mppiConfig = PRMPPIConfig(
+            nSamples=2**16,
+            # nSamples=1,
+            nTimesteps=60,
+            inv_temperature=10,
+            samplingNoise=2,
+            # samplingNoise=0.5,
+            gateTraversalMargin=0.9,  # restrict 5% on each side
+            collDistFactor=1.1,
+            # collDistFactor=1.3,
+            finalAdvWeight=500,
+            # finalAdvWeight=0,
+            finalOppAdvWeight=0,
+            # finalOppAdvWeight=500,
+            boundaryCost=10.0,
+            # boundaryCost=0.0,
+            boundaryThresholdFactor=1.4,
+            # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
+            safetyWeight=1e4,
+            delta=0.1,
+        )
+
+    return (envConfig, initState, mppiConfig, [["Bottom", "Top"]])
+
+
 def mainGate():
     # envConfig, mppiconfig, pid0, pid1, oppNames = standardGateEnv()  # pid0 = afraid; pid1 = bold
     # envConfig, mppiconfig, pids, oppNames = tinyGateEnv(afraid=False, useSplines=True)  # pid0 = top; pid1 = bottom
@@ -701,10 +862,12 @@ def mainGate():
     # envConfig, mppiconfig, pids, oppNames = tinyGateEnv2Models(roundObs=True, usePR=False)
     # envConfig, mppiconfig, pid0, pid1, oppNames = activeEnv()  # pid0 = afraid; pid1 = bold
 
-    envConfig, initState, mppiconfig, oppNames = highInertiaEnv(usePR=False, useSplines=True)
+    # envConfig, initState, mppiconfig, oppNames = highInertiaEnv(usePR=True, useSplines=True)
+
+    envConfig, initState, mppiconfig, oppNames = hiddenObsEnv(usePR=False, useSplines=True)
 
     envConfig.trueTheta = 1
-    envConfig.iMppi = 1
+    # envConfig.iMppi = 1
 
     if isinstance(mppiconfig, MPPIConfig):
         mppiconfig.nVerifSamples = 2**17
@@ -717,9 +880,9 @@ def mainGate():
 
     z = ZMQRecv()
 
-    evt, res = z.runSim(envConfig, mppiconfig, initState, render=envConfig.sendStates, oppNames=oppNames)
+    evt = z.runSim(envConfig, mppiconfig, initState, render=envConfig.sendStates, oppNames=oppNames, renderTrails=False)
 
-    print(f"result: {evt.name} {res}")
+    print(f"result: {evt.name}")
 
     z.close()
 
