@@ -3,10 +3,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 import math
 import random
-from typing import Any, Callable, ClassVar, Optional
-from matplotlib import patches
-from matplotlib.path import Path
-import matplotlib.pyplot as plt
+from typing import Callable, ClassVar, Optional
 from scipy.interpolate import CubicSpline
 
 
@@ -102,138 +99,6 @@ class BaseEnvironmentConfig(ABC):
 
 @dataclass
 class BaseSimState: ...
-
-
-class BaseEnvironmentRenderer[EnvConfigT: BaseEnvironmentConfig](ABC):
-    def __init__(
-        self,
-        envConfig: EnvConfigT,
-        contConfig: BaseControllerConfig,
-        ax: plt.Axes,  # type: ignore
-        ax_status: plt.Axes,  # type: ignore
-        oppNames: list[list[str]],
-        **kwargs: Any,
-    ):
-        self.envConfig = envConfig
-        self.contConfig = contConfig
-        self.ax = ax
-        self.ax_status = ax_status
-        self.oppNames = oppNames
-
-        self.postInit(**kwargs)
-
-    @abstractmethod
-    def postInit(self, **kwargs) -> None: ...
-
-    @abstractmethod
-    def drawBackground(self) -> None: ...
-
-    @abstractmethod
-    def drawFrame(self, stateLog: list["FullStateInfo"], iFrame: int) -> None: ...
-
-    @abstractmethod
-    def getZoomPos(self, stateLog: list["FullStateInfo"], iFrame: int) -> tuple[float, float]: ...
-
-    def drawRectangle(self, omin: tuple[float, float], omax: tuple[float, float]) -> None:
-        self.ax.add_patch(
-            patches.Rectangle(
-                omin,
-                width=omax[0] - omin[0],
-                height=omax[1] - omin[1],
-                facecolor="gray",
-                hatch="/",
-                fill=True,
-            )
-        )
-
-    def drawCircle(
-        self, center: tuple[float, float], radius: float, fill: bool = True, edge: bool = True, dottedEdge: bool = False
-    ) -> None:
-        self.ax.add_patch(
-            patches.Circle(
-                center,
-                radius,
-                linewidth=3 if edge else 0,
-                edgecolor="black",
-                facecolor="gray",
-                hatch="/",
-                fill=fill,
-                linestyle="dotted" if dottedEdge else "solid",
-            )
-        )
-
-    def drawTriangle(self, p1: tuple[float, float], p2: tuple[float, float], p3: tuple[float, float]) -> None:
-        self.ax.add_patch(
-            patches.Polygon(
-                [p1, p2, p3],
-                facecolor="gray",
-                hatch="/",
-                fill=True,
-            )
-        )
-
-    def drawHalfPlane(self, minx: float, maxx: float, lambdaTop: float, lambdaBot: float, isRight: bool) -> None:
-        "isRight should be False for first dbl-half-plane and True for 2nd"
-
-        xFact = 1 if isRight else -1  # plane is xFact*x +- y = lambdaTop/Bot
-
-        # top part
-        yTop = lambdaTop + (-minx if isRight else maxx)
-        self.drawTriangle((minx, lambdaTop - xFact * minx), (maxx, lambdaTop - xFact * maxx), (maxx if isRight else minx, yTop))
-        self.drawRectangle((minx, yTop), (maxx, self.envConfig.arenaMax[1] + 1))
-
-        # bottom part
-        yBot = -lambdaBot + (minx if isRight else -maxx)
-        self.drawTriangle((minx, -lambdaBot + xFact * minx), (maxx, -lambdaBot + xFact * maxx), (maxx if isRight else minx, yBot))
-        self.drawRectangle((minx, self.envConfig.arenaMin[1] - 1), (maxx, yBot))
-
-    def drawAnnulus(self, xcenter: float, ycenter: float, minr: float, maxr: float) -> None:
-        # inner circle
-        self.ax.add_patch(
-            patches.Wedge(
-                (xcenter, ycenter),
-                minr,
-                90,
-                180,
-                facecolor="gray",
-                hatch="/",
-                fill=True,
-                linewidth=0,
-            )
-        )
-
-        # outer circle: we have to discretize the path
-        nThetas = 20
-
-        thetas = np.linspace(np.pi / 2, np.pi, nThetas)
-        arc_x = maxr * np.cos(thetas) + xcenter
-        arc_y = maxr * np.sin(thetas) + ycenter
-
-        # path: topleft -> topright -> arc -> bottomleft -> back to topleft
-        minx = self.envConfig.arenaMin[0] - 1
-        maxy = self.envConfig.arenaMax[1] + 1
-
-        path = Path(
-            [
-                (minx, maxy),
-                (xcenter, maxy),
-                (xcenter, maxr + ycenter),
-                *zip(arc_x, arc_y),
-                (-maxr + xcenter, ycenter),
-                (minx, ycenter),
-                (minx, maxy),
-            ],
-            closed=True,
-        )
-
-        self.ax.add_patch(
-            patches.PathPatch(
-                path,
-                facecolor="gray",
-                hatch="/",
-                fill=True,
-            )
-        )
 
 
 @dataclass
@@ -517,8 +382,8 @@ class StratRaceSimState(BaseSimState):
     pos: np.ndarray
     vel: np.ndarray
     S: np.ndarray
+    latDist: np.ndarray
     laps: np.ndarray
-    gates: np.ndarray
 
 
 @dataclass

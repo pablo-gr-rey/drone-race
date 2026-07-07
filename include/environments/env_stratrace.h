@@ -247,7 +247,7 @@ HD INLINE bool isWinner(const SimState& state, const EnvironmentConfig& envConfi
 // Advance = s + laps * trackLength
 HD INLINE float getAnyAdvance(const SimState& state, const EnvironmentConfig& envConfig, int agent)
 {
-    return state.S[agent] + envConfig.trackLength * state.gates[agent];
+    return state.S[agent] + envConfig.trackLength * state.laps[agent];
 }
 
 HD INLINE float getAdvance(const SimState& state, const EnvironmentConfig& envConfig)

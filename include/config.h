@@ -6,11 +6,13 @@
 #include <random>
 #include <variant>
 
+#include <cuda/std/array>
+
 #include "common.h"
 
-// #define USE_ENV_DRONERACE
+#define USE_ENV_DRONERACE
 // #define USE_ENV_HIDDENOBS
-#define USE_ENV_STRATRACE
+// #define USE_ENV_STRATRACE
 
 inline constexpr bool USE_SPLINES = true;
 
@@ -74,10 +76,10 @@ enum TerminalType
 
 struct BranchState
 {
-    float belief[N_TRUE_MODELS];
-    int predTheta[N_MODEL_FACTORS];     // 0 if nominal for k, theta+1 if specialized (<=> marginal over theta_k=theta > threshold)
-    int branchingTime[N_MODEL_FACTORS]; // -1 if not branched, 0 if initially committed, otherwise t+1 if branched at global time
-                                        // t (i.e. origin of new branch)
+    cuda::std::array<float, N_TRUE_MODELS> belief;
+    cuda::std::array<float, N_MODEL_FACTORS> predTheta;   // 0 if nominal for k, theta+1 if specialized (<=> marginal over theta_k=theta > threshold)
+    cuda::std::array<int, N_MODEL_FACTORS> branchingTime; // -1 if not branched, 0 if initially committed, otherwise t+1 if branched at global time
+                                                          // t (i.e. origin of new branch)
 };
 
 struct DeviceRNG
@@ -109,8 +111,8 @@ struct MPPIConfig
     int nTimesteps = 20;
 
     // spline configuration
-    int nKnots;             // M
-    int knots[MAX_N_KNOTS]; // tau_i for 0 <= i < M
+    int nKnots;                               // M
+    cuda::std::array<int, MAX_N_KNOTS> knots; // tau_i for 0 <= i < M
 
     float invTemperature = 10.0f;
 

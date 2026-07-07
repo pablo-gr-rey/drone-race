@@ -88,17 +88,6 @@ struct Reader
         return length;
     }
 
-    // TODO: this should be removed, readArray is enough
-    size_t readFloatArray(std::span<float> arr)
-    {
-        return readArray(arr);
-    }
-
-    size_t readIntArray(std::span<int> arr)
-    {
-        return readArray(arr);
-    }
-
     void assertFinished();
 };
 

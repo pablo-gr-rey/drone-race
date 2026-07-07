@@ -53,7 +53,6 @@ void pushSimState(Writer& writer, const SimState& state)
     writer.pushFloatArray(state.latDist);
 
     writer.pushIntArray<int>(state.laps);
-    writer.pushIntArray<int>(state.gates);
 }
 
 // only push full pos
@@ -71,8 +70,8 @@ void printState(const SimState& state)
 {
     for (int a = 0; a < N_AGENTS; a++)
     {
-        std::cout << "\tAgent " << a << ": currentS:" << state.S[a] << "\tlatDist " << state.latDist[a] << "\tcurrentGates: " << state.gates[a]
-                  << "\tnLaps: " << state.laps[a] << "\tposition";
+        std::cout << "\tAgent " << a << ": currentS:" << state.S[a] << "\tlatDist " << state.latDist[a] << "\tnLaps: " << state.laps[a]
+                  << "\tposition";
 
         for (int d = 0; d < DIM; d++)
             std::cout << " " << state.pos[a * DIM + d];
@@ -101,7 +100,6 @@ SimState unpackSimState(const void* buf, size_t len, const EnvironmentConfig& /*
     reader.readArray(state.latDist);
 
     reader.readArray(state.laps);
-    reader.readArray(state.gates);
 
     reader.assertFinished();
 

@@ -862,9 +862,9 @@ def mainGate():
     # envConfig, mppiconfig, pids, oppNames = tinyGateEnv2Models(roundObs=True, usePR=False)
     # envConfig, mppiconfig, pid0, pid1, oppNames = activeEnv()  # pid0 = afraid; pid1 = bold
 
-    # envConfig, initState, mppiconfig, oppNames = highInertiaEnv(usePR=True, useSplines=True)
+    envConfig, initState, mppiconfig, oppNames = highInertiaEnv(usePR=True, useSplines=True)
 
-    envConfig, initState, mppiconfig, oppNames = hiddenObsEnv(usePR=False, useSplines=True)
+    # envConfig, initState, mppiconfig, oppNames = hiddenObsEnv(usePR=False, useSplines=True)
 
     envConfig.trueTheta = 1
     # envConfig.iMppi = 1

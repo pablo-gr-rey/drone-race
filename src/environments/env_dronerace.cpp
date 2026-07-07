@@ -8,6 +8,10 @@
 
 namespace EnvDroneRace
 {
+
+void foo(cuda::std::array<float, 2> x)
+{
+}
 EnvironmentConfig allocDeviceMemory(const EnvironmentConfig& hostConfig)
 {
     EnvironmentConfig d_config = hostConfig;
@@ -80,11 +84,11 @@ SimState unpackSimState(const void* buf, size_t len, const EnvironmentConfig& en
             std::format("Expected header message type for environment config (type {}) but got type {} instead", static_cast<int>(MSG_HEADER), kind));
 
     SimState state;
-    reader.readFloatArray(state.pos);
-    reader.readFloatArray(state.vel);
-    reader.readFloatArray(state.S);
-    reader.readIntArray(state.laps);
-    reader.readIntArray(state.gates);
+    reader.readArray(state.pos);
+    reader.readArray(state.vel);
+    reader.readArray(state.S);
+    reader.readArray(state.laps);
+    reader.readArray(state.gates);
 
     reader.assertFinished();
 
@@ -140,15 +144,15 @@ std::tuple<EnvironmentConfig, int, int> unpackEnvConfig(const void* buf, size_t 
             std::format("Received MPPI config for {} environment parameters but N_MODEL_FACTORS is set to {}. Edit this constant and recompile",
                         nModelFactors, N_MODEL_FACTORS));
 
-    std::vector<float> modelSizes = reader.readFloatArray();
+    std::vector<float> modelSizes = reader.readArray<float>();
     for (int k = 0; k < N_MODEL_FACTORS; k++)
         if ((int)modelSizes[k] != MODEL_SIZE(k))
             throw std::runtime_error(
                 std::format("Received invalid model size for parameter {}: got {}, but MODEL_SIZE({}) is set to {}. Edit this constant and recompile",
                             k, (int)modelSizes[k], k, MODEL_SIZE(k)));
 
-    reader.readFloatArray(envConfig.arenaMin);
-    reader.readFloatArray(envConfig.arenaMax);
+    reader.readArray(envConfig.arenaMin);
+    reader.readArray(envConfig.arenaMax);
 
     int nAgents = (int)reader.readInt32();
     int dim = (int)reader.readInt32();
@@ -175,8 +179,8 @@ std::tuple<EnvironmentConfig, int, int> unpackEnvConfig(const void* buf, size_t 
     envConfig.speedNoiseLevel = reader.readFloat();
     envConfig.actionNoiseLevel = reader.readFloat();
 
-    reader.readFloatArray(envConfig.maxSpeed);
-    reader.readFloatArray(envConfig.maxAccel);
+    reader.readArray(envConfig.maxSpeed);
+    reader.readArray(envConfig.maxAccel);
 
     int nTrackSamples = (int)reader.readInt32();
     if (nTrackSamples != N_TRACK_SAMPLES)
@@ -187,16 +191,16 @@ std::tuple<EnvironmentConfig, int, int> unpackEnvConfig(const void* buf, size_t 
     envConfig.nWinLaps = (int)reader.readInt32();
     envConfig.targetDistance = reader.readFloat();
 
-    reader.readFloatArray(envConfig.gateCenters);
-    reader.readFloatArray(envConfig.gateVectors);
-    reader.readFloatArray(envConfig.gateRadius);
+    reader.readArray(envConfig.gateCenters);
+    reader.readArray(envConfig.gateVectors);
+    reader.readArray(envConfig.gateRadius);
 
     int nObstacles = reader.readInt32();
     if (nObstacles != N_OBSTACLES)
         throw std::runtime_error(std::format("Received config for {} rect obstacles but N_OBSTACLES is set to {}. Edit this constant and recompile",
                                              nObstacles, N_OBSTACLES));
 
-    int nObsCoords = reader.readFloatArray(envConfig.obstacles);
+    int nObsCoords = reader.readArray(envConfig.obstacles);
     if (nObsCoords != N_OBSTACLES * DIM * 2)
         throw std::runtime_error(std::format("Received config for {} rect obstacles coordinates but expected N_OBSTACLES * DIM * 2 = {}", nObsCoords,
                                              N_OBSTACLES * DIM * 2));
@@ -207,18 +211,18 @@ std::tuple<EnvironmentConfig, int, int> unpackEnvConfig(const void* buf, size_t 
             std::format("Received config for {} round obstacles but N_ROUND_OBSTACLES is set to {}. Edit this constant and recompile", nRoundObs,
                         N_ROUND_OBSTACLES));
 
-    int nRoundObsCoords = reader.readFloatArray(envConfig.roundObsCenters);
+    int nRoundObsCoords = reader.readArray(envConfig.roundObsCenters);
     if (nRoundObsCoords != N_ROUND_OBSTACLES * DIM)
         throw std::runtime_error(std::format("Received config for {} round obstacles centers but expected N_ROUND_OBSTACLES * DIM = {}",
                                              nRoundObsCoords, N_ROUND_OBSTACLES * DIM));
-    int nRadius = reader.readFloatArray(envConfig.roundObsRadius);
+    int nRadius = reader.readArray(envConfig.roundObsRadius);
     if (nRadius != N_ROUND_OBSTACLES)
         throw std::runtime_error(
             std::format("Received config for {} round obstacles radius but expected N_ROUND_OBSTACLES = {}", nRadius, N_ROUND_OBSTACLES));
 
     int seed = reader.readInt32();
 
-    reader.readFloatArray(envConfig.initBelief);
+    reader.readArray(envConfig.initBelief);
 
     for (int i = 0; i < N_TRUE_MODELS; i++)
         envConfig.oppPid[i] = unpackPIDConfig(reader);
@@ -227,7 +231,7 @@ std::tuple<EnvironmentConfig, int, int> unpackEnvConfig(const void* buf, size_t 
 
     int trueTheta = reader.readInt32();
 
-    std::vector<float> vecTrackPoints = reader.readFloatArray();
+    std::vector<float> vecTrackPoints = reader.readArray();
     if (vecTrackPoints.size() != N_RACELINES * N_TRACK_SAMPLES * DIM)
         throw std::runtime_error(std::format("Received {} track samples coordinates but expected N_RACELINES * N_TRACK_SAMPLES * DIM = {}",
                                              vecTrackPoints.size(), N_RACELINES * N_TRACK_SAMPLES * DIM));

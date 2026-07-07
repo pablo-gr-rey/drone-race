@@ -89,7 +89,6 @@ struct SimState
     float latDist[N_AGENTS]; // signed lateral distance to the track
 
     int laps[N_AGENTS];
-    int gates[N_AGENTS];
 };
 
 struct ScratchEnvBuffer
