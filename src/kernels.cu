@@ -84,7 +84,7 @@ __global__ void fullRolloutKernel(const EnvironmentConfig envConfig, const MPPIC
         // can incur perturbations on the other branches and degrade specialized
         // plan quality
 
-        if (!branchCompatibleWithModel(firstBranchState.predTheta, trueTheta))
+        if (!branchCompatibleWithModel(firstBranchState.predTheta.data(), trueTheta))
             continue;
 
         state = initState;
@@ -103,7 +103,7 @@ __global__ void fullRolloutKernel(const EnvironmentConfig envConfig, const MPPIC
             // branchState.branchingTime);
             int local_time = t - tOrigin;
 
-            int flatBranch = flattenBranchIndex(branchState.predTheta);
+            int flatBranch = flattenBranchIndex(branchState.predTheta.data());
 
             if (USE_SPLINES)
             {
@@ -271,7 +271,7 @@ __global__ void computeMaskedMinCostsKernel(const float* __restrict__ costs,    
                 {
                     // for simplicity, we say that a spline point m contributed
                     // if either tau[m-1], tau[m] or tau[m+1] contributed
-                    if (splineSampleContributed(branchTuple, tLocal, sampleBranchTime, samplePredTheta, T, M, mppiConfig.knots))
+                    if (splineSampleContributed(branchTuple, tLocal, sampleBranchTime, samplePredTheta, T, M, mppiConfig.knots.data()))
                         coeff += belief[trueTheta];
                 }
                 else if (sampleContributed(branchTuple, tLocal, sampleBranchTime, samplePredTheta, T))
@@ -364,7 +364,7 @@ __global__ void weightedAverageKernelUnified(const float* __restrict__ costs,   
                 {
                     // for simplicity, we say that a spline point m contributed
                     // if either tau[m-1], tau[m] or tau[m+1] contributed
-                    if (splineSampleContributed(branchTuple, tLocal, sampleBranchTime, samplePredTheta, T, M, mppiConfig.knots))
+                    if (splineSampleContributed(branchTuple, tLocal, sampleBranchTime, samplePredTheta, T, M, mppiConfig.knots.data()))
                         coeff += belief[trueTheta];
                 }
                 else if (sampleContributed(branchTuple, tLocal, sampleBranchTime, samplePredTheta, T))
@@ -509,7 +509,7 @@ __global__ void verifyNominalFailureKernel(EnvironmentConfig envConfig, MPPIConf
     DeviceRNG drng{&rng};
 
     // Sample actual opponent model according to initial belief
-    int theta = sampleModelFromBelief(branchState.belief, &rng);
+    int theta = sampleModelFromBelief(branchState.belief.data(), &rng);
 
     int tOrigin = 0;
     int t = 0;
@@ -519,7 +519,7 @@ __global__ void verifyNominalFailureKernel(EnvironmentConfig envConfig, MPPIConf
     for (; t < nTimesteps; t++)
     {
         int local_time = t - tOrigin;
-        int flatBranch = flattenBranchIndex(branchState.predTheta);
+        int flatBranch = flattenBranchIndex(branchState.predTheta.data());
 
         for (int d = 0; d < ACTION_DIM; d++)
             egoAction[d] = nominal[(flatBranch * mc.nTimesteps + local_time) * ACTION_DIM + d];

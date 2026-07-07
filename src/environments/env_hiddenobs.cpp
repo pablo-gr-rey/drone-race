@@ -33,7 +33,7 @@ void pushPredictions(Writer& writer, const std::vector<SimState>& preds)
     std::vector<float> fullPos(preds.size() * DIM);
 
     for (size_t t = 0; t < preds.size(); t++)
-        std::copy(preds[t].pos, preds[t].pos + DIM, fullPos.begin() + t * DIM);
+        std::copy(preds[t].pos.data(), preds[t].pos.data() + DIM, fullPos.begin() + t * DIM);
 
     writer.pushFloatArray(fullPos);
 }
@@ -62,8 +62,8 @@ SimState unpackSimState(const void* buf, size_t len, const EnvironmentConfig& /*
             std::format("Expected header message type for environment config (type {}) but got type {} instead", static_cast<int>(MSG_HEADER), kind));
 
     SimState state;
-    reader.readFloatArray(state.pos);
-    reader.readFloatArray(state.vel);
+    reader.readArray(state.pos);
+    reader.readArray(state.vel);
 
     state.laps = reader.readInt32();
     state.gates = reader.readInt32();
@@ -97,15 +97,15 @@ std::tuple<EnvironmentConfig, int, int> unpackEnvConfig(const void* buf, size_t 
             std::format("Received MPPI config for {} environment parameters but N_MODEL_FACTORS is set to {}. Edit this constant and recompile",
                         nModelFactors, N_MODEL_FACTORS));
 
-    std::vector<float> modelSizes = reader.readFloatArray();
+    std::vector<float> modelSizes = reader.readArray<float>();
     for (int k = 0; k < N_MODEL_FACTORS; k++)
         if ((int)modelSizes[k] != MODEL_SIZE(k))
             throw std::runtime_error(
                 std::format("Received invalid model size for parameter {}: got {}, but MODEL_SIZE({}) is set to {}. Edit this constant and recompile",
                             k, (int)modelSizes[k], k, MODEL_SIZE(k)));
 
-    reader.readFloatArray(envConfig.arenaMin);
-    reader.readFloatArray(envConfig.arenaMax);
+    reader.readArray(envConfig.arenaMin);
+    reader.readArray(envConfig.arenaMax);
 
     int dim = (int)reader.readInt32();
     envConfig.dt = reader.readFloat();
@@ -130,9 +130,9 @@ std::tuple<EnvironmentConfig, int, int> unpackEnvConfig(const void* buf, size_t 
 
     envConfig.nWinLaps = (int)reader.readInt32();
 
-    reader.readFloatArray(envConfig.gateCenters);
-    reader.readFloatArray(envConfig.gateVectors);
-    reader.readFloatArray(envConfig.gateRadius);
+    reader.readArray(envConfig.gateCenters);
+    reader.readArray(envConfig.gateVectors);
+    reader.readArray(envConfig.gateRadius);
 
     int nRectObstacles = reader.readInt32();
     if (nRectObstacles != N_RECT_OBSTACLES)
@@ -140,7 +140,7 @@ std::tuple<EnvironmentConfig, int, int> unpackEnvConfig(const void* buf, size_t 
             std::format("Received config for {} rect obstacles but N_RECT_OBSTACLES is set to {}. Edit this constant and recompile", nRectObstacles,
                         N_RECT_OBSTACLES));
 
-    int nObsCoords = reader.readFloatArray(envConfig.rectObstacles);
+    int nObsCoords = reader.readArray(envConfig.rectObstacles);
     if (nObsCoords != N_RECT_OBSTACLES * DIM * 2)
         throw std::runtime_error(std::format("Received config for {} rect obstacles coordinates but expected N_RECT_OBSTACLES * DIM * 2 = {}",
                                              nObsCoords, N_RECT_OBSTACLES * DIM * 2));
@@ -151,24 +151,24 @@ std::tuple<EnvironmentConfig, int, int> unpackEnvConfig(const void* buf, size_t 
             std::format("Received config for {} round obstacles but N_UNCERTAIN_OBSTACLES is set to {}. Edit this constant and recompile",
                         nUncertainObs, N_UNCERTAIN_OBSTACLES));
 
-    int nRoundObsCoords = reader.readFloatArray(envConfig.hiddenObsCenters);
+    int nRoundObsCoords = reader.readArray(envConfig.hiddenObsCenters);
     if (nRoundObsCoords != N_UNCERTAIN_OBSTACLES * DIM)
         throw std::runtime_error(std::format("Received config for {} round obstacles centers but expected N_UNCERTAIN_OBSTACLES * DIM = {}",
                                              nRoundObsCoords, N_UNCERTAIN_OBSTACLES * DIM));
-    int nRadius = reader.readFloatArray(envConfig.hiddenObsRadius);
+    int nRadius = reader.readArray(envConfig.hiddenObsRadius);
     if (nRadius != N_UNCERTAIN_OBSTACLES)
         throw std::runtime_error(
             std::format("Received config for {} round obstacles radius but expected N_UNCERTAIN_OBSTACLES = {}", nRadius, N_UNCERTAIN_OBSTACLES));
 
-    int nDblLimits = reader.readFloatArray(envConfig.dblHpLimits);
-    int nDblLambda = reader.readFloatArray(envConfig.dblHpLambdas);
+    int nDblLimits = reader.readArray(envConfig.dblHpLimits);
+    int nDblLambda = reader.readArray(envConfig.dblHpLambdas);
     if (nDblLimits != 4)
         throw std::runtime_error(std::format("Received config for {} diag-half-plane limits, expected 4 (see env_hiddenobs_defs.h)", nDblLimits));
     if (nDblLambda != 4)
         throw std::runtime_error(std::format("Received config for {} diag-half-plane lambdas, expected 4 (see env_hiddenobs_defs.h)", nDblLambda));
 
-    int nAnnCenter = reader.readFloatArray(envConfig.annulusCenter);
-    int nAnnRadius = reader.readFloatArray(envConfig.annulusRadius);
+    int nAnnCenter = reader.readArray(envConfig.annulusCenter);
+    int nAnnRadius = reader.readArray(envConfig.annulusRadius);
     if (nAnnCenter != DIM)
         throw std::runtime_error(std::format("Received config for {} annulus center coords, expected {}", nAnnCenter, DIM));
     if (nAnnRadius != 2)
@@ -176,7 +176,7 @@ std::tuple<EnvironmentConfig, int, int> unpackEnvConfig(const void* buf, size_t 
 
     int seed = reader.readInt32();
 
-    reader.readFloatArray(envConfig.initBelief);
+    reader.readArray(envConfig.initBelief);
 
     int trueTheta = reader.readInt32();
 

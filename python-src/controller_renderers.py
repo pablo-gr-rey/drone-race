@@ -569,8 +569,6 @@ class BasePRMPPIRenderer[EnvConfigT: BaseEnvironmentConfig, SimStateT: BaseSimSt
                         arr_offset = self.apply_offset(fullPos[:, iAddTraj + 1, self.axis], sides[k])
                         pid.set_data(arr_offset[:, 0], arr_offset[:, 1])
 
-                        print(f"drawing for {theta=} {iAddTraj=} {k=}")
-
                         if pred.stopReason == EVENT_TYPE.EVT_OUTSIDE:
                             marker = next(collMarkers)
                             marker.set_data(

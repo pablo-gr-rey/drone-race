@@ -51,8 +51,8 @@ inline constexpr int MAX_MODEL_SIZE = N_MODEL_FACTORS == 1 ? MODEL_SIZE(0) : (MO
 // this should have the same layout as HiddenObsEnvironmentConfig in the Python side
 struct EnvironmentConfig
 {
-    float arenaMin[DIM]; // (dim)
-    float arenaMax[DIM]; // (dim)
+    cuda::std::array<float, DIM> arenaMin; // (dim)
+    cuda::std::array<float, DIM> arenaMax; // (dim)
 
     float dt;
 
@@ -69,28 +69,29 @@ struct EnvironmentConfig
 
     int nWinLaps;
 
-    float gateCenters[N_GATES * DIM]; // (nGates * dim)
-    float gateVectors[N_GATES * DIM]; // (nGates * dim)
-    float gateRadius[N_GATES];        // (nGates)
+    cuda::std::array<float, N_GATES * DIM> gateCenters; // (nGates * dim)
+    cuda::std::array<float, N_GATES * DIM> gateVectors; // (nGates * dim)
+    cuda::std::array<float, N_GATES> gateRadius;        // (nGates)
 
-    float rectObstacles[N_RECT_OBSTACLES * DIM * 2];     // (nRectObstacles * dim * 2): rectangle obstacles, i.e. [xmin, ymin, xmax, ymax]
-    float hiddenObsCenters[N_UNCERTAIN_OBSTACLES * DIM]; // (nUncertainObstacles * dim): center of obstacles
-    float hiddenObsRadius[N_UNCERTAIN_OBSTACLES];        // (nUncertainObstacles): radius of obstacles
+    cuda::std::array<float, N_RECT_OBSTACLES * DIM * 2>
+        rectObstacles; // (nRectObstacles * dim * 2): rectangle obstacles, i.e. [xmin, ymin, xmax, ymax]
+    cuda::std::array<float, N_UNCERTAIN_OBSTACLES * DIM> hiddenObsCenters; // (nUncertainObstacles * dim): center of obstacles
+    cuda::std::array<float, N_UNCERTAIN_OBSTACLES> hiddenObsRadius;        // (nUncertainObstacles): radius of obstacles
 
-    float dblHpLimits[4];  // (4): (minx1, maxx1, minx2, maxx2). see top of file
-    float dblHpLambdas[4]; // (4): (lambda1top, lambda1bot, lambda2top, lambda2bot). see top of file
+    cuda::std::array<float, 4> dblHpLimits;  // (4): (minx1, maxx1, minx2, maxx2). see top of file
+    cuda::std::array<float, 4> dblHpLambdas; // (4): (lambda1top, lambda1bot, lambda2top, lambda2bot). see top of file
 
-    float annulusCenter[DIM]; // (dim): center of annulus. annulus is always top-left slice (x < cx, y > cy)
-    float annulusRadius[2];   // (2): inner & outer radius. annulus is always top-left slice (x < cx, y > cy)
+    cuda::std::array<float, DIM> annulusCenter; // (dim): center of annulus. annulus is always top-left slice (x < cx, y > cy)
+    cuda::std::array<float, 2> annulusRadius;   // (2): inner & outer radius. annulus is always top-left slice (x < cx, y > cy)
 
     // TODO: move elsewhere (not useful in kernels)
-    float initBelief[N_TRUE_MODELS];
+    cuda::std::array<float, N_TRUE_MODELS> initBelief;
 };
 
 struct SimState
 {
-    float pos[DIM];
-    float vel[DIM];
+    cuda::std::array<float, DIM> pos;
+    cuda::std::array<float, DIM> vel;
 
     int laps;
     int gates;
@@ -98,7 +99,7 @@ struct SimState
 
 struct ScratchEnvBuffer
 {
-    float prevPos[DIM];
-    float action[DIM];
+    cuda::std::array<float, DIM> prevPos;
+    cuda::std::array<float, DIM> action;
 };
 } // namespace EnvHiddenObs

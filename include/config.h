@@ -10,8 +10,8 @@
 
 #include "common.h"
 
-#define USE_ENV_DRONERACE
-// #define USE_ENV_HIDDENOBS
+// #define USE_ENV_DRONERACE
+#define USE_ENV_HIDDENOBS
 // #define USE_ENV_STRATRACE
 
 inline constexpr bool USE_SPLINES = true;
@@ -77,7 +77,7 @@ enum TerminalType
 struct BranchState
 {
     cuda::std::array<float, N_TRUE_MODELS> belief;
-    cuda::std::array<float, N_MODEL_FACTORS> predTheta;   // 0 if nominal for k, theta+1 if specialized (<=> marginal over theta_k=theta > threshold)
+    cuda::std::array<int, N_MODEL_FACTORS> predTheta;     // 0 if nominal for k, theta+1 if specialized (<=> marginal over theta_k=theta > threshold)
     cuda::std::array<int, N_MODEL_FACTORS> branchingTime; // -1 if not branched, 0 if initially committed, otherwise t+1 if branched at global time
                                                           // t (i.e. origin of new branch)
 };

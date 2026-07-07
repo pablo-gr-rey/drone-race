@@ -18,7 +18,8 @@ PRMPPIController::PRMPPIController(const EnvironmentConfig& c, const PRMPPIConfi
     mppiConfig = mc;
     seed = s;
 
-    h_belief = std::to_array(envConfig.initBelief);
+    // h_belief = std::to_array(envConfig.initBelief);
+    std::copy(envConfig.initBelief.begin(), envConfig.initBelief.end(), h_belief.begin());
 
     if (nominal)
     {

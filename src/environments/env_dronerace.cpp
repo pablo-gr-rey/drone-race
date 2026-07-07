@@ -8,10 +8,6 @@
 
 namespace EnvDroneRace
 {
-
-void foo(cuda::std::array<float, 2> x)
-{
-}
 EnvironmentConfig allocDeviceMemory(const EnvironmentConfig& hostConfig)
 {
     EnvironmentConfig d_config = hostConfig;
@@ -48,7 +44,7 @@ void pushPredictions(Writer& writer, const std::vector<SimState>& preds)
     std::vector<float> fullPos(preds.size() * N_AGENTS * DIM);
 
     for (size_t t = 0; t < preds.size(); t++)
-        std::copy(preds[t].pos, preds[t].pos + N_AGENTS * DIM, fullPos.begin() + t * N_AGENTS * DIM);
+        std::copy(preds[t].pos.data(), preds[t].pos.data() + N_AGENTS * DIM, fullPos.begin() + t * N_AGENTS * DIM);
 
     writer.pushFloatArray(fullPos);
 }
@@ -89,6 +85,9 @@ SimState unpackSimState(const void* buf, size_t len, const EnvironmentConfig& en
     reader.readArray(state.S);
     reader.readArray(state.laps);
     reader.readArray(state.gates);
+
+    std::cout << "Read initial simstate: ";
+    Env::printState(state);
 
     reader.assertFinished();
 
@@ -231,7 +230,7 @@ std::tuple<EnvironmentConfig, int, int> unpackEnvConfig(const void* buf, size_t 
 
     int trueTheta = reader.readInt32();
 
-    std::vector<float> vecTrackPoints = reader.readArray();
+    std::vector<float> vecTrackPoints = reader.readArray<float>();
     if (vecTrackPoints.size() != N_RACELINES * N_TRACK_SAMPLES * DIM)
         throw std::runtime_error(std::format("Received {} track samples coordinates but expected N_RACELINES * N_TRACK_SAMPLES * DIM = {}",
                                              vecTrackPoints.size(), N_RACELINES * N_TRACK_SAMPLES * DIM));

@@ -8,9 +8,15 @@
 #include <math.h>
 #include <random>
 
-__device__ INLINE float sampleNormal(DeviceRNG& rng) { return curand_normal(rng.state); }
+__device__ INLINE float sampleNormal(DeviceRNG& rng)
+{
+    return curand_normal(rng.state);
+}
 
-__host__ INLINE float sampleNormal(HostRNG& rng) { return (*rng.nd)(*rng.rng); }
+__host__ INLINE float sampleNormal(HostRNG& rng)
+{
+    return (*rng.nd)(*rng.rng);
+}
 
 // index helpers
 
@@ -150,7 +156,7 @@ HD INLINE void initBranchState(BranchState& branchState, const float* __restrict
     for (int theta = 0; theta < N_TRUE_MODELS; theta++)
         branchState.belief[theta] = initBelief[theta];
 
-    findConfident(branchState.belief, threshold, branchState.predTheta);
+    findConfident(branchState.belief.data(), threshold, branchState.predTheta.data());
 
     for (int k = 0; k < N_MODEL_FACTORS; k++)
         branchState.branchingTime[k] = branchState.predTheta[k] == 0 ? -1 : 0;

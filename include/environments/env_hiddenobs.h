@@ -299,8 +299,8 @@ HD INLINE float getAdvance(const SimState& state, const EnvironmentConfig& envCo
                         // for example means that reward will be between 0.0 and 0.5
                         // before the first gate, 1 and 1.5 between 1st and 2nd, etc
 
-    const float* __restrict__ prevGateCenter = envConfig.gateCenters + state.gates * DIM;
-    const float* __restrict__ nextGateCenter = envConfig.gateCenters + nextGate * DIM;
+    const float* __restrict__ prevGateCenter = envConfig.gateCenters.data() + state.gates * DIM;
+    const float* __restrict__ nextGateCenter = envConfig.gateCenters.data() + nextGate * DIM;
 
     for (int d = 0; d < DIM; d++)
     {
@@ -438,7 +438,7 @@ HD INLINE TerminalType environmentStep(
         }
 
     // 8. Update gates with prev pos
-    updateGates<addMargin>(envConfig, state, scratch.prevPos, gateMargin);
+    updateGates<addMargin>(envConfig, state, scratch.prevPos.data(), gateMargin);
 
     // 9. Update belief & branching time
     if constexpr (shouldUpdateBelief)
@@ -457,7 +457,7 @@ HD INLINE TerminalType environmentStep(
     if constexpr (considerBranching)
     {
         int newPredTheta[N_MODEL_FACTORS];
-        findConfident(branchState.belief, minConfidence, newPredTheta);
+        findConfident(branchState.belief.data(), minConfidence, newPredTheta);
 
         for (int k = 0; k < N_MODEL_FACTORS; k++)
             if (branchState.predTheta[k] == 0 && newPredTheta[k] != 0)

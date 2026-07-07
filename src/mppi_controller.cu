@@ -19,7 +19,8 @@ MPPIController::MPPIController(const EnvironmentConfig& c, const MPPIConfig& mc,
     mppiConfig = mc;
     seed = s;
 
-    h_belief = std::to_array(envConfig.initBelief);
+    // h_belief = std::to_array(envConfig.initBelief);
+    std::copy(envConfig.initBelief.begin(), envConfig.initBelief.end(), h_belief.begin());
 
     if (nominal)
     {
@@ -58,7 +59,7 @@ std::vector<float> MPPIController::buildSplineMatrix()
 
     std::vector<float> B(T * M, 0.0f);
 
-    std::vector<int> tau(mppiConfig.knots, mppiConfig.knots + mppiConfig.nKnots);
+    std::vector<int> tau(mppiConfig.knots.begin(), mppiConfig.knots.begin() + mppiConfig.nKnots);
 
     // precompute h(j) = tau_(j+1) - tau_j
     std::vector<float> h(M - 1);

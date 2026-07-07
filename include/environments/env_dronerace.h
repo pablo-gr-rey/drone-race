@@ -264,7 +264,7 @@ HD INLINE float trackBoundaryDist(const SimState& state, const EnvironmentConfig
     if (state.laps[1 - envConfig.iMppi] >= envConfig.nWinLaps)
         return -1.0f;
 
-    const float* __restrict__ curPos = state.pos + envConfig.iMppi * DIM;
+    const float* __restrict__ curPos = state.pos.data() + envConfig.iMppi * DIM;
 
     float minDist = INFINITY;
     for (int d = 0; d < DIM; d++)
@@ -321,7 +321,7 @@ HD INLINE bool isWinner(const SimState& state, const EnvironmentConfig& envConfi
 
     // opponent outside?
 
-    const float* __restrict__ curPos = state.pos + (1 - envConfig.iMppi) * DIM;
+    const float* __restrict__ curPos = state.pos.data() + (1 - envConfig.iMppi) * DIM;
     float radius = envConfig.droneRadius;
 
     for (int d = 0; d < DIM; d++)
@@ -370,9 +370,9 @@ HD INLINE float getAnyAdvance(const SimState& state, const EnvironmentConfig& en
     float scale = 0.8f; // 1.0f means reward is continuous when going through a gate; 0.5f for example means that reward will be
                         // between 0.0 and 0.5 before the first gate, 1 and 1.5 between 1st and 2nd, etc
 
-    const float* __restrict__ prevGateCenter = envConfig.gateCenters + state.gates[agent] * DIM;
-    const float* __restrict__ nextGateCenter = envConfig.gateCenters + nextGate * DIM;
-    const float* __restrict__ pos = state.pos + agent * DIM;
+    const float* __restrict__ prevGateCenter = envConfig.gateCenters.data() + state.gates[agent] * DIM;
+    const float* __restrict__ nextGateCenter = envConfig.gateCenters.data() + nextGate * DIM;
+    const float* __restrict__ pos = state.pos.data() + agent * DIM;
 
     for (int d = 0; d < DIM; d++)
     {
@@ -467,8 +467,8 @@ HD INLINE void computePIDAction(int agent, const SimState& state, const Environm
     sampleCenterline(envConfig.trackPoints + N_TRACK_SAMPLES * pid.racelineIndex * DIM,
                      state.S[agent * N_RACELINES + pid.racelineIndex] + envConfig.targetDistance, target);
 
-    const float* curPos = state.pos + agent * DIM;
-    const float* curVel = state.vel + agent * DIM;
+    const float* curPos = state.pos.data() + agent * DIM;
+    const float* curVel = state.vel.data() + agent * DIM;
 
     float sqError = 0.0f;
     for (int d = 0; d < DIM; d++)
@@ -560,7 +560,7 @@ HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentCo
         else
         {
             for (int thetaT = 0; thetaT < N_TRUE_MODELS; thetaT++)
-                computePIDAction(a, state, envConfig, envConfig.oppPid[thetaT], scratch.nomPidActions + thetaT * DIM);
+                computePIDAction(a, state, envConfig, envConfig.oppPid[thetaT], scratch.nomPidActions.data() + thetaT * DIM);
 
             for (int d = 0; d < DIM; d++)
             {
@@ -608,7 +608,7 @@ HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentCo
     // 6. Cap speed
     for (int a = 0; a < N_AGENTS; a++)
     {
-        float spd = agentSpeed(state.vel, a);
+        float spd = agentSpeed(state.vel.data(), a);
         if (spd > envConfig.maxSpeed[a])
         {
             float sc = envConfig.maxSpeed[a] / spd;
@@ -631,18 +631,19 @@ HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentCo
     }
 
     // 8. Update gates with prev pos
-    updateGates<addMargin>(envConfig, state.pos, prevPos, state.S, state.gates, state.laps, gateMargin);
+    updateGates<addMargin>(envConfig, state.pos.data(), prevPos, state.S.data(), state.gates.data(), state.laps.data(), gateMargin);
 
     int oppAgent = 1 - envConfig.iMppi;
 
     // 9. Update belief & branching time
     if constexpr (shouldUpdateBelief)
-        updateBelief(branchState.belief, scratch.actions + oppAgent * DIM, scratch.nomPidActions, envConfig.oppPid, envConfig.maxAccel[oppAgent]);
+        updateBelief(branchState.belief.data(), scratch.actions.data() + oppAgent * DIM, scratch.nomPidActions.data(), envConfig.oppPid.data(),
+                     envConfig.maxAccel[oppAgent]);
 
     if constexpr (considerBranching)
     {
         int newPredTheta[N_MODEL_FACTORS];
-        findConfident(branchState.belief, minConfidence, newPredTheta);
+        findConfident(branchState.belief.data(), minConfidence, newPredTheta);
 
         for (int k = 0; k < N_MODEL_FACTORS; k++)
             if (branchState.predTheta[k] == 0 && newPredTheta[k] != 0)

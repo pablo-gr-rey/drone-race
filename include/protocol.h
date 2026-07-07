@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cuda/std/array>
 #include <span>
 #include <vector>
 #include <zmq.hpp>
@@ -34,30 +35,44 @@ struct Reader
         if (offset + sizeof(T) > size)
             throw std::runtime_error("failed to read scalar from buffer (underflow)");
 
-        T v;
-        std::memcpy(&v, data + offset, sizeof(T));
+        T val;
+        std::memcpy(&val, data + offset, sizeof(T));
         offset += sizeof(T);
-        return v;
+
+        return val;
     }
 
     int32_t readInt32();
     float readFloat();
 
     // necessary to be able to call readArray(arr); with float arr[2] (otherwise, it cannot be automatically converted to std::span)
-    template <typename T, size_t N> size_t readArray(T (&arr)[N])
+    template <typename T, size_t N, bool acceptUncomplete = false> size_t readArray(T (&arr)[N])
     {
-        return readArray(std::span<T, N>(arr));
+        return readArray<T, N, acceptUncomplete>(std::span<T, N>(arr));
     }
 
-    template <typename T, size_t S> size_t readArray(std::span<T, S> arr)
+    template <typename T, size_t N, bool acceptUncomplete = false> size_t readArray(cuda::std::array<T, N>& arr)
+    {
+        return readArray<T, N, acceptUncomplete>(std::span<T, N>(arr));
+    }
+
+    template <typename T, size_t S, bool acceptUncomplete = false> size_t readArray(std::span<T, S> arr)
     {
         size_t length = readInt32();
 
-        if (length != arr.size())
-            throw std::runtime_error(std::format("Wrong size when reading array: read length {}, allocated length {}", length, arr.size()));
+        if constexpr (acceptUncomplete)
+        {
+            if (length > arr.size())
+                throw std::runtime_error(std::format("Wrong size when reading array: read length {}, allocated length {}", length, arr.size()));
+        }
+        else
+        {
+            if (length != arr.size())
+                throw std::runtime_error(std::format("Wrong size when reading array: read length {}, allocated length {}", length, arr.size()));
+        }
 
         for (size_t i = 0; i < length; i++)
-            arr[i] = readPod<T>();
+            arr[i] = (T)readPod<float>();
 
         return length;
     }
@@ -69,7 +84,7 @@ struct Reader
         std::vector<T> arr(length);
 
         for (size_t i = 0; i < length; i++)
-            arr[i] = readPod<T>();
+            arr[i] = (T)readPod<float>();
 
         return arr;
     }
@@ -83,7 +98,7 @@ struct Reader
         arr = (T*)malloc(length * sizeof(T));
 
         for (size_t i = 0; i < length; i++)
-            arr[i] = readPod<T>();
+            arr[i] = (T)readPod<float>();
 
         return length;
     }

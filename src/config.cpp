@@ -11,7 +11,7 @@ void MPPIConfig::unpackHeader(Reader& reader)
         throw std::runtime_error(std::format(
             "Received invalid number of knots: got {}, but MAX_N_KNOTS is set to {}. Edit this constant and recompile", nKnots, MAX_N_KNOTS));
 
-    int nRecv = reader.readIntArray(knots);
+    int nRecv = reader.readArray<int, MAX_N_KNOTS, true>(knots);
     if (nRecv != nKnots)
         throw std::runtime_error(std::format("Received invalid number of knots: got {} elements, but received nKnots={}", nRecv, nKnots));
 

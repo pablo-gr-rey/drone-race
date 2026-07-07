@@ -109,7 +109,7 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
             for (int t = 0; t < mppiConfig.nTimesteps; t++)
             {
-                int startInd = (flattenBranchIndex(bstate.predTheta) * mppiConfig.nTimesteps + t - tOrigin) * ACTION_DIM;
+                int startInd = (flattenBranchIndex(bstate.predTheta.data()) * mppiConfig.nTimesteps + t - tOrigin) * ACTION_DIM;
 
                 for (int d = 0; d < ACTION_DIM; d++)
                     egoActions[t * ACTION_DIM + d] = mppiCont->h_nominal[startInd + d];
