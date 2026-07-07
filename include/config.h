@@ -9,7 +9,8 @@
 #include "common.h"
 
 // #define USE_ENV_DRONERACE
-#define USE_ENV_HIDDENOBS
+// #define USE_ENV_HIDDENOBS
+#define USE_ENV_STRATRACE
 
 inline constexpr bool USE_SPLINES = true;
 
@@ -24,6 +25,9 @@ namespace Env = EnvDroneRace;
 #elif defined(USE_ENV_HIDDENOBS)
 #include "environments/env_hiddenobs_defs.h"
 namespace Env = EnvHiddenObs;
+#elif defined(USE_ENV_STRATRACE)
+#include "environments/env_stratrace_defs.h"
+namespace Env = EnvStratRace;
 #else
 #error "must define a valid environment!"
 #endif
@@ -57,7 +61,8 @@ enum CONTROLLER_KIND : int32_t
 enum ENV_KIND : int32_t
 {
     ENV_DRONERACE,
-    ENV_HIDDENOBS
+    ENV_HIDDENOBS,
+    ENV_STRATRACE
 };
 
 enum TerminalType
@@ -90,6 +95,8 @@ struct HostRNG
 #include "environments/env_dronerace.h" // IWYU pragma: export
 #elif defined(USE_ENV_HIDDENOBS)
 #include "environments/env_hiddenobs.h" // IWYU pragma: export
+#elif defined(USE_ENV_STRATRACE)
+#include "environments/env_stratrace.h" // IWYU pragma: export
 #else
 #error "must define a valid environment!"
 #endif

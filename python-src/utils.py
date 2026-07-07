@@ -3,12 +3,18 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 import math
 import random
-from typing import Any, ClassVar, Optional
+from typing import Any, Callable, ClassVar, Optional
 from matplotlib import patches
 from matplotlib.path import Path
 import matplotlib.pyplot as plt
+from scipy.interpolate import CubicSpline
+
 
 import numpy as np
+
+
+def _errorTrack(_: float) -> np.ndarray:
+    raise ValueError("Undefined track function")
 
 
 class MSG_TYPE(IntEnum):
@@ -34,6 +40,7 @@ class ENV_KIND(IntEnum):
     ENV_INVALID = -1
     ENV_DRONERACE = 0
     ENV_HIDDENOBS = 1
+    ENV_STRATRACE = 2
 
 
 @dataclass
@@ -401,6 +408,117 @@ class HiddenObsSimState(BaseSimState):
 
     laps: int
     gates: int
+
+
+@dataclass
+class StratRaceEnvironmentConfig(BaseEnvironmentConfig):
+    @dataclass
+    class OppConfig:
+        s1_i: np.ndarray
+        s2_i: np.ndarray
+        s3_i: np.ndarray
+        speedScale: np.ndarray
+
+        actionNoise: np.ndarray
+
+    nOppAgents: int = 2
+    dim: int = 2
+    dt: float = 0.1
+
+    sendStates: bool = True
+
+    droneRadius: float = 0.2
+    posNoiseLevel: float = 0.0
+    speedNoiseLevel: float = 0.0
+    actionNoiseLevel: float = 0.0
+
+    maxSpeed: np.ndarray = field(default_factory=lambda: np.array([]))  # in L_2 norm, MPPI is first
+    maxAccel: np.ndarray = field(default_factory=lambda: np.array([]))  # in L_inf norm, MPPI is first
+
+    nTrackSamples: int = 512  # track is discretized with this number of samples
+    trackWidth: float = 2
+    nWinLaps: int = 1
+
+    seed: int = 42  # if -1, then it will be set to a random value
+
+    initBelief: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    opponentConfigs: tuple[OppConfig, ...] = ()
+    trueTheta: int = 0
+
+    trackFunction: Callable[[float], np.ndarray] = field(metadata={"send": False}, default=_errorTrack)
+
+    trackLength: float = field(init=False)
+    p_grid: np.ndarray = field(init=False)
+    dp_grid: np.ndarray = field(init=False)
+    t_grid: np.ndarray = field(init=False)
+    kappa_grid: np.ndarray = field(init=False)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.envKind = ENV_KIND.ENV_STRATRACE
+        self.actionDim = self.dim
+
+        # compute track data
+        q = np.array([self.trackFunction(k / self.nTrackSamples) for k in range(self.nTrackSamples)])
+        diffs = np.diff(q, axis=0, append=q[0:1])
+        d_k = np.linalg.norm(diffs, axis=1)
+
+        # s_k = cumulative sum with s_0 = 0
+        s_k = np.zeros(self.nTrackSamples)
+        s_k[1:] = np.cumsum(d_k)
+
+        self.trackLength = s_k[-1]
+
+        q_periodic = np.vstack([q, q[0:1]])
+
+        # Compute periodic cubic splines x(s), y(s)
+        cs_x = CubicSpline(s_k, q_periodic[:, 0], bc_type="periodic")
+        cs_y = CubicSpline(s_k, q_periodic[:, 1], bc_type="periodic")
+
+        # Uniform grid in arc-length
+        s_grid = np.linspace(0, self.trackLength, self.nTrackSamples, endpoint=False)
+
+        # p_grid = [x(s), y(s)]
+        self.p_grid = np.column_stack([cs_x(s_grid), cs_y(s_grid)])
+
+        # dp_grid = [x'(s), y'(s)] (first derivatives)
+        dx = cs_x(s_grid, 1)
+        dy = cs_y(s_grid, 1)
+        self.dp_grid = np.column_stack([dx, dy])
+
+        # t_grid = normalize(dp_grid)
+        dp_norm = np.linalg.norm(self.dp_grid, axis=1, keepdims=True)
+        self.t_grid = self.dp_grid / np.maximum(dp_norm, 1e-6)
+
+        # Second derivatives for curvature
+        ddx = cs_x(s_grid, 2)
+        ddy = cs_y(s_grid, 2)
+
+        # kappa = (x' * y'' - y' * x'') / (x'^2 + y'^2)^1.5
+        self.kappa_grid = (dx * ddy - dy * ddx) / np.maximum((dx**2 + dy**2) ** 1.5, 1e-6)
+
+        if self.arenaMin.shape == (0,):
+            self.arenaMin = np.min(self.p_grid, axis=0) - self.trackWidth * 4
+            self.arenaMax = np.max(self.p_grid, axis=0) + self.trackWidth * 4
+
+        if self.seed == -1:
+            self.seed = random.randrange(2**31)
+
+        if self.initBelief.size == 0:
+            self.initBelief = np.full(self.nTrueModels, 1.0 / self.nTrueModels)
+
+    def getMaxAccel(self) -> float:
+        return self.maxAccel[0]
+
+
+@dataclass
+class StratRaceSimState(BaseSimState):
+    pos: np.ndarray
+    vel: np.ndarray
+    S: np.ndarray
+    laps: np.ndarray
+    gates: np.ndarray
 
 
 @dataclass

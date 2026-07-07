@@ -377,13 +377,9 @@ void MPPIController::getControl(const SimState& state, float* outAction)
 
     // 6. Download chosen nominal
     if (useNewPlan)
-    {
         CUDA_CHECK(cudaMemcpy(h_nominal.data(), d_nominal, h_nominal.size() * sizeof(float), cudaMemcpyDeviceToHost));
-    }
     else
-    {
         CUDA_CHECK(cudaMemcpy(h_nominal.data(), d_prevnominal, h_nominal.size() * sizeof(float), cudaMemcpyDeviceToHost));
-    }
 
     std::vector<float> hostMin(N_BRANCH_PLANS * (USE_SPLINES ? M : T)), nu(N_BRANCH_PLANS);
     CUDA_CHECK(cudaMemcpy(hostMin.data(), d_minCosts, N_BRANCH_PLANS * (USE_SPLINES ? M : T) * sizeof(float), cudaMemcpyDeviceToHost));

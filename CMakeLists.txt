@@ -30,6 +30,7 @@ add_executable(drone_race
     src/protocol.cpp
     src/environments/env_dronerace.cpp
     src/environments/env_hiddenobs.cpp
+    src/environments/env_stratrace.cpp
 )
 
 target_compile_options(drone_race PRIVATE 
