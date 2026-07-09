@@ -19,6 +19,8 @@ from utils import (
     MPPIStateInfo,
     PRMPPIConfig,
     PRMPPIStateInfo,
+    StratRaceEnvironmentConfig,
+    StratRaceSimState,
 )
 
 
@@ -410,6 +412,23 @@ class MPPIHiddenObsRenderer(BaseMPPIRenderer[HiddenObsEnvironmentConfig, HiddenO
         super().baseUpdate(state, curPos, fullPoss)
 
 
+class MPPIStratRaceRenderer(BaseMPPIRenderer[StratRaceEnvironmentConfig, StratRaceSimState]):
+    def init(self, **kwargs: Any):
+        super().baseInit(self.envConfig.nOppAgents, **kwargs)
+
+    def update(self, state: FullStateInfo[StratRaceSimState, MPPIStateInfo]) -> None:
+        assert isinstance(state.contInfo, MPPIStateInfo), f"got {type(state.contInfo)} controller info, expected MPPIStateInfo"
+
+        curPos = state.state.pos.copy().reshape((1 + self.envConfig.nOppAgents, self.envConfig.dim))
+
+        fullPoss = [
+            pred.fullPos.copy().reshape((self.config.nTimesteps, 1 + self.envConfig.nOppAgents, self.envConfig.dim))
+            for pred in state.contInfo.preds
+        ]
+
+        super().baseUpdate(state, curPos, fullPoss)
+
+
 class BasePRMPPIRenderer[EnvConfigT: BaseEnvironmentConfig, SimStateT: BaseSimState](
     ControllerRenderer[EnvConfigT, PRMPPIConfig]
 ):
@@ -660,5 +679,22 @@ class PRMPPIHiddenObsRenderer(BasePRMPPIRenderer[HiddenObsEnvironmentConfig, Hid
         )
 
         fullPoss = [pred.fullPos.reshape((self.config.nTimesteps, 1, self.envConfig.dim)) for pred in state.contInfo.preds]
+
+        super().baseUpdate(state, fullPoss)
+
+
+class PRMPPIStratRaceRenderer(BasePRMPPIRenderer[StratRaceEnvironmentConfig, StratRaceSimState]):
+    def init(self, **kwargs: Any):
+        super().baseInit(self.envConfig.nOppAgents, **kwargs)
+
+    def update(self, state: FullStateInfo[StratRaceSimState, PRMPPIStateInfo]) -> None:
+        assert isinstance(state.contInfo, PRMPPIStateInfo), (
+            f"got {type(state.contInfo)} controller info, expected PRMPPIStateInfo"
+        )
+
+        fullPoss = [
+            pred.fullPos.copy().reshape((self.config.nTimesteps, 1 + self.envConfig.nOppAgents, self.envConfig.dim))
+            for pred in state.contInfo.preds
+        ]
 
         super().baseUpdate(state, fullPoss)

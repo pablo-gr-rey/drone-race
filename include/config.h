@@ -11,8 +11,10 @@
 #include "common.h"
 
 // #define USE_ENV_DRONERACE
-#define USE_ENV_HIDDENOBS
-// #define USE_ENV_STRATRACE
+// #define USE_ENV_HIDDENOBS
+#define USE_ENV_STRATRACE
+
+// #define CHEATING
 
 inline constexpr bool USE_SPLINES = true;
 

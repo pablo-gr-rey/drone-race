@@ -5,7 +5,7 @@
 namespace EnvStratRace
 {
 inline constexpr int DIM = 2;
-inline constexpr int N_OPP = 2;
+inline constexpr int N_OPP = 1;
 inline constexpr int N_TRACK_SAMPLES = 512;
 
 inline constexpr int N_AGENTS = N_OPP + 1;
@@ -20,12 +20,14 @@ HD INLINE constexpr int MODEL_SIZE(int /* k */)
 {
     // for several models with different sizes, tests are fine: return (k == 0) ? 2 : 3 or a switch, but here we can just fold it
     return 2;
+    // return 1;
 }
 
 HD INLINE constexpr int BRANCH_SIZE(int /* k */)
 {
     // same comment as above
     return 3;
+    // return 2;
 }
 
 inline constexpr int N_TRUE_MODELS = N_MODEL_FACTORS == 1 ? MODEL_SIZE(0) : MODEL_SIZE(0) * MODEL_SIZE(1);
@@ -33,23 +35,23 @@ inline constexpr int N_BRANCH_PLANS = N_MODEL_FACTORS == 1 ? BRANCH_SIZE(0) : BR
 inline constexpr int MAX_MODEL_SIZE = N_MODEL_FACTORS == 1 ? MODEL_SIZE(0) : (MODEL_SIZE(0) > MODEL_SIZE(1) ? MODEL_SIZE(0) : MODEL_SIZE(1));
 
 inline constexpr int WINDOW_SIZE = 10;    // on each side
-inline constexpr float PID_TARGET = 3.0f; // as multiples of dt
+inline constexpr float PID_TARGET = 3.0f; // as multiples of dt, ie. PID will reach for target at expected s in future time PID_TARGET * dt
 
 struct OppConfig
 {
-    float s1[N_OPP];
-    float s2[N_OPP];
-    float s3[N_OPP];
-    float speedScale[N_OPP];
+    cuda::std::array<float, N_OPP> s1;
+    cuda::std::array<float, N_OPP> s2;
+    cuda::std::array<float, N_OPP> s3;
+    cuda::std::array<float, N_OPP> speedScale;
 
-    float actionNoise[N_OPP];
+    cuda::std::array<float, N_OPP> actionNoise;
 };
 
 // Environment configuration
 struct EnvironmentConfig
 {
-    float arenaMin[DIM]; // (dim)
-    float arenaMax[DIM]; // (dim)
+    cuda::std::array<float, DIM> arenaMin; // (dim)
+    cuda::std::array<float, DIM> arenaMax; // (dim)
 
     float dt;
 
@@ -60,16 +62,16 @@ struct EnvironmentConfig
     float speedNoiseLevel;
     float actionNoiseLevel;
 
-    float maxSpeed[N_AGENTS]; // (nAgents)
-    float maxAccel[N_AGENTS]; // (nAgents)
+    cuda::std::array<float, N_AGENTS> maxSpeed; // (nAgents)
+    cuda::std::array<float, N_AGENTS> maxAccel; // (nAgents)
 
     // track
     float trackWidth;
     int nWinLaps;
 
-    float initBelief[N_TRUE_MODELS];
+    cuda::std::array<float, N_TRUE_MODELS> initBelief;
 
-    OppConfig oppConfigs[N_TRUE_MODELS];
+    cuda::std::array<OppConfig, N_TRUE_MODELS> oppConfigs;
     float kP;
     float kV;
     float maxOppLatDistFact; // max reference lateral displacement for opponents is trackWidth - maxOppLatDistFact * droneRadius
@@ -83,17 +85,17 @@ struct EnvironmentConfig
 
 struct SimState
 {
-    float pos[N_AGENTS * DIM];
-    float vel[N_AGENTS * DIM];
-    float S[N_AGENTS];
-    float latDist[N_AGENTS]; // signed lateral distance to the track
+    cuda::std::array<float, N_AGENTS * DIM> pos;
+    cuda::std::array<float, N_AGENTS * DIM> vel;
+    cuda::std::array<float, N_AGENTS> S;
+    cuda::std::array<float, N_AGENTS> latDist; // signed lateral distance to the track
 
-    int laps[N_AGENTS];
+    cuda::std::array<int, N_AGENTS> laps;
 };
 
 struct ScratchEnvBuffer
 {
-    float actions[N_AGENTS * DIM];                    // (nAgents, dim)
-    float nomOppActions[N_TRUE_MODELS * N_OPP * DIM]; // (nTrueModels, nOpp, dim)
+    cuda::std::array<float, N_AGENTS * DIM> actions;                    // (nAgents, dim)
+    cuda::std::array<float, N_TRUE_MODELS * N_OPP * DIM> nomOppActions; // (nTrueModels, nOpp, dim)
 };
 } // namespace EnvStratRace

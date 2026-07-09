@@ -64,6 +64,8 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
     Env::pushSimState(writer, state);
 
+    Env::pushAddInfo(writer, state, prevState, envConfig, trueTheta);
+
     writer.pushFloatArray(egoAction);
 
     ScratchEnvBuffer buffer;
@@ -184,6 +186,10 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
         for (int j = 0; j <= N_TRUE_MODELS; j++)
         {
+            float cost = 0.0f;
+            float safetyCost = -INFINITY;
+            float decay = 1.0f;
+
             int theta = std::min(j, N_TRUE_MODELS - 1);
 
             SimState predState = initState;
@@ -212,6 +218,10 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
                                                                               false, // no PID noise for reproducible display
                                                                               predState, bstate, branched, 0.0f, buffer, hrng);
 
+                safetyCost = fmaxf(safetyCost, PRMPPIsafetyCost(state, t, envConfig, prmppiConfig, theta));
+                cost += PRMPPIstateCost(state, t, envConfig, prmppiConfig, theta) * decay;
+                decay *= DECAY;
+
                 states.push_back(predState);
 
                 if (term != TERM_NONE)
@@ -219,6 +229,10 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
                     states.insert(states.end(), prmppiConfig.nTimesteps - t - 1, predState);
 
                     std::cout << "STOPPING SIMULATION at step " << t << " term " << (int)term << std::endl;
+                    std::cout << "safety cost " << PRMPPIsafetyCost(state, t, envConfig, prmppiConfig, theta) << " isOutside "
+                              << EnvStratRace::isOutside(state, envConfig, envConfig.droneRadius, theta) << " BD "
+                              << EnvStratRace::trackBoundaryDist(state, envConfig, theta) << " bli " << envConfig.droneRadius << " * "
+                              << prmppiConfig.collDistFactor << "\n";
 
                     stopTime = t;
                     std::optional<EventType> parsed = parseTerm(term);
@@ -227,6 +241,12 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
                     break;
                 }
             }
+
+            cost += PRMPPIfinalCost(state, envConfig, prmppiConfig, theta);
+            float fullCost = cost + (safetyCost > 0.0f ? prmppiConfig.safetyWeight : 0.0f);
+
+            std::cout << "for theta=" << theta << " controller " << (j == N_TRUE_MODELS ? "robust" : "nominal") << " PRMPPI full cost is " << fullCost
+                      << "\t(performance cost " << cost << ")\tsafety cost " << safetyCost << "\n";
 
             // writer.pushFloatArray(fullPos);
             Env::pushPredictions(writer, states);

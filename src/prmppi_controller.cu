@@ -305,9 +305,11 @@ void PRMPPIController::getControl(const SimState& state, float* outAction)
 
     // 13. Update inverse temperatures
 
-    std::vector<float> nu(3);
+    std::array<float, 3> nu;
+    std::array<float, 3> minCosts;
 
     CUDA_CHECK(cudaMemcpy(nu.data(), d_nu, nu.size() * sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(minCosts.data(), d_minCosts, minCosts.size() * sizeof(float), cudaMemcpyDeviceToHost));
 
     std::cout << "\tSubmitted action: \t";
 
@@ -318,16 +320,20 @@ void PRMPPIController::getControl(const SimState& state, float* outAction)
     for (float n : nu)
         std::cout << n << " ";
     std::cout << "\n";
+    std::cout << "\tMin costs for nom + full_cost, rob + full_cost, rob + safe_cost:\t";
+    for (float n : minCosts)
+        std::cout << n << " ";
+    std::cout << "\n";
 
     auto adaptTemperature = [&](float& invTemp, float usedNu, std::string name)
     {
-        if (usedNu > max_nu * (float)N)
+        if (usedNu > max_nu * (float)N && invTemp > 0.01f)
         {
             std::cout << "\tdecreasing " << name << " inverse temperature from " << invTemp << " to ";
             invTemp *= 0.9f;
             std::cout << invTemp << "\n";
         }
-        else if (usedNu < min_nu * (float)N)
+        else if (usedNu < min_nu * (float)N && invTemp < 100.0f)
         {
             std::cout << "\tincreasing " << name << " inverse temperature from " << invTemp << " to ";
             invTemp *= 1.2f;

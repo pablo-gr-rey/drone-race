@@ -20,15 +20,18 @@ from utils import (
     HiddenObsEnvironmentConfig,
     MPPIConfig,
     PRMPPIConfig,
+    StratRaceEnvironmentConfig,
 )
 from controller_renderers import (
     ControllerRenderer,
     MPPIDroneRaceRenderer,
     MPPIHiddenObsRenderer,
+    MPPIStratRaceRenderer,
     PRMPPIDroneRaceRenderer,
     PRMPPIHiddenObsRenderer,
+    PRMPPIStratRaceRenderer,
 )
-from env_renderers import BaseEnvironmentRenderer, DroneRaceEnvRenderer, HiddenObsEnvRenderer
+from env_renderers import BaseEnvironmentRenderer, DroneRaceEnvRenderer, HiddenObsEnvRenderer, StratRaceEnvRenderer
 
 
 def getRendererClass(
@@ -45,6 +48,12 @@ def getRendererClass(
             return HiddenObsEnvRenderer, MPPIHiddenObsRenderer
         elif isinstance(contConfig, PRMPPIConfig):
             return HiddenObsEnvRenderer, PRMPPIHiddenObsRenderer
+
+    elif isinstance(envConfig, StratRaceEnvironmentConfig):
+        if isinstance(contConfig, MPPIConfig):
+            return StratRaceEnvRenderer, MPPIStratRaceRenderer
+        elif isinstance(contConfig, PRMPPIConfig):
+            return StratRaceEnvRenderer, PRMPPIStratRaceRenderer
 
     raise ValueError(f"Unknown env & cont config classes {type(envConfig)}, {type(contConfig)}")
 
@@ -84,8 +93,8 @@ class EnvironmentRenderer:
         self.stateLog: list[FullStateInfo] = []
 
         self.collision = False
-        self.winner: Optional[int] = None
-        self.outside: Optional[int] = None
+        self.winner = False
+        self.outside = False
 
         plt.rcParams["keymap.back"].remove("left")
         plt.rcParams["keymap.forward"].remove("right")
@@ -296,11 +305,11 @@ class EnvironmentRenderer:
         if self.collision:
             self.status_text.set_text("Collision")
             self.status_text.set_color("red")
-        elif self.winner is not None:
-            self.status_text.set_text(f"Winner: {self.winner + 1}")
+        elif self.winner:
+            self.status_text.set_text("MPPI wins")
             self.status_text.set_color("green")
-        elif self.outside is not None:
-            self.status_text.set_text(f"{self.outside + 1} outside")
+        elif self.outside:
+            self.status_text.set_text("MPPI loses")
             self.status_text.set_color("red")
         elif self.isFinished:
             self.status_text.set_text("Truncated")

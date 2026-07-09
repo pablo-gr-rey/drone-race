@@ -55,13 +55,24 @@ void pushSimState(Writer& writer, const SimState& state)
     writer.pushIntArray<int>(state.laps);
 }
 
+void pushAddInfo(Writer& writer, const SimState& /* state */, const SimState& prevState, const EnvironmentConfig& envConfig, int trueTheta)
+{
+    // push lateral distance goal for each opponent
+    std::array<float, N_OPP> latDist;
+
+    for (int iOpp = 1; iOpp <= N_OPP; iOpp++)
+        latDist[iOpp - 1] = computeOppTargetLatDist<true>(iOpp, prevState, envConfig, trueTheta);
+
+    writer.pushFloatArray(latDist);
+}
+
 // only push full pos
 void pushPredictions(Writer& writer, const std::vector<SimState>& preds)
 {
     std::vector<float> fullPos(preds.size() * N_AGENTS * DIM);
 
     for (size_t t = 0; t < preds.size(); t++)
-        std::copy(preds[t].pos, preds[t].pos + N_AGENTS * DIM, fullPos.begin() + t * N_AGENTS * DIM);
+        std::copy(preds[t].pos.begin(), preds[t].pos.begin() + N_AGENTS * DIM, fullPos.begin() + t * N_AGENTS * DIM);
 
     writer.pushFloatArray(fullPos);
 }
@@ -192,6 +203,10 @@ std::tuple<EnvironmentConfig, int, int> unpackEnvConfig(const void* buf, size_t 
         envConfig.oppConfigs[i] = unpackOppConfig(reader);
 
     int trueTheta = reader.readInt32();
+
+    envConfig.kP = reader.readFloat();
+    envConfig.kV = reader.readFloat();
+    envConfig.maxOppLatDistFact = reader.readFloat();
 
     envConfig.trackLength = reader.readFloat();
 

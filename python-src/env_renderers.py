@@ -372,6 +372,8 @@ class StratRaceEnvRenderer(BaseRaceEnvRenderer[StratRaceEnvironmentConfig]):
 
         self.ax.plot([left[0, 0], right[0, 0]], [left[0, 1], right[0, 1]], "purple", linewidth=1)
 
+        super().drawBackground()
+
     def updateStatus(self, state: DroneRaceSimState | StratRaceSimState):
         assert isinstance(state, StratRaceSimState), f"Invalid state class: got {type(state)}, expected StratRaceSimState"
 
@@ -380,9 +382,11 @@ class StratRaceEnvRenderer(BaseRaceEnvRenderer[StratRaceEnvironmentConfig]):
 
             speed = np.linalg.norm(vel[iAgent * self.envConfig.dim : (iAgent + 1) * self.envConfig.dim])
 
-            self.agent_value_texts[iAgent].set_text(
-                f"Lap {int(laps[iAgent])}/{self.envConfig.nWinLaps} Advance {int(S[iAgent] * 100 / self.envConfig.trackLength)}% \nSpeed {speed:.2f}\nLateral offset {latDist[iAgent]:.2f}"
-            )
+            text = f"Lap {int(laps[iAgent])}/{self.envConfig.nWinLaps} Advance {int(S[iAgent] * 100 / self.envConfig.trackLength)}% \nSpeed {speed:.2f}\nLateral offset {latDist[iAgent]:.2f}"
+            if iAgent >= 1:
+                text += f"\nGoal lateral offset {state.latDistTarget[iAgent - 1]:.2f}"
+
+            self.agent_value_texts[iAgent].set_text(text)
 
 
 class HiddenObsEnvRenderer(BaseEnvironmentRenderer[HiddenObsEnvironmentConfig]):

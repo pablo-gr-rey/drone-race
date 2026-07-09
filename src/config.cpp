@@ -47,7 +47,8 @@ void MPPIConfig::unpackHeader(Reader& reader)
     maxVerifEps = reader.readFloat();
 
     std::cout << "loaded MPPI samples " << nSamples << " timesteps " << nTimesteps << " collDistFactor " << collDistFactor << " invTemp "
-              << invTemperature << " with " << N_TRUE_MODELS << " opponent strats\n";
+              << invTemperature << " finalAdvWeight " << finalAdvWeight << " finalOppAdvWeight " << finalOppAdvWeight << " with " << N_TRUE_MODELS
+              << " opponent strats, maxVerifEps " << maxVerifEps << "\n";
 }
 
 void PRMPPIConfig::unpackHeader(Reader& reader)

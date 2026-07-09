@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 import math
 import random
-from typing import Callable, ClassVar, Optional
+from typing import Callable, ClassVar, Literal, Optional, Self
 from scipy.interpolate import CubicSpline
 
 
@@ -279,12 +279,67 @@ class HiddenObsSimState(BaseSimState):
 class StratRaceEnvironmentConfig(BaseEnvironmentConfig):
     @dataclass
     class OppConfig:
-        s1_i: np.ndarray
-        s2_i: np.ndarray
-        s3_i: np.ndarray
-        speedScale: np.ndarray
+        s1_i: np.ndarray  # = field(default_factory=lambda: np.array([]))
+        s2_i: np.ndarray  # = field(default_factory=lambda: np.array([]))
+        s3_i: np.ndarray  # = field(default_factory=lambda: np.array([]))
+        speedScale: np.ndarray  # = field(default_factory=lambda: np.array([]))
 
-        actionNoise: np.ndarray
+        actionNoise: np.ndarray  # = field(default_factory=lambda: np.array([]))
+
+        @classmethod
+        def preset(
+            cls,
+            droneRadius: float,
+            nOpps: int,
+            s1: float | np.ndarray | Literal["insensitive"] | Literal["default"] | Literal["conservative"] = "default",
+            s2: float | np.ndarray | Literal["infinite"] | Literal["default"] | Literal["insensitive"] = "default",
+            s3: float | np.ndarray | Literal["no-block"] | Literal["default"] = "default",
+            speedScale: float | np.ndarray = 1.0,
+            actionNoise: float | np.ndarray = 0.1,
+        ) -> Self:
+            values: dict[str, np.ndarray] = {}
+
+            def set_val(attr_name: str, val: float | np.ndarray | str, defaultValues: dict[str, float]) -> None:
+                if isinstance(val, str) and val in defaultValues:
+                    val = defaultValues[val]
+                elif isinstance(val, str):
+                    raise ValueError(
+                        f"Invalid string literal provided for {attr_name} (got {val}, possible values are {'; '.join(defaultValues.keys())})"
+                    )
+
+                if isinstance(val, float):
+                    values[attr_name] = np.full(nOpps, val)
+                elif isinstance(val, np.ndarray):
+                    values[attr_name] = val
+                else:
+                    raise ValueError(f"Invalid value for {attr_name} (got {val})")
+
+            set_val(
+                "s1_i",
+                s1,
+                {
+                    "insensitive": 0.0,
+                    "default": 2.5 * droneRadius,
+                    "conservative": 4 * droneRadius,
+                },
+            )
+
+            set_val(
+                "s2_i",
+                s2,
+                {
+                    "infinite": 0.0,
+                    "default": 1 / (4 * droneRadius) ** 2,
+                    "insensitive": 1 / (1e-5 * droneRadius) ** 2,
+                },
+            )
+
+            set_val("s3_i", s3, {"no-block": 0.0, "default": 20 / droneRadius})
+
+            set_val("speedScale", speedScale, {})
+            set_val("actionNoise", actionNoise, {})
+
+            return cls(**values)
 
     nOppAgents: int = 2
     dim: int = 2
@@ -311,6 +366,10 @@ class StratRaceEnvironmentConfig(BaseEnvironmentConfig):
     opponentConfigs: tuple[OppConfig, ...] = ()
     trueTheta: int = 0
 
+    kP: float = 10.0
+    kV: float = -1.0
+    maxOppLatDistFact: float = 1.1
+
     trackFunction: Callable[[float], np.ndarray] = field(metadata={"send": False}, default=_errorTrack)
 
     trackLength: float = field(init=False)
@@ -324,13 +383,16 @@ class StratRaceEnvironmentConfig(BaseEnvironmentConfig):
         self.envKind = ENV_KIND.ENV_STRATRACE
         self.actionDim = self.dim
 
+        if self.kV == -1.0:
+            self.kV = 2 * self.kP**0.5
+
         # compute track data
         q = np.array([self.trackFunction(k / self.nTrackSamples) for k in range(self.nTrackSamples)])
         diffs = np.diff(q, axis=0, append=q[0:1])
         d_k = np.linalg.norm(diffs, axis=1)
 
         # s_k = cumulative sum with s_0 = 0
-        s_k = np.zeros(self.nTrackSamples)
+        s_k = np.zeros(self.nTrackSamples + 1)
         s_k[1:] = np.cumsum(d_k)
 
         self.trackLength = s_k[-1]
@@ -384,6 +446,10 @@ class StratRaceSimState(BaseSimState):
     S: np.ndarray
     latDist: np.ndarray
     laps: np.ndarray
+
+    latDistTarget: np.ndarray = field(
+        default_factory=lambda: np.array([]), metadata={"send": False}
+    )  # proxy for the received additional info, is not sent
 
 
 @dataclass
@@ -521,7 +587,7 @@ class PRMPPIStateInfo:
 class FullStateInfo[SimStateT: BaseSimState, contInfoT]:
     # kind of a hack, but this is a class member which should be set by the protocol part based on the actual controller type
     # this way, we can automatically unpack the state information corresponding to the given controller
-    SimStateType: ClassVar[type[DroneRaceSimState] | type[HiddenObsSimState]]
+    SimStateType: ClassVar[type[DroneRaceSimState] | type[HiddenObsSimState] | type[StratRaceSimState]]
     ContStateType: ClassVar[type[MPPIStateInfo] | type[PRMPPIStateInfo]]
 
     step: int
@@ -538,6 +604,8 @@ class FullStateInfo[SimStateT: BaseSimState, contInfoT]:
             cls.SimStateType = DroneRaceSimState
         elif envConfig.envKind == ENV_KIND.ENV_HIDDENOBS:
             cls.SimStateType = HiddenObsSimState
+        elif envConfig.envKind == ENV_KIND.ENV_STRATRACE:
+            cls.SimStateType = StratRaceSimState
         else:
             raise ValueError(f"Unknown environment kind {envConfig.envKind}")
 

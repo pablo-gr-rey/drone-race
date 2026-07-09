@@ -122,6 +122,9 @@ class ByteUnpacker:
 
         for field in dataclasses.fields(cl):
             # print(f"Reading field {field.name}...", end="", flush=True)
+            if "recv" in field.metadata and not field.metadata["recv"]:
+                continue
+
             if typing.get_origin(field.type) is list:
                 if "len" not in field.metadata:
                     raise ValueError(f"Missing len information in metadata for field {field.name} of type list")
