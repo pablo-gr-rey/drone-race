@@ -118,9 +118,9 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
                 bool branched = false;
 
-                TerminalType term = environmentStep<true, true, false>(t, theta, envConfig, egoActions.data() + t * ACTION_DIM,
-                                                                       false, // no PID noise for reproducible display
-                                                                       predState, bstate, branched, mppiConfig.minConfidence, buffer, hrng);
+                TerminalType term = environmentStep<true, true, false, false>(t, theta, envConfig, egoActions.data() + t * ACTION_DIM,
+                                                                              false, // no PID noise for reproducible display
+                                                                              predState, bstate, branched, mppiConfig.minConfidence, buffer, hrng);
 
                 if (branched)
                     tOrigin = t + 1;
@@ -214,9 +214,9 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
                 bool branched = false;
 
-                TerminalType term = Env::environmentStep<false, false, false>(t, theta, envConfig, egoActions.data() + t * ACTION_DIM,
-                                                                              false, // no PID noise for reproducible display
-                                                                              predState, bstate, branched, 0.0f, buffer, hrng);
+                TerminalType term = Env::environmentStep<false, false, false, false>(t, theta, envConfig, egoActions.data() + t * ACTION_DIM,
+                                                                                     false, // no PID noise for reproducible display
+                                                                                     predState, bstate, branched, 0.0f, buffer, hrng);
 
                 safetyCost = fmaxf(safetyCost, PRMPPIsafetyCost(state, t, envConfig, prmppiConfig, theta));
                 cost += PRMPPIstateCost(state, t, envConfig, prmppiConfig, theta) * decay;
@@ -299,11 +299,12 @@ std::optional<EventType> SimulationEngine::dynStep(const std::array<float, ACTIO
 
     if (auto mppiCont = dynamic_cast<MPPIController*>(controller.get()))
         // MPPI needs belief & branching update
-        term = environmentStep<true, true, false>(t, trueTheta, envConfig, action.data(), true, state, branchState, branched,
-                                                  mppiCont->mppiConfig.minConfidence, buffer, hrng);
+        term = environmentStep<true, true, false, false>(t, trueTheta, envConfig, action.data(), true, state, branchState, branched,
+                                                         mppiCont->mppiConfig.minConfidence, buffer, hrng);
     else
         // other controllers may only use belief update
-        term = environmentStep<true, false, false>(t, trueTheta, envConfig, action.data(), true, state, branchState, branched, 0.0f, buffer, hrng);
+        term = environmentStep<true, false, false, false>(t, trueTheta, envConfig, action.data(), true, state, branchState, branched, 0.0f, buffer,
+                                                          hrng);
 
     std::copy(std::begin(branchState.belief), std::end(branchState.belief), belief.begin());
 
@@ -357,6 +358,8 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
         std::cout << "Agent is outside\n";
     else if (*stopInfo == EVT_WINNER)
         std::cout << "Agent wins\n";
+    else if (*stopInfo == EVT_OPP_WINNER)
+        std::cout << "Opponent wins\n";
 }
 
 std::optional<EventType> SimulationEngine::parseTerm(TerminalType term)
@@ -369,6 +372,8 @@ std::optional<EventType> SimulationEngine::parseTerm(TerminalType term)
         return {EVT_OUTSIDE};
     case TERM_WIN:
         return {EVT_WINNER};
+    case TERM_OPP_WIN:
+        return {EVT_OPP_WINNER};
     default:
         throw std::runtime_error("Unexpected TerminalType value");
     }

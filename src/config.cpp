@@ -35,6 +35,7 @@ void MPPIConfig::unpackHeader(Reader& reader)
 
     outsideCost = reader.readFloat();
     winCost = reader.readFloat();
+    oppWinCost = reader.readFloat();
 
     finalAdvWeight = reader.readFloat();
     finalOppAdvWeight = reader.readFloat();
@@ -67,6 +68,7 @@ void PRMPPIConfig::unpackHeader(Reader& reader)
     boundaryThresholdFactor = reader.readFloat();
 
     winCost = reader.readFloat();
+    oppWinCost = reader.readFloat();
 
     finalAdvWeight = reader.readFloat();
     finalOppAdvWeight = reader.readFloat();

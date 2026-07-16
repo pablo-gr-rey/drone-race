@@ -1,6 +1,8 @@
 #pragma once
 
 #include <math.h>
+#include <tuple>
+#include <vector>
 
 #include "env_stratrace_defs.h"
 #include "protocol.h"
@@ -241,10 +243,10 @@ template <bool loseOnOppWin = true> HD INLINE float trackBoundaryDist(const SimS
     return fminf(sqrtf(minSqDist) - envConfig.droneRadius, envConfig.trackWidth - fabsf(state.latDist[0]));
 }
 
-HD INLINE bool isOutside(const SimState& state, const EnvironmentConfig& envConfig, float radius, int trueTheta)
+template <bool loseOnOppWin = true> HD INLINE bool isOutside(const SimState& state, const EnvironmentConfig& envConfig, float radius, int trueTheta)
 // radius should be e.g. minDist/2 in the actual dynamics and (minDist * factor) / 2 for MPPI
 {
-    return trackBoundaryDist(state, envConfig, trueTheta) < radius;
+    return trackBoundaryDist<loseOnOppWin>(state, envConfig, trueTheta) < radius;
 }
 
 HD INLINE bool isWinner(const SimState& state, const EnvironmentConfig& envConfig)
@@ -262,10 +264,19 @@ HD INLINE bool isWinner(const SimState& state, const EnvironmentConfig& envConfi
     return false;
 }
 
-// Advance = s + laps * trackLength
+HD INLINE bool isOppWinner(const SimState& state, const EnvironmentConfig& envConfig)
+{
+    for (int iOpp = 1; iOpp <= N_OPP; iOpp++)
+        if (state.laps[iOpp] >= envConfig.nWinLaps)
+            return true;
+
+    return false;
+}
+
+// Advance = s / trackLength + laps
 HD INLINE float getAnyAdvance(const SimState& state, const EnvironmentConfig& envConfig, int agent)
 {
-    return state.S[agent] + envConfig.trackLength * state.laps[agent];
+    return state.S[agent] / envConfig.trackLength + state.laps[agent];
 }
 
 HD INLINE float getAdvance(const SimState& state, const EnvironmentConfig& envConfig)
@@ -303,12 +314,14 @@ HD INLINE float computeSdot(int iAgent, const SimState& state, const Environment
     return (tang_i[0] * state.vel[2 * iAgent] + tang_i[1] * state.vel[2 * iAgent + 1]) / metric;
 }
 
-// Compute target lateral displacement for drone iOpp (1 <= iOpp <= N_OPP)
+// Compute target lateral displacement and target longitudinal speed goal for drone iOpp (1 <= iOpp <= N_OPP)
 template <bool printInfo = false>
-HD INLINE float computeOppTargetLatDist(int iOpp, const SimState& state, const EnvironmentConfig& envConfig, int trueTheta)
+HD INLINE cuda::std::pair<float, float> computeOppTargetLatDist(int iOpp, const SimState& state, const EnvironmentConfig& envConfig, int trueTheta)
 {
     OppConfig config = envConfig.oppConfigs[trueTheta];
     float L = envConfig.trackLength;
+
+    // TODO: why not all opponents?
 
     // find closest opponent ahead
     int iAhead = 0;
@@ -357,6 +370,9 @@ HD INLINE float computeOppTargetLatDist(int iOpp, const SimState& state, const E
     // float v_i_tang = state.vel[iOpp * 2] * tang_i[0] + state.vel[iOpp * 2 + 1] * tang_i[1];
     float sdot_i = computeSdot(iOpp, state, envConfig);
 
+    float baseSpeed = config.speedScale[iOpp - 1] * envConfig.maxSpeed[iOpp];
+    float speedGoal = baseSpeed;
+
     for (int k = 0; k <= 1; k++)
     {
         int j = k ? iAhead : iBehind;
@@ -369,8 +385,12 @@ HD INLINE float computeOppTargetLatDist(int iOpp, const SimState& state, const E
         // float v_j_tang = state.vel[j * 2] * tang_j[0] + state.vel[j * 2 + 1] * tang_j[1];
         float sdot_j = computeSdot(j, state, envConfig);
 
+        // TODO: hardcoded. we block if sdot_j - sdot_i > -blockTolerance (even if they are going slightly slower, we block in order to avoid being
+        // vulnerable to opponents faking low speeds to make us go back to centerline)
+        float blockTolerance = envConfig.maxSpeed[j] * 0.3f;
+
         // bool shouldBlock = (deltaS < 0.0f) && (deltaS > -envConfig.trackLength * 0.25f) && (v_j_tang > v_i_tang);
-        bool shouldBlock = (deltaS < 0.0f) && (deltaS > -envConfig.trackLength * 0.25f) && (sdot_j > sdot_i);
+        bool shouldBlock = (deltaS < 0.0f) && (deltaS > -envConfig.trackLength * 0.25f) && (sdot_j + blockTolerance > sdot_i);
 
         // we do not consider deltaS: if we are on front and faster, we still need overtaking behavior to make sure we do not crash
         bool shouldOvertake = (sdot_i > sdot_j) && (fabsf(deltaE) < config.s1[iOpp - 1]);
@@ -385,8 +405,12 @@ HD INLINE float computeOppTargetLatDist(int iOpp, const SimState& state, const E
             // blockTerm = deltaE * (1 - expf(-config.s3[iOpp - 1] * (v_j_tang - v_i_tang))) * factor;      // using sdot is more interesting than
             // tangential speed blockTerm = deltaE * (1 - expf(-config.s3[iOpp - 1] * (sdot_j - sdot_i))) * factor;          // since this is our
             // target and not a force, we should simply aim for e_j
-            blockTerm = state.latDist[j] * (1 - expf(-config.s3[iOpp - 1] * (sdot_j - sdot_i))) * factor;
+            blockTerm = state.latDist[j] * (1 - expf(-config.s3[iOpp - 1] * (sdot_j + blockTolerance - sdot_i))) * factor;
             latDis += blockTerm;
+
+            if constexpr (printInfo)
+                printf("\tblocking term: k=%d: j=%d, latDist[j]=%f\ts3 contrib: %f\tfactor: %f\t total %f\n", k, j, state.latDist[j],
+                       (1 - expf(-config.s3[iOpp - 1] * (sdot_j + blockTolerance - sdot_i))), factor, blockTerm);
         }
 
         // overtaking term
@@ -397,14 +421,26 @@ HD INLINE float computeOppTargetLatDist(int iOpp, const SimState& state, const E
             // since we are in the if, we know that |e_j - e_i| < s1. we aim for e_j +- s1, whichever is closest
             overtakeTerm = (state.latDist[j] - copysignf(config.s1[iOpp - 1], deltaE)) * factor;
             latDis += overtakeTerm;
+
+            // TODO: hardcoded
+            float oppLongSpeed = state.vel[2 * j] * tang_j[0] + state.vel[2 * j + 1] * tang_j[1];
+
+            if (deltaS < 3 * envConfig.droneRadius)
+                speedGoal = fminf(speedGoal, 0.7f * oppLongSpeed);
+            else if (deltaS < 6 * envConfig.droneRadius && config.s1[iOpp - 1] > 1e-6)
+            {
+                float latFactor = fabsf(deltaE) / config.s1[iOpp - 1]; // 0 if we're close, 1 if we're far enough to overtake
+                speedGoal = fminf(speedGoal, latFactor * oppLongSpeed + (1.0f - latFactor) * baseSpeed);
+            }
         }
 
-        if constexpr (printInfo)
-        {
-            printf("k=%d: j=%d, deltaS=%f\tshouldBlock=%d shouldOvertake=%d: blocking = %f\tovertaking = %f\tsdot_i %f\tsdot_j %f\n", k, j, deltaS,
-                   shouldBlock, shouldOvertake, blockTerm, overtakeTerm, sdot_i, sdot_j);
-            // printf("%f %f %f %d %f\n", state.latDist[j], (1 - expf(-config.s3[iOpp - 1] * (sdot_j - sdot_i))), factor, iOpp, config.s3[iOpp - 1]);
-        }
+        // if constexpr (printInfo)
+        // {
+        //     printf("k=%d: j=%d, deltaS=%f\tshouldBlock=%d shouldOvertake=%d: blocking = %f\tovertaking = %f\tsdot_i %f\tsdot_j %f\n", k, j, deltaS,
+        //            shouldBlock, shouldOvertake, blockTerm, overtakeTerm, sdot_i, sdot_j);
+        //     // printf("%f %f %f %d %f\n", state.latDist[j], (1 - expf(-config.s3[iOpp - 1] * (sdot_j - sdot_i))), factor, iOpp, config.s3[iOpp -
+        //     // 1]);
+        // }
 
         // we should only apply the overtake term if we are not trying to block; otherwise, they fight each other
         // blocking term
@@ -419,15 +455,16 @@ HD INLINE float computeOppTargetLatDist(int iOpp, const SimState& state, const E
     latDis = fmaxf(-maxLatDis, fminf(maxLatDis, latDis));
 
     if constexpr (printInfo)
-        printf("Target lat dist for drone %d:\t%f\n", iOpp, latDis);
+        printf("Target lat dist for drone %d:\t%f\tspeed goal: %f\t(base speed %f)\n", iOpp, latDis, speedGoal, baseSpeed);
 
-    return latDis;
+    return {latDis, speedGoal};
 }
 
+/*
 // Control function, 1 <= iOpp <= N_OPP. does not apply noise
 HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const EnvironmentConfig& envConfig, float* outAction, int trueTheta)
 {
-    float latDis = computeOppTargetLatDist(iOpp, state, envConfig, trueTheta);
+    auto [latDis, speedGoal] = computeOppTargetLatDist(iOpp, state, envConfig, trueTheta);
     float latDisPrev = state.latDist[iOpp];
     float latDis_dot = (latDis - latDisPrev) / envConfig.dt;
 
@@ -450,60 +487,37 @@ HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const Envi
     sampleTrackArray<false>(envConfig.kappa_grid, s_target, &kappa_target, L);
     sampleNormalizedSpeed(envConfig.t_grid, state.S[iOpp], tang_now, envConfig.trackLength);
 
-    // float targetSpeed = envConfig.oppConfigs[trueTheta].speedScale[iOpp - 1] *
-    //                     fminf(envConfig.maxSpeed[iOpp], sqrtf(envConfig.maxAccel[iOpp] / fmaxf(fabsf(kappa_target), 1e-12f)));
-
-    // for (int d = 0; d < DIM; d++)
-    // {
-    //     outAction[d] = 0.0f;
-
-    //     // position reference
-    //     float p_ref = p_target[d] + latDis * rotateVec(d, tang_target[0], tang_target[1]);
-    //     outAction[d] += envConfig.kP * (p_ref - state.pos[iOpp * 2 + d]);
-
-    //     // velocity reference
-    //     float v_ref = tang_target[d] * targetSpeed;
-    //     outAction[d] += envConfig.kV * (v_ref - state.vel[iOpp * 2 + d]);
-
-    //     // centripetal acceleration
-    //     outAction[d] += targetSpeed * targetSpeed * kappa_target * rotateVec(d, tang_target[0], tang_target[1]);
-    // }
-
     float metric = 1.0f - kappa_target * latDis;
     if (fabsf(metric) < 1e-6f)
         metric = copysignf(1e-6f, metric);
     float kappa_eff = kappa_target / metric;
 
     // Speed along the offset path (not centerline speed)
-    float speedScale = envConfig.oppConfigs[trueTheta].speedScale[iOpp - 1];
+    // float speedScale = envConfig.oppConfigs[trueTheta].speedScale[iOpp - 1];
     float maxCurvatureSpeed = sqrtf(envConfig.maxAccel[iOpp] / fmaxf(fabsf(kappa_eff), 1e-12f));
-    float pathSpeed = speedScale * fminf(envConfig.maxSpeed[iOpp], maxCurvatureSpeed);
+    // float pathSpeed = speedScale * fminf(envConfig.maxSpeed[iOpp], maxCurvatureSpeed);
+    float pathSpeed = fminf(speedGoal, maxCurvatureSpeed);
 
-    // --- Position reference ---
+    // Position reference
     float p_ref[2];
     p_ref[0] = p_target[0] + latDis * rotateVec(0, tang_target[0], tang_target[1]);
     p_ref[1] = p_target[1] + latDis * rotateVec(1, tang_target[0], tang_target[1]);
 
-    // --- Velocity reference ---
+    // Velocity reference
     // Tangential component: pathSpeed along offset path tangent (same direction as t_hat)
     // Lateral component: latDis_dot along normal (to track changing lateral target)
-    // Also: moving along a curved path at offset latDis, the normal component
-    //        has a contribution from the Frenet transport: -κ * s_dot * latDis * t_hat
-    //        but this is already captured by the centripetal feedforward
     float v_ref[2];
     v_ref[0] = pathSpeed * tang_target[0] + latDis_dot * rotateVec(0, tang_target[0], tang_target[1]);
     v_ref[1] = pathSpeed * tang_target[1] + latDis_dot * rotateVec(1, tang_target[0], tang_target[1]);
 
-    // --- Feedforward: centripetal acceleration for the OFFSET path ---
+    // Feedforward: centripetal acceleration for the OFFSET path
     float ff[2];
     ff[0] = pathSpeed * pathSpeed * kappa_eff * rotateVec(0, tang_target[0], tang_target[1]);
     ff[1] = pathSpeed * pathSpeed * kappa_eff * rotateVec(1, tang_target[0], tang_target[1]);
 
-    // --- PD + Feedforward ---
+    // PD + Feedforward
     for (int d = 0; d < DIM; d++)
-    {
         outAction[d] = ff[d] + envConfig.kP * (p_ref[d] - state.pos[iOpp * 2 + d]) + envConfig.kV * (v_ref[d] - state.vel[iOpp * 2 + d]);
-    }
 
     float normS = sqNorm(outAction[0], outAction[1]);
     float scale = 1.0f;
@@ -514,11 +528,187 @@ HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const Envi
         outAction[1] *= scale;
     }
 }
+*/
+
+// better? Does not use a lookahead point, simply tries to maintain good position, velocity & position
+/*
+HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const EnvironmentConfig& envConfig, float* outAction, int trueTheta)
+{
+    float L = envConfig.trackLength;
+    float maxAccel = envConfig.maxAccel[iOpp];
+    float dt = envConfig.dt;
+
+    // --- Desired lateral offset ---
+    float latDis = computeOppTargetLatDist(iOpp, state, envConfig, trueTheta);
+    float latDisPrev = state.latDist[iOpp];
+    float latDis_dot = (latDis - latDisPrev) / dt;
+
+    // --- Current state ---
+    float s_now = state.S[iOpp];
+    float pos_i[2] = {state.pos[iOpp * 2], state.pos[iOpp * 2 + 1]};
+    float vel_i[2] = {state.vel[iOpp * 2], state.vel[iOpp * 2 + 1]};
+
+    // --- Track geometry at current s ---
+    float p_center[2], tang[2], kappa;
+    sampleTrackArray<true>(envConfig.p_grid, s_now, p_center, L);
+    sampleNormalizedSpeed(envConfig.t_grid, s_now, tang, L);
+    sampleTrackArray<false>(envConfig.kappa_grid, s_now, &kappa, L);
+
+    float norm[2] = {-tang[1], tang[0]};
+
+    // --- Decompose current state into Frenet ---
+    float e_n = (pos_i[0] - p_center[0]) * norm[0] + (pos_i[1] - p_center[1]) * norm[1];
+    float v_t = vel_i[0] * tang[0] + vel_i[1] * tang[1];
+    float v_n = vel_i[0] * norm[0] + vel_i[1] * norm[1];
+
+    // --- Metric at ACTUAL position (for feedforward) ---
+    float metric_actual = 1.0f - kappa * e_n;
+    if (fabsf(metric_actual) < 1e-6f)
+        metric_actual = copysignf(1e-6f, metric_actual);
+
+    // --- Desired path speed ---
+    float kappa_at_target = kappa / (1.0f - kappa * latDis); // for speed limit
+    float speedScale = envConfig.oppConfigs[trueTheta].speedScale[iOpp - 1];
+    float maxCurvatureSpeed = sqrtf(maxAccel / fmaxf(fabsf(kappa_at_target), 1e-12f));
+    float pathSpeed = speedScale * fminf(envConfig.maxSpeed[iOpp], maxCurvatureSpeed);
+
+    // =========================================================
+    // LATERAL: PD toward target + centripetal at actual position
+    // =========================================================
+    float e_n_error = latDis - e_n;
+    float v_n_error = latDis_dot - v_n;
+
+    float a_n_pd = envConfig.kP * e_n_error + envConfig.kV * v_n_error;
+    float a_n_centripetal = v_t * v_t * kappa / metric_actual;
+
+    float a_n_total = a_n_pd + a_n_centripetal;
+
+    // =========================================================
+    // LONGITUDINAL: velocity tracking + Coriolis at actual position
+    // =========================================================
+
+    // TODO: hardcoded
+    float v_t_error = pathSpeed - v_t;
+    float a_t_pd = 5.0f * v_t_error;
+    float a_t_coriolis = -v_n * kappa * v_t / metric_actual;
+
+    float a_t_total = a_t_pd + a_t_coriolis;
+
+    // =========================================================
+    // Priority saturation: lateral first
+    // =========================================================
+    float a_n_clamped = fmaxf(-maxAccel, fminf(maxAccel, a_n_total));
+    float a_t_max = sqrtf(fmaxf(maxAccel * maxAccel - a_n_clamped * a_n_clamped, 0.0f));
+    float a_t_clamped = fmaxf(-a_t_max, fminf(a_t_max, a_t_total));
+
+    // Convert to Cartesian
+    outAction[0] = a_t_clamped * tang[0] + a_n_clamped * norm[0];
+    outAction[1] = a_t_clamped * tang[1] + a_n_clamped * norm[1];
+}
+*/
+
+// second try?
+HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const EnvironmentConfig& envConfig, float* outAction, int trueTheta)
+{
+    float L = envConfig.trackLength;
+    float maxAccel = envConfig.maxAccel[iOpp];
+    float dt = envConfig.dt;
+
+    auto [latDisRaw, speedGoal] = computeOppTargetLatDist(iOpp, state, envConfig, trueTheta);
+
+    // --- Current Frenet state ---
+    float s_now = state.S[iOpp];
+    float pos_i[2] = {state.pos[iOpp * 2], state.pos[iOpp * 2 + 1]};
+    float vel_i[2] = {state.vel[iOpp * 2], state.vel[iOpp * 2 + 1]};
+
+    float p_center[2], tang[2], kappa;
+    sampleTrackArray<true>(envConfig.p_grid, s_now, p_center, L);
+    sampleNormalizedSpeed(envConfig.t_grid, s_now, tang, L);
+    sampleTrackArray<false>(envConfig.kappa_grid, s_now, &kappa, L);
+
+    float norm[2] = {-tang[1], tang[0]};
+    float e_n = (pos_i[0] - p_center[0]) * norm[0] + (pos_i[1] - p_center[1]) * norm[1];
+    float v_t = vel_i[0] * tang[0] + vel_i[1] * tang[1];
+    float v_n = vel_i[0] * norm[0] + vel_i[1] * norm[1];
+
+    // --- Geometry ---
+    float e_n_max = envConfig.trackWidth - envConfig.droneRadius * 1.2f;
+    float metric_actual = 1.0f - kappa * e_n;
+    if (fabsf(metric_actual) < 1e-6f)
+        metric_actual = copysignf(1e-6f, metric_actual);
+    float a_centripetal = v_t * v_t * kappa / metric_actual;
+    float a_lat_max = fmaxf(maxAccel - fabsf(a_centripetal), maxAccel * 0.2f);
+
+    // --- Lateral: bang-bang with boundary safety ---
+    float latDis = fmaxf(-e_n_max, fminf(e_n_max, latDisRaw));
+    float e_error = latDis - e_n;
+    float dist_to_pos_wall = fmaxf(e_n_max - e_n, 0.001f);
+    float dist_to_neg_wall = fmaxf(e_n_max + e_n, 0.001f);
+
+    float a_n_cmd;
+
+    // Emergency brake if can't stop before wall
+    if (v_n > 0.0f && v_n * v_n > 1.8f * a_lat_max * dist_to_pos_wall)
+        a_n_cmd = -a_lat_max;
+    else if (v_n < 0.0f && v_n * v_n > 1.8f * a_lat_max * dist_to_neg_wall)
+        a_n_cmd = a_lat_max;
+    else if (fabsf(e_error) < 0.02f)
+    {
+        // Small error: PD settling
+        float kp = a_lat_max / 0.02f;
+        a_n_cmd = kp * e_error - 2.0f * sqrtf(kp) * v_n;
+        a_n_cmd = fmaxf(-a_lat_max, fminf(a_lat_max, a_n_cmd));
+    }
+    else
+    {
+        // Bang-bang: accelerate or decelerate toward target
+        float stopping_dist = v_n * v_n / (2.0f * a_lat_max);
+        bool v_toward = (e_error > 0.0f && v_n > 0.0f) || (e_error < 0.0f && v_n < 0.0f);
+        bool decel_phase = v_toward && stopping_dist >= fabsf(e_error) * 0.95f;
+
+        a_n_cmd = (e_error > 0.0f) ? a_lat_max : -a_lat_max;
+        if (decel_phase)
+            a_n_cmd = -a_n_cmd;
+
+        // Velocity cap: don't exceed stoppable speed toward walls
+        float v_n_next = v_n + a_n_cmd * dt;
+        if (v_n_next > 0.0f)
+        {
+            float v_safe = sqrtf(2.0f * a_lat_max * dist_to_pos_wall);
+            if (v_n_next > v_safe)
+                a_n_cmd = (v_safe - v_n) / dt;
+        }
+        else
+        {
+            float v_safe = sqrtf(2.0f * a_lat_max * dist_to_neg_wall);
+            if (-v_n_next > v_safe)
+                a_n_cmd = (-v_safe - v_n) / dt;
+        }
+    }
+
+    // --- Combine lateral + centripetal, prioritize lateral ---
+    float a_n_total = fmaxf(-maxAccel, fminf(maxAccel, a_n_cmd + a_centripetal));
+    float a_t_max = sqrtf(fmaxf(maxAccel * maxAccel - a_n_total * a_n_total, 0.0f));
+
+    // --- Longitudinal: speed tracking with reduced speed during lateral maneuvers ---
+    float kappa_eff = kappa / (1.0f - kappa * latDis + 1e-6f);
+    float pathSpeed = fminf(speedGoal, sqrtf(maxAccel / fmaxf(fabsf(kappa_eff), 1e-12f)));
+
+    if (fabsf(a_n_cmd) > a_lat_max * 0.5f)
+        pathSpeed *= fmaxf(0.4f, 1.5f - fabsf(a_n_cmd) / a_lat_max);
+
+    float a_t_cmd = envConfig.kV * (pathSpeed - v_t) - v_n * kappa * v_t / metric_actual;
+    a_t_cmd = fmaxf(-a_t_max, fminf(a_t_max, a_t_cmd));
+
+    // --- Output ---
+    outAction[0] = a_t_cmd * tang[0] + a_n_total * norm[0];
+    outAction[1] = a_t_cmd * tang[1] + a_n_total * norm[1];
+}
 
 // compute opp. nominal actions, opp noise + env noise (only if applyNoise is True), env dynamics, belief update (only if
 // shouldUpdateBelief) and branch update (only if considerBranching is true; if we become specialized, set corresponding branching
 // time to t+1). does not use trackMargin
-template <bool shouldUpdateBelief, bool considerBranching, bool addMargin, typename RNG>
+template <bool shouldUpdateBelief, bool considerBranching, bool addMargin, bool loseOnOppWin = true, typename RNG>
 HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentConfig& envConfig,
                                        const float* __restrict__ egoAction, // (dim)
                                        bool applyNoise, // TODO: this could be a template (but probably doesn't matter if we're inlined anyway)
@@ -688,11 +878,17 @@ HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentCo
     //     trueTheta));
     // }
 
-    if (isOutside(state, envConfig, envConfig.droneRadius, trueTheta))
+    if (isOutside<loseOnOppWin>(state, envConfig, envConfig.droneRadius, trueTheta))
         return TERM_LOSE;
 
     if (isWinner(state, envConfig))
         return TERM_WIN;
+
+    if constexpr (!loseOnOppWin)
+    {
+        if (isOutside<true>(state, envConfig, envConfig.droneRadius, trueTheta))
+            return TERM_OPP_WIN;
+    }
 
     return TERM_NONE;
 }

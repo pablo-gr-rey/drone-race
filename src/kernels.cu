@@ -526,9 +526,9 @@ __global__ void verifyNominalFailureKernel(EnvironmentConfig envConfig, MPPIConf
 
         bool branched = false;
 
-        TerminalType term = environmentStep<true, true, false>(t, theta, envConfig, egoAction,
-                                                               true, // applyPidNoise in real verification
-                                                               state, branchState, branched, mc.minConfidence, buffer, drng);
+        TerminalType term = environmentStep<true, true, false, false>(t, theta, envConfig, egoAction,
+                                                                      true, // applyPidNoise in real verification
+                                                                      state, branchState, branched, mc.minConfidence, buffer, drng);
 
         if (branched)
             tOrigin = t + 1;
@@ -540,7 +540,7 @@ __global__ void verifyNominalFailureKernel(EnvironmentConfig envConfig, MPPIConf
             failed = true;
             break;
         }
-        else if (term == TERM_WIN)
+        else if (term == TERM_WIN || term == TERM_OPP_WIN)
             break;
     }
 

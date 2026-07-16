@@ -267,6 +267,8 @@ class ZMQRecv:
                         renderer.outside = True
                     elif ename == EVENT_TYPE.EVT_WINNER:
                         renderer.winner = True
+                    elif ename == EVENT_TYPE.EVT_OPP_WINNER:
+                        renderer.opp_winner = True
                 # nothing to do if truncation
 
                 result = ename

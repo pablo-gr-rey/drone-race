@@ -18,7 +18,8 @@ enum EventType : uint32_t
 {
     EVT_OUTSIDE = 0,
     EVT_WINNER = 1,
-    EVT_TRUNCATED = 2,
+    EVT_OPP_WINNER = 2,
+    EVT_TRUNCATED = 3,
 };
 
 // byte reader util

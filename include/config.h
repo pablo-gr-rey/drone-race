@@ -1,5 +1,10 @@
 #pragma once
 
+// trick to allow compilation with both clang (as a language server) and gcc (for actual compilation)
+#if defined(__CUDACC__) && defined(__clang__)
+#undef __noinline__
+#endif
+
 #include <cstring>
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
@@ -14,6 +19,7 @@
 // #define USE_ENV_HIDDENOBS
 #define USE_ENV_STRATRACE
 
+// with this mode, opponent get to set their desired lateral offset instead of having to play it fair
 // #define CHEATING
 
 inline constexpr bool USE_SPLINES = true;
@@ -21,7 +27,7 @@ inline constexpr bool USE_SPLINES = true;
 inline constexpr int MAX_N_KNOTS = 60;
 
 inline constexpr float MIN_COEFF_THRESHOLD = 0.01f; // minimum probability threshold for samples to contribute
-inline constexpr float DECAY = 0.95f;
+inline constexpr float DECAY = 0.97f;
 
 #ifdef USE_ENV_DRONERACE
 #include "environments/env_dronerace_defs.h"
@@ -74,6 +80,7 @@ enum TerminalType
     TERM_NONE = 0,
     TERM_LOSE,
     TERM_WIN,
+    TERM_OPP_WIN,
 };
 
 struct BranchState
@@ -129,6 +136,7 @@ struct MPPIConfig
 
     float outsideCost = 1000.0f;
     float winCost = 1000.0f;
+    float oppWinCost = 1000.0f;
 
     // terminal costs
     float finalAdvWeight = 10.0f;
@@ -164,6 +172,7 @@ struct PRMPPIConfig
     float boundaryThresholdFactor = 1.5f;
 
     float winCost = 1000.0f;
+    float oppWinCost = 1000.0f;
 
     // terminal costs
     float finalAdvWeight = 10.0f;

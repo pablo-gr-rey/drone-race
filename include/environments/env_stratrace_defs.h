@@ -2,6 +2,8 @@
 
 #include "common.h"
 
+#include <cuda/std/array>
+
 namespace EnvStratRace
 {
 inline constexpr int DIM = 2;

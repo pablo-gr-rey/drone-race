@@ -24,7 +24,8 @@ class MSG_TYPE(IntEnum):
 class EVENT_TYPE(IntEnum):
     EVT_OUTSIDE = 0
     EVT_WINNER = 1
-    EVT_TRUNCATED = 2
+    EVT_OPP_WINNER = 2
+    EVT_TRUNCATED = 3
 
 
 class CONTROLLER_KIND(IntEnum):
@@ -426,8 +427,8 @@ class StratRaceEnvironmentConfig(BaseEnvironmentConfig):
         self.kappa_grid = (dx * ddy - dy * ddx) / np.maximum((dx**2 + dy**2) ** 1.5, 1e-6)
 
         if self.arenaMin.shape == (0,):
-            self.arenaMin = np.min(self.p_grid, axis=0) - self.trackWidth * 4
-            self.arenaMax = np.max(self.p_grid, axis=0) + self.trackWidth * 4
+            self.arenaMin = np.min(self.p_grid, axis=0) - self.trackWidth * 2
+            self.arenaMax = np.max(self.p_grid, axis=0) + self.trackWidth * 2
 
         if self.seed == -1:
             self.seed = random.randrange(2**31)
@@ -474,6 +475,7 @@ class MPPIConfig(BaseControllerConfig):
 
     outsideCost: float = 1000
     winCost: float = 1000
+    oppWinCost: float = 1000
 
     # final cost: - distance to the gate * finalDistWeight + min(opp. dist to the gate) * finalOppDistWeight - finalSpeedWeight * dot(finalSpeed, targetDirection)
     finalAdvWeight: float = 10
@@ -516,6 +518,7 @@ class PRMPPIConfig(BaseControllerConfig):
     boundaryThresholdFactor: float = 1.5
 
     winCost: float = 1000
+    oppWinCost: float = 1000
 
     # final cost: - distance to the gate * finalDistWeight + min(opp. dist to the gate) * finalOppDistWeight - finalSpeedWeight * dot(finalSpeed, targetDirection)
     finalAdvWeight: float = 10

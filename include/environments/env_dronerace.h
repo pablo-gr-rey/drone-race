@@ -259,10 +259,11 @@ HD INLINE void updateBelief(float* __restrict__ belief, const float* __restrict_
 
 // Boundary distance = distance of point to closest boundary or opponent (<= 0 if outside), does not take into account agent's
 // radius. return -1.0f if other agent won
-HD INLINE float trackBoundaryDist(const SimState& state, const EnvironmentConfig& envConfig, int /* trueTheta */)
+template <bool loseOnOppWin = true> HD INLINE float trackBoundaryDist(const SimState& state, const EnvironmentConfig& envConfig, int /* trueTheta */)
 {
-    if (state.laps[1 - envConfig.iMppi] >= envConfig.nWinLaps)
-        return -1.0f;
+    if constexpr (loseOnOppWin)
+        if (state.laps[1 - envConfig.iMppi] >= envConfig.nWinLaps)
+            return -1.0f;
 
     const float* __restrict__ curPos = state.pos.data() + envConfig.iMppi * DIM;
 
@@ -306,10 +307,10 @@ HD INLINE float trackBoundaryDist(const SimState& state, const EnvironmentConfig
     return minDist;
 }
 
-HD INLINE bool isOutside(const SimState& state, const EnvironmentConfig& envConfig, float radius, int trueTheta)
+template <bool loseOnOppWin = true> HD INLINE bool isOutside(const SimState& state, const EnvironmentConfig& envConfig, float radius, int trueTheta)
 // radius should be e.g. minDist/2 in the actual dynamics and (minDist * factor) / 2 for MPPI
 {
-    return trackBoundaryDist(state, envConfig, trueTheta) < radius;
+    return trackBoundaryDist<loseOnOppWin>(state, envConfig, trueTheta) < radius;
 }
 
 HD INLINE bool isWinner(const SimState& state, const EnvironmentConfig& envConfig)
@@ -354,6 +355,15 @@ HD INLINE bool isWinner(const SimState& state, const EnvironmentConfig& envConfi
         if (sqDist < (radius + envConfig.roundObsRadius[iObs]) * (radius + envConfig.roundObsRadius[iObs]))
             return true;
     }
+
+    return false;
+}
+
+HD INLINE bool isOppWinner(const SimState& state, const EnvironmentConfig& envConfig)
+{
+    for (int iAgent = 0; iAgent < N_AGENTS; iAgent++)
+        if (iAgent != envConfig.iMppi && state.laps[iAgent] >= envConfig.nWinLaps)
+            return true;
 
     return false;
 }
@@ -533,7 +543,7 @@ HD INLINE void computePIDAction(int agent, const SimState& state, const Environm
 // compute opp. nominal actions, PID noise + env noise (only if applyNoise is True), env dynamics, belief update (only if
 // shouldUpdateBelief) and branch update (only if considerBranching is true; if we become specialized, set corresponding branching
 // time to t+1)
-template <bool shouldUpdateBelief, bool considerBranching, bool addMargin, typename RNG>
+template <bool shouldUpdateBelief, bool considerBranching, bool addMargin, bool loseOnOppWin = true, typename RNG>
 HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentConfig& envConfig,
                                        const float* __restrict__ egoAction, // (dim)
                                        bool applyNoise, // TODO: this could be a template (but probably doesn't matter if we're inlined anyway)
@@ -654,11 +664,17 @@ HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentCo
             }
     }
 
-    if (isOutside(state, envConfig, envConfig.droneRadius, trueTheta))
+    if (isOutside<loseOnOppWin>(state, envConfig, envConfig.droneRadius, trueTheta))
         return TERM_LOSE;
 
     if (isWinner(state, envConfig))
         return TERM_WIN;
+
+    if constexpr (!loseOnOppWin)
+    {
+        if (isOutside<true>(state, envConfig, envConfig.droneRadius, trueTheta))
+            return TERM_OPP_WIN;
+    }
 
     return TERM_NONE;
 }

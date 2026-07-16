@@ -90,7 +90,7 @@ HD INLINE float distToCircle(float x, float y, float xcenter, float ycenter, flo
 }
 
 // Boundary distance = distance of point to closest boundary or opponent (<= 0 if outside), does not take into account agent's radius
-HD INLINE float trackBoundaryDist(const SimState& state, const EnvironmentConfig& envConfig, int trueTheta)
+template <bool loseOnOppWin = true> HD INLINE float trackBoundaryDist(const SimState& state, const EnvironmentConfig& envConfig, int trueTheta)
 {
     float sqMinDist = INFINITY;
     float x = state.pos[0], y = state.pos[1];
@@ -128,14 +128,19 @@ HD INLINE float trackBoundaryDist(const SimState& state, const EnvironmentConfig
 }
 
 // radius should be e.g. droneRadius in the actual dynamics and droneRadius*factor for MPPI
-HD INLINE bool isOutside(const SimState& state, const EnvironmentConfig& envConfig, float radius, int trueTheta)
+template <bool loseOnOppWin = true> HD INLINE bool isOutside(const SimState& state, const EnvironmentConfig& envConfig, float radius, int trueTheta)
 {
-    return trackBoundaryDist(state, envConfig, trueTheta) < radius;
+    return trackBoundaryDist<loseOnOppWin>(state, envConfig, trueTheta) < radius;
 }
 
 HD INLINE bool isWinner(const SimState& state, const EnvironmentConfig& envConfig)
 {
     return state.laps >= envConfig.nWinLaps;
+}
+
+HD INLINE bool isOppWinner(const SimState& /* state */, const EnvironmentConfig& /* envConfig */)
+{
+    return false;
 }
 
 // return true if line from (px, py) to (qx, qy) intersects the rectangle
@@ -370,7 +375,7 @@ HD INLINE void updateGates(const EnvironmentConfig& envConfig, SimState& state, 
 
 // compute env dynamics, belief update (only if shouldUpdateBelief) and branch update (only if considerBranching is true; if we become specialized,
 // set corresponding branching time to t+1)
-template <bool shouldUpdateBelief, bool considerBranching, bool addMargin, typename RNG>
+template <bool shouldUpdateBelief, bool considerBranching, bool addMargin, bool loseOnOppWin = true, typename RNG>
 HD INLINE TerminalType environmentStep(
     int t, int trueTheta, const EnvironmentConfig& envConfig,
     const float* __restrict__ egoAction, // (dim)

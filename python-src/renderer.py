@@ -93,6 +93,7 @@ class EnvironmentRenderer:
         self.stateLog: list[FullStateInfo] = []
 
         self.collision = False
+        self.opp_winner = False
         self.winner = False
         self.outside = False
 
@@ -308,8 +309,11 @@ class EnvironmentRenderer:
         elif self.winner:
             self.status_text.set_text("MPPI wins")
             self.status_text.set_color("green")
-        elif self.outside:
+        elif self.opp_winner:
             self.status_text.set_text("MPPI loses")
+            self.status_text.set_color("red")
+        elif self.outside:
+            self.status_text.set_text("MPPI outside or collision")
             self.status_text.set_color("red")
         elif self.isFinished:
             self.status_text.set_text("Truncated")

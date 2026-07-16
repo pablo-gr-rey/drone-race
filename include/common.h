@@ -19,5 +19,3 @@
 #else
 #define CUDA_CHECK(call) (call)
 #endif
-
-#include <cuda/std/array>

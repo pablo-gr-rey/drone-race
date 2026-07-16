@@ -61,7 +61,7 @@ void pushAddInfo(Writer& writer, const SimState& /* state */, const SimState& pr
     std::array<float, N_OPP> latDist;
 
     for (int iOpp = 1; iOpp <= N_OPP; iOpp++)
-        latDist[iOpp - 1] = computeOppTargetLatDist<true>(iOpp, prevState, envConfig, trueTheta);
+        latDist[iOpp - 1] = computeOppTargetLatDist<true>(iOpp, prevState, envConfig, trueTheta).first;
 
     writer.pushFloatArray(latDist);
 }

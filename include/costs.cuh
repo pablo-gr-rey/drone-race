@@ -8,7 +8,7 @@ HD INLINE float stateCost(const SimState& state, int /* timestep */, const Envir
 {
     float cost = 0.0f;
 
-    float bd = Env::trackBoundaryDist(state, envConfig, trueTheta);
+    float bd = Env::trackBoundaryDist<false>(state, envConfig, trueTheta);
 
     float danger = mppiConfig.boundaryThresholdFactor * envConfig.droneRadius;
     if (bd < danger)
@@ -16,6 +16,9 @@ HD INLINE float stateCost(const SimState& state, int /* timestep */, const Envir
 
     if (bd < envConfig.droneRadius * mppiConfig.collDistFactor)
         cost += mppiConfig.outsideCost;
+
+    if (Env::isOppWinner(state, envConfig))
+        cost += mppiConfig.oppWinCost;
 
     // winner check
     if (Env::isWinner(state, envConfig))
@@ -52,6 +55,9 @@ HD INLINE float PRMPPIstateCost(const SimState& state, int /* timestep */, const
     // winner check
     if (Env::isWinner(state, envConfig))
         cost -= mppiConfig.winCost;
+
+    if (Env::isOppWinner(state, envConfig))
+        cost += mppiConfig.oppWinCost;
 
     return cost;
 }
