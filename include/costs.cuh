@@ -8,7 +8,7 @@ HD INLINE float stateCost(const SimState& state, int /* timestep */, const Envir
 {
     float cost = 0.0f;
 
-    float bd = Env::trackBoundaryDist(state, envConfig, trueTheta);
+    float bd = Env::trackBoundaryDist<false>(state, envConfig, trueTheta);
 
     float danger = mppiConfig.boundaryThresholdFactor * envConfig.droneRadius;
     if (bd < danger)
@@ -16,6 +16,9 @@ HD INLINE float stateCost(const SimState& state, int /* timestep */, const Envir
 
     if (bd < envConfig.droneRadius * mppiConfig.collDistFactor)
         cost += mppiConfig.outsideCost;
+
+    if (Env::isOppWinner(state, envConfig))
+        cost += mppiConfig.oppWinCost;
 
     // winner check
     if (Env::isWinner(state, envConfig))
@@ -53,6 +56,9 @@ HD INLINE float PRMPPIstateCost(const SimState& state, int /* timestep */, const
     if (Env::isWinner(state, envConfig))
         cost -= mppiConfig.winCost;
 
+    if (Env::isOppWinner(state, envConfig))
+        cost += mppiConfig.oppWinCost;
+
     return cost;
 }
 
@@ -72,5 +78,9 @@ HD INLINE float PRMPPIfinalCost(const SimState& state, const EnvironmentConfig& 
 HD INLINE float PRMPPIsafetyCost(const SimState& state, int /* timestep */, const EnvironmentConfig& envConfig, const PRMPPIConfig& mppiConfig,
                                  int trueTheta)
 {
-    return envConfig.droneRadius * mppiConfig.collDistFactor - Env::trackBoundaryDist(state, envConfig, trueTheta);
+    // if (Env::isOutside(state, envConfig, envConfig.droneRadius * mppiConfig.collDistFactor, trueTheta))
+    //     return 1.0f;
+
+    // here, we do not want to lose if opponent wins (we still want to avoid boundaries, and keep off track)
+    return envConfig.droneRadius * mppiConfig.collDistFactor - Env::trackBoundaryDist<false>(state, envConfig, trueTheta);
 }

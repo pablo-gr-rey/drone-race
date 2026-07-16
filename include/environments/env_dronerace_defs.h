@@ -60,8 +60,8 @@ struct PIDConfig
 // this should have the same layout as GateEnvironmentConfig in the Python side
 struct EnvironmentConfig
 {
-    float arenaMin[DIM]; // (dim)
-    float arenaMax[DIM]; // (dim)
+    cuda::std::array<float, DIM> arenaMin; // (dim)
+    cuda::std::array<float, DIM> arenaMax; // (dim)
 
     float dt;
 
@@ -72,43 +72,43 @@ struct EnvironmentConfig
     float speedNoiseLevel;
     float actionNoiseLevel;
 
-    float maxSpeed[N_AGENTS];
-    float maxAccel[N_AGENTS];
+    cuda::std::array<float, N_AGENTS> maxSpeed;
+    cuda::std::array<float, N_AGENTS> maxAccel;
 
     // track
     int nWinLaps;
     float targetDistance;
 
-    float gateCenters[N_GATES * DIM]; // (nGates * dim)
-    float gateVectors[N_GATES * DIM]; // (nGates * dim)
-    float gateRadius[N_GATES];        // (nGates)
+    cuda::std::array<float, N_GATES * DIM> gateCenters; // (nGates * dim)
+    cuda::std::array<float, N_GATES * DIM> gateVectors; // (nGates * dim)
+    cuda::std::array<float, N_GATES> gateRadius;        // (nGates)
 
-    float obstacles[N_OBSTACLES * DIM * 2];         // (nObstacles * dim * 2): rectangle obstacles, i.e. [xmin, ymin, xmax, ymax]
-    float roundObsCenters[N_ROUND_OBSTACLES * DIM]; // (nRoundObstacles * dim): center of obstacles
-    float roundObsRadius[N_ROUND_OBSTACLES];        // (nRoundObstacles): radius of obstacles
+    cuda::std::array<float, N_OBSTACLES * DIM * 2> obstacles;         // (nObstacles * dim * 2): rectangle obstacles, i.e. [xmin, ymin, xmax, ymax]
+    cuda::std::array<float, N_ROUND_OBSTACLES * DIM> roundObsCenters; // (nRoundObstacles * dim): center of obstacles
+    cuda::std::array<float, N_ROUND_OBSTACLES> roundObsRadius;        // (nRoundObstacles): radius of obstacles
 
     float* trackPoints = nullptr; // (nTrackSamples * nRacelines, dim)  // this pointer is different on host & device!
 
     // TODO: move elsewhere (not useful in kernels)
-    float initBelief[N_TRUE_MODELS];
+    cuda::std::array<float, N_TRUE_MODELS> initBelief;
 
-    PIDConfig oppPid[N_TRUE_MODELS];
+    cuda::std::array<PIDConfig, N_TRUE_MODELS> oppPid;
     int iMppi;
 };
 
 struct SimState
 {
-    float pos[N_AGENTS * DIM];
-    float vel[N_AGENTS * DIM];
-    float S[N_AGENTS * N_RACELINES];
+    cuda::std::array<float, N_AGENTS * DIM> pos;
+    cuda::std::array<float, N_AGENTS * DIM> vel;
+    cuda::std::array<float, N_AGENTS * N_RACELINES> S;
 
-    int laps[N_AGENTS];
-    int gates[N_AGENTS];
+    cuda::std::array<int, N_AGENTS> laps;
+    cuda::std::array<int, N_AGENTS> gates;
 };
 
 struct ScratchEnvBuffer
 {
-    float actions[N_AGENTS * DIM];
-    float nomPidActions[N_TRUE_MODELS * DIM];
+    cuda::std::array<float, N_AGENTS * DIM> actions;
+    cuda::std::array<float, N_TRUE_MODELS * DIM> nomPidActions;
 };
 } // namespace EnvDroneRace

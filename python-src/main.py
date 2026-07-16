@@ -20,6 +20,8 @@ from utils import (
     MPPIConfig,
     PRMPPIConfig,
     DroneRaceSimState,
+    StratRaceEnvironmentConfig,
+    StratRaceSimState,
 )
 
 PIDConfig = DroneRaceEnvironmentConfig.PIDConfig
@@ -641,6 +643,7 @@ def highInertiaEnv(
             boundaryThresholdFactor=1,
             outsideCost=1e6,
             winCost=1e6,
+            oppWinCost=1e5,
             minConfidence=0.95,
         )
 
@@ -666,6 +669,7 @@ def highInertiaEnv(
             boundaryThresholdFactor=1.4,
             outsideCost=1e7,
             winCost=1e6,
+            oppWinCost=1e5,
             minConfidence=0.95,
             nKnots=20,
         )
@@ -691,6 +695,8 @@ def highInertiaEnv(
             # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
             safetyWeight=1e4,
             delta=0.1,
+            winCost=1e6,
+            oppWinCost=1e5,
         )
 
     return config, initState, mppiconfig, [["Top", "Bottom"]]
@@ -785,7 +791,7 @@ def hiddenObsEnv(
             # nSamples=1,
             nTimesteps=70,
             inv_temperature=2,
-            samplingNoise=envConfig.maxAccel / 3,
+            samplingNoise=1.5,
             # samplingNoise=0.5,
             gateTraversalMargin=0.9,  # restrict 5% on each side
             collDistFactor=1.2,
@@ -848,10 +854,150 @@ def hiddenObsEnv(
             boundaryThresholdFactor=1.4,
             # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
             safetyWeight=1e4,
+            winCost=1e6,
             delta=0.1,
         )
 
     return (envConfig, initState, mppiConfig, [["Bottom", "Top"]])
+
+
+def stratRaceEnv(usePR=False, useSplines=True, mppiPos=0, nConfigs=1, firstConfig=0):
+    "mppiPos should be 0 if last, 1 if 2nd-to-last, etc. -1 = first"
+
+    def roundTrack(f: float) -> np.ndarray:
+        return 6 * np.array([np.cos(2 * np.pi * f), np.sin(2 * np.pi * f)])
+
+    nOpps = 1
+    droneRadius = 0.4
+
+    mppiPos %= 1 + nOpps
+
+    def swapArray(arr: np.ndarray | list[float]) -> np.ndarray:
+        arr = np.asarray(arr)
+        return np.concat((arr[mppiPos : mppiPos + 1], arr[:mppiPos], arr[mppiPos + 1 :]))
+
+    oppConfigs = (
+        StratRaceEnvironmentConfig.OppConfig.preset(droneRadius=droneRadius, nOpps=nOpps, s1="insensitive", s3="default"),
+        StratRaceEnvironmentConfig.OppConfig.preset(droneRadius=droneRadius, nOpps=nOpps, s1="insensitive", s3="no-block"),
+        StratRaceEnvironmentConfig.OppConfig.preset(droneRadius=droneRadius, nOpps=nOpps, s1="default", s3="default"),
+        StratRaceEnvironmentConfig.OppConfig.preset(droneRadius=droneRadius, nOpps=nOpps, s1="conservative", s3="no-block"),
+    )[firstConfig : firstConfig + nConfigs]
+
+    envConfig = StratRaceEnvironmentConfig(
+        nModelFactors=1,
+        modelSizes=np.array([nConfigs]),
+        nOppAgents=nOpps,
+        dt=0.1,
+        droneRadius=droneRadius,
+        maxSpeed=swapArray([3, 2]),
+        maxAccel=np.array([2, 3]),
+        nTrackSamples=512,
+        trackWidth=2,
+        nWinLaps=1,
+        opponentConfigs=oppConfigs,
+        # kP=1000,
+        # kV=1000,
+        # kP=1,
+        # kV=2,
+        kV=5,
+        maxOppLatDistFact=1.9,
+        trackFunction=roundTrack,
+        # initBelief=np.array([0.0, 1.0]),
+    )
+
+    initSind = swapArray(np.round(np.linspace(0.05, 0.2, envConfig.nOppAgents + 1) * envConfig.nTrackSamples).astype(int))
+
+    initState = StratRaceSimState(
+        pos=envConfig.p_grid[initSind],
+        vel=np.zeros((1 + nOpps, envConfig.dim)),
+        S=initSind.astype(float) / envConfig.nTrackSamples * envConfig.trackLength,
+        latDist=np.zeros(1 + nOpps),
+        laps=np.zeros(1 + nOpps),
+    )
+
+    mppiConfig: MPPIConfig | PRMPPIConfig
+
+    if not usePR and not useSplines:
+        mppiConfig = MPPIConfig(
+            useSplines=False,
+            nSamples=2**16,
+            # nSamples=1,
+            nTimesteps=70,
+            inv_temperature=10,
+            samplingNoise=1.5,
+            # samplingNoise=0.5,
+            collDistFactor=1.3,
+            # collDistFactor=1.3,
+            finalAdvWeight=500,
+            # finalAdvWeight=0,
+            finalOppAdvWeight=0,
+            # finalOppAdvWeight=500,
+            boundaryCost=50,
+            # boundaryCost=0.0,
+            boundaryThresholdFactor=1.7,
+            outsideCost=1e6,
+            winCost=1e6,
+            oppWinCost=1e5,
+            minConfidence=0.95,
+        )
+
+    elif not usePR:
+        mppiConfig = MPPIConfig(
+            useSplines=True,
+            nSamples=2**16,
+            # nSamples=1,
+            nTimesteps=80,
+            inv_temperature=10,
+            samplingNoise=0.5,
+            # samplingNoise=0.5,
+            collDistFactor=1.4,
+            # collDistFactor=1.2,
+            # finalAdvWeight=500,
+            finalAdvWeight=50,
+            finalOppAdvWeight=0,
+            # finalOppAdvWeight=500,
+            # boundaryCost=5,
+            # boundaryCost=0.0,
+            boundaryCost=50.0,
+            boundaryThresholdFactor=1.8,
+            outsideCost=1e7,
+            winCost=1e5,
+            oppWinCost=1e5,
+            minConfidence=0.95,
+            nKnots=20,
+        )
+
+    else:
+        mppiConfig = PRMPPIConfig(
+            nSamples=2**16,
+            # nSamples=1,
+            nTimesteps=60,
+            inv_temperature=10,
+            samplingNoise=0.5,
+            # samplingNoise=0.5,
+            gateTraversalMargin=0.9,  # restrict 5% on each side
+            collDistFactor=1.2,
+            # collDistFactor=1.3,
+            finalAdvWeight=500,
+            # finalAdvWeight=0,
+            finalOppAdvWeight=0,
+            # finalOppAdvWeight=500,
+            boundaryCost=20.0,
+            # boundaryCost=0.0,
+            boundaryThresholdFactor=1.3,
+            # oppOutsideCost=1000,  # with this, it's too competitive and will push the opponent out of the arena
+            oppWinCost=1e5,
+            winCost=1e6,
+            safetyWeight=1e4,
+            delta=0.1,
+        )
+
+    return (
+        envConfig,
+        initState,
+        mppiConfig,
+        [["Default", "no-block", "Default", "Conservative"][firstConfig : firstConfig + nConfigs]],
+    )
 
 
 def mainGate():
@@ -864,16 +1010,19 @@ def mainGate():
 
     # envConfig, initState, mppiconfig, oppNames = highInertiaEnv(usePR=True, useSplines=True)
 
-    envConfig, initState, mppiconfig, oppNames = hiddenObsEnv(usePR=False, useSplines=True)
+    # envConfig, initState, mppiconfig, oppNames = hiddenObsEnv(usePR=False, useSplines=True)
 
-    envConfig.trueTheta = 1
+    envConfig, initState, mppiconfig, oppNames = stratRaceEnv(usePR=True, useSplines=True, mppiPos=0, nConfigs=2, firstConfig=0)
+    # envConfig, initState, mppiconfig, oppNames = stratRaceEnv(usePR=False, useSplines=True, mppiPos=1, nConfigs=1, firstConfig=2)
+
+    envConfig.trueTheta = 0
     # envConfig.iMppi = 1
 
     if isinstance(mppiconfig, MPPIConfig):
         mppiconfig.nVerifSamples = 2**17
         mppiconfig.beta = 1e-5
-        mppiconfig.verifHorizon = 60
-        mppiconfig.maxVerifEps = 0.0001
+        mppiconfig.verifHorizon = 40
+        mppiconfig.maxVerifEps = 0.001
         # mppiconfig.maxVerifEps = 10
 
     envConfig.sendStates = True

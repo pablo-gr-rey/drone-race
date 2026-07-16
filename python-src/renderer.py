@@ -6,34 +6,32 @@ from typing import Any, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.collections import LineCollection
 from matplotlib.gridspec import GridSpec
 from matplotlib.lines import Line2D
-from matplotlib.patches import Circle
-from matplotlib.text import Text
 from matplotlib.transforms import Bbox
 from matplotlib.widgets import Button, Slider, TextBox
 from PIL import Image
 from tqdm import tqdm
 from utils import (
     BaseEnvironmentConfig,
-    BaseEnvironmentRenderer,
     BaseControllerConfig,
     DroneRaceEnvironmentConfig,
-    DroneRaceSimState,
     FullStateInfo,
     HiddenObsEnvironmentConfig,
-    HiddenObsSimState,
     MPPIConfig,
     PRMPPIConfig,
+    StratRaceEnvironmentConfig,
 )
 from controller_renderers import (
     ControllerRenderer,
     MPPIDroneRaceRenderer,
     MPPIHiddenObsRenderer,
+    MPPIStratRaceRenderer,
     PRMPPIDroneRaceRenderer,
     PRMPPIHiddenObsRenderer,
+    PRMPPIStratRaceRenderer,
 )
+from env_renderers import BaseEnvironmentRenderer, DroneRaceEnvRenderer, HiddenObsEnvRenderer, StratRaceEnvRenderer
 
 
 def getRendererClass(
@@ -51,284 +49,13 @@ def getRendererClass(
         elif isinstance(contConfig, PRMPPIConfig):
             return HiddenObsEnvRenderer, PRMPPIHiddenObsRenderer
 
+    elif isinstance(envConfig, StratRaceEnvironmentConfig):
+        if isinstance(contConfig, MPPIConfig):
+            return StratRaceEnvRenderer, MPPIStratRaceRenderer
+        elif isinstance(contConfig, PRMPPIConfig):
+            return StratRaceEnvRenderer, PRMPPIStratRaceRenderer
+
     raise ValueError(f"Unknown env & cont config classes {type(envConfig)}, {type(contConfig)}")
-
-
-class DroneRaceEnvRenderer(BaseEnvironmentRenderer[DroneRaceEnvironmentConfig]):
-    def postInit(
-        self,
-        contNames: Optional[list[str]] = None,
-        display_raceline: bool | list[bool] = True,
-        renderTrails: bool = True,
-        **kwargs: Any,
-    ) -> None:
-        self.iMppi = self.envConfig.iMppi
-        self.renderTrails = renderTrails
-
-        if isinstance(display_raceline, bool):
-            display_raceline = [display_raceline] * self.envConfig.nRaceLines
-        self.display_raceline = display_raceline
-
-        if contNames is None:
-            contNames = [
-                self.contConfig.getDefaultName()
-                if i == self.envConfig.iMppi
-                else self.envConfig.opponentPidConfigs[self.envConfig.trueTheta].getDefaultName()
-                for i in range(2)
-            ]
-        self.contNames = contNames
-
-        # only display the racelines which are actually used
-        used = [False] * self.envConfig.nRaceLines
-        for cfg in self.envConfig.opponentPidConfigs:
-            used[cfg.racelineIndex] = True
-
-    def drawBackground(self) -> None:
-        # color maps and patch/marker colors for drones
-        self.cmaps = ["Blues", "Reds", "Greens", "Purples", "Oranges", "Greys", "YlOrBr", "BuPu"]
-        self.colors = ["blue", "red", "green", "purple", "orange", "gray", "brown", "pink"]
-
-        self.nAgents = self.envConfig.nAgents
-
-        # line collections for trajectories
-        self.lcs: list[LineCollection] = []
-
-        for i_agent in range(self.nAgents):
-            lc = LineCollection([], cmap=self.cmaps[i_agent % self.nAgents], linewidth=4, alpha=0.8)
-            self.lcs.append(lc)
-            self.ax.add_collection(lc)  # type: ignore
-
-        # points and collision circles
-        self.points: list[Any] = []
-        self.circles: list[Circle] = []
-        for i_agent in range(self.nAgents):
-            # px, py = self.getPos(0, i_agent)
-            px, py = 0.0, 0.0
-            color = self.colors[i_agent % len(self.colors)]
-            (pt,) = self.ax.plot(
-                [px], [py], marker="o", color=color, markersize=8, label=f"{self.contNames[i_agent]} ({i_agent + 1})"
-            )
-            self.points.append(pt)
-            circ = Circle((px, py), radius=self.envConfig.droneRadius, fill=True, color=color, linestyle="--", alpha=0.3)
-            self.circles.append(circ)
-            self.ax.add_patch(circ)
-
-        self.agent_value_texts: list[Text] = []
-        y_positions = np.linspace(0.7, 0.2, self.nAgents)
-
-        for i in range(self.nAgents):
-            self.ax_status.text(
-                0.0,
-                y_positions[i],
-                f"Agent {i + 1}: ",
-                fontsize=12,
-                ha="left",
-                va="top",
-                color=self.colors[i % len(self.colors)],
-                fontweight="bold",
-                transform=self.ax_status.transAxes,
-            )
-
-            t_val = self.ax_status.text(
-                1.0,
-                y_positions[i],
-                "",
-                fontsize=12,
-                ha="right",
-                va="top",
-                color="black",
-                transform=self.ax_status.transAxes,
-            )
-            self.agent_value_texts.append(t_val)
-
-        # draw gates
-        gatePts: list[list] = []
-        for i in range(self.envConfig.nGates):
-            if self.envConfig.dim == 2:
-                vec = self.envConfig.gateRadius[i] * np.array(
-                    [-self.envConfig.gateVectors[i, 1], self.envConfig.gateVectors[i, 0]]
-                )
-                gatePts.append([self.envConfig.gateCenters[i] - vec, self.envConfig.gateCenters[i] + vec])
-
-            lc = LineCollection(gatePts, colors=[1.0, 0.0, 0.0, 1.0], linewidth=3)
-            self.ax.add_collection(lc)
-
-        # draw race lines
-        if self.envConfig.trackPoints is not None:
-            for i in range(self.envConfig.nRaceLines):
-                if self.display_raceline[i]:
-                    pts = self.envConfig.trackPoints[i * self.envConfig.nTrackSamples : (i + 1) * self.envConfig.nTrackSamples, :]
-                    self.ax.plot(pts[:, 0], pts[:, 1], color="grey", linestyle="--", alpha=0.3)
-
-        # draw obstacles
-        for omin, omax in self.envConfig.obstacles.reshape(self.envConfig.nObstacles, 2, self.envConfig.dim):
-            self.drawRectangle(omin, omax)
-
-        for center, radius in zip(
-            self.envConfig.roundObsCenters.reshape(self.envConfig.nRoundObstacles, self.envConfig.dim),
-            self.envConfig.roundObsRadius,
-        ):
-            self.drawCircle(tuple(center), radius)
-
-        self.ax.legend()
-
-    def drawFrame(self, stateLog: list[FullStateInfo[DroneRaceSimState, Any]], iFrame: int) -> None:
-        state = stateLog[iFrame].state
-
-        # update trails
-        if self.renderTrails:
-            for idx, lc in enumerate(self.lcs):
-                x_arr = [self.getPos(stateLog[j].state, idx)[0] for j in range(iFrame + 1)]
-                y_arr = [self.getPos(stateLog[j].state, idx)[1] for j in range(iFrame + 1)]
-
-                lc.set_segments([[[x_arr[j], y_arr[j]], [x_arr[j + 1], y_arr[j + 1]]] for j in range(iFrame)])
-                if iFrame > 1:
-                    lc.set_array(np.linspace(0, 1, iFrame))
-
-        # update points and circles
-        for idx, pt in enumerate(self.points):
-            px, py = self.getPos(state, idx)
-            pt.set_data([px], [py])
-            self.circles[idx].center = (px, py)
-
-        # update status
-        for iAgent in range(self.nAgents):
-            vel, laps, gates = state.vel, state.laps, state.gates
-
-            speed = np.linalg.norm(vel[iAgent * self.envConfig.dim : (iAgent + 1) * self.envConfig.dim])
-
-            self.agent_value_texts[iAgent].set_text(
-                f"Lap {int(laps[iAgent])}/{self.envConfig.nWinLaps} Gate {int(gates[iAgent])}/{self.envConfig.nGates}\nSpeed {speed:.2f}"
-            )
-
-    def getZoomPos(self, stateLog: list[FullStateInfo[DroneRaceSimState, Any]], iFrame: int) -> tuple[float, float]:
-        return self.getPos(stateLog[iFrame].state, self.envConfig.iMppi)
-
-    def coordIndex(self, agent: int, coord: int) -> int:
-        return agent * self.envConfig.dim + coord
-
-    def getPos(self, state: DroneRaceSimState, agent: int) -> tuple[float, float]:
-        s = state.pos
-        return (
-            float(s[self.coordIndex(agent, 0)]),
-            float(s[self.coordIndex(agent, 1)]),
-        )
-
-
-class HiddenObsEnvRenderer(BaseEnvironmentRenderer[HiddenObsEnvironmentConfig]):
-    def postInit(
-        self,
-        renderTrails: bool = True,
-        **kwargs: Any,
-    ) -> None:
-        self.renderTrails = renderTrails
-
-    def drawBackground(self) -> None:
-        # color maps and patch/marker colors for drones
-        self.cmap = "Blues"  # "Reds"
-        self.color = "blue"  # "red"
-
-        # line collection for trajectory
-        self.lc = LineCollection([], cmap=self.cmap, linewidth=4, alpha=0.8)
-        self.ax.add_collection(self.lc)  # type: ignore
-
-        # points and collision circles
-        self.point = self.ax.plot([0.0], [0.0], marker="o", color=self.color, markersize=8)[0]
-
-        self.circle = Circle(
-            (0.0, 0.0), radius=self.envConfig.droneRadius, fill=True, color=self.color, linestyle="--", alpha=0.3
-        )
-        self.ax.add_patch(self.circle)
-
-        self.agent_value_text = self.ax_status.text(
-            1.0,
-            0.4,
-            "",
-            fontsize=12,
-            ha="right",
-            va="center",
-            color="black",
-            transform=self.ax_status.transAxes,
-        )
-
-        # draw gates
-        gatePts: list[list] = []
-        for i in range(self.envConfig.nGates):
-            if self.envConfig.dim == 2:
-                vec = self.envConfig.gateRadius[i] * np.array(
-                    [-self.envConfig.gateVectors[i, 1], self.envConfig.gateVectors[i, 0]]
-                )
-                gatePts.append([self.envConfig.gateCenters[i] - vec, self.envConfig.gateCenters[i] + vec])
-
-            lc = LineCollection(gatePts, colors=[1.0, 0.0, 0.0, 1.0], linewidth=3)
-            self.ax.add_collection(lc)
-
-        # draw obstacles
-        for omin, omax in self.envConfig.rectObstacles.reshape(self.envConfig.nRectObstacles, 2, self.envConfig.dim):
-            self.drawRectangle(omin, omax)
-
-        for i, (center, radius) in enumerate(
-            zip(
-                self.envConfig.hiddenObsCenters.reshape(self.envConfig.nHiddenObstacles, self.envConfig.dim),
-                self.envConfig.hiddenObsRadius,
-            )
-        ):
-            self.drawCircle(tuple(center), radius, fill=self.envConfig.trueTheta == i, dottedEdge=True)
-
-        self.drawHalfPlane(
-            self.envConfig.dblHpLimits[0],
-            self.envConfig.dblHpLimits[1],
-            self.envConfig.dblHpLambdas[0],
-            self.envConfig.dblHpLambdas[1],
-            False,
-        )
-        self.drawHalfPlane(
-            self.envConfig.dblHpLimits[2],
-            self.envConfig.dblHpLimits[3],
-            self.envConfig.dblHpLambdas[2],
-            self.envConfig.dblHpLambdas[3],
-            True,
-        )
-
-        self.drawAnnulus(*self.envConfig.annulusCenter, *self.envConfig.annulusRadius)
-
-    def drawFrame(self, stateLog: list[FullStateInfo[HiddenObsSimState, Any]], iFrame: int) -> None:
-        state = stateLog[iFrame].state
-
-        # update trails
-        if self.renderTrails:
-            x_arr = [stateLog[j].state.pos[0] for j in range(iFrame + 1)]
-            y_arr = [stateLog[j].state.pos[1] for j in range(iFrame + 1)]
-
-            self.lc.set_segments([[[x_arr[j], y_arr[j]], [x_arr[j + 1], y_arr[j + 1]]] for j in range(iFrame)])
-            if iFrame > 1:
-                self.lc.set_array(np.linspace(0, 1, iFrame))
-
-        # update points and circles
-        self.point.set_data([state.pos[0]], [state.pos[1]])
-        self.circle.center = state.pos
-
-        # update status
-        vel, laps, gates = state.vel, state.laps, state.gates
-
-        speed = np.linalg.norm(vel)
-
-        self.agent_value_text.set_text(
-            f"Lap {int(laps)}/{self.envConfig.nWinLaps} Gate {int(gates)}/{self.envConfig.nGates}\nSpeed {speed:.2f}"
-        )
-
-    def getZoomPos(self, stateLog: list[FullStateInfo[HiddenObsSimState, Any]], iFrame: int) -> tuple[float, float]:
-        return tuple(stateLog[iFrame].state.pos)
-
-    def coordIndex(self, agent: int, coord: int) -> int:
-        return agent * self.envConfig.dim + coord
-
-    def getPos(self, state: DroneRaceSimState, agent: int) -> tuple[float, float]:
-        s = state.pos
-        return (
-            float(s[self.coordIndex(agent, 0)]),
-            float(s[self.coordIndex(agent, 1)]),
-        )
 
 
 class EnvironmentRenderer:
@@ -366,8 +93,9 @@ class EnvironmentRenderer:
         self.stateLog: list[FullStateInfo] = []
 
         self.collision = False
-        self.winner: Optional[int] = None
-        self.outside: Optional[int] = None
+        self.opp_winner = False
+        self.winner = False
+        self.outside = False
 
         plt.rcParams["keymap.back"].remove("left")
         plt.rcParams["keymap.forward"].remove("right")
@@ -578,11 +306,14 @@ class EnvironmentRenderer:
         if self.collision:
             self.status_text.set_text("Collision")
             self.status_text.set_color("red")
-        elif self.winner is not None:
-            self.status_text.set_text(f"Winner: {self.winner + 1}")
+        elif self.winner:
+            self.status_text.set_text("MPPI wins")
             self.status_text.set_color("green")
-        elif self.outside is not None:
-            self.status_text.set_text(f"{self.outside + 1} outside")
+        elif self.opp_winner:
+            self.status_text.set_text("MPPI loses")
+            self.status_text.set_color("red")
+        elif self.outside:
+            self.status_text.set_text("MPPI outside or collision")
             self.status_text.set_color("red")
         elif self.isFinished:
             self.status_text.set_text("Truncated")

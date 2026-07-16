@@ -1,22 +1,33 @@
 #pragma once
 
+// trick to allow compilation with both clang (as a language server) and gcc (for actual compilation)
+#if defined(__CUDACC__) && defined(__clang__)
+#undef __noinline__
+#endif
+
 #include <cstring>
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
 #include <random>
 #include <variant>
 
+#include <cuda/std/array>
+
 #include "common.h"
 
 // #define USE_ENV_DRONERACE
-#define USE_ENV_HIDDENOBS
+// #define USE_ENV_HIDDENOBS
+#define USE_ENV_STRATRACE
+
+// with this mode, opponent get to set their desired lateral offset instead of having to play it fair
+// #define CHEATING
 
 inline constexpr bool USE_SPLINES = true;
 
 inline constexpr int MAX_N_KNOTS = 60;
 
 inline constexpr float MIN_COEFF_THRESHOLD = 0.01f; // minimum probability threshold for samples to contribute
-inline constexpr float DECAY = 0.95f;
+inline constexpr float DECAY = 0.97f;
 
 #ifdef USE_ENV_DRONERACE
 #include "environments/env_dronerace_defs.h"
@@ -24,6 +35,9 @@ namespace Env = EnvDroneRace;
 #elif defined(USE_ENV_HIDDENOBS)
 #include "environments/env_hiddenobs_defs.h"
 namespace Env = EnvHiddenObs;
+#elif defined(USE_ENV_STRATRACE)
+#include "environments/env_stratrace_defs.h"
+namespace Env = EnvStratRace;
 #else
 #error "must define a valid environment!"
 #endif
@@ -57,7 +71,8 @@ enum CONTROLLER_KIND : int32_t
 enum ENV_KIND : int32_t
 {
     ENV_DRONERACE,
-    ENV_HIDDENOBS
+    ENV_HIDDENOBS,
+    ENV_STRATRACE
 };
 
 enum TerminalType
@@ -65,14 +80,15 @@ enum TerminalType
     TERM_NONE = 0,
     TERM_LOSE,
     TERM_WIN,
+    TERM_OPP_WIN,
 };
 
 struct BranchState
 {
-    float belief[N_TRUE_MODELS];
-    int predTheta[N_MODEL_FACTORS];     // 0 if nominal for k, theta+1 if specialized (<=> marginal over theta_k=theta > threshold)
-    int branchingTime[N_MODEL_FACTORS]; // -1 if not branched, 0 if initially committed, otherwise t+1 if branched at global time
-                                        // t (i.e. origin of new branch)
+    cuda::std::array<float, N_TRUE_MODELS> belief;
+    cuda::std::array<int, N_MODEL_FACTORS> predTheta;     // 0 if nominal for k, theta+1 if specialized (<=> marginal over theta_k=theta > threshold)
+    cuda::std::array<int, N_MODEL_FACTORS> branchingTime; // -1 if not branched, 0 if initially committed, otherwise t+1 if branched at global time
+                                                          // t (i.e. origin of new branch)
 };
 
 struct DeviceRNG
@@ -90,6 +106,8 @@ struct HostRNG
 #include "environments/env_dronerace.h" // IWYU pragma: export
 #elif defined(USE_ENV_HIDDENOBS)
 #include "environments/env_hiddenobs.h" // IWYU pragma: export
+#elif defined(USE_ENV_STRATRACE)
+#include "environments/env_stratrace.h" // IWYU pragma: export
 #else
 #error "must define a valid environment!"
 #endif
@@ -102,8 +120,8 @@ struct MPPIConfig
     int nTimesteps = 20;
 
     // spline configuration
-    int nKnots;             // M
-    int knots[MAX_N_KNOTS]; // tau_i for 0 <= i < M
+    int nKnots;                               // M
+    cuda::std::array<int, MAX_N_KNOTS> knots; // tau_i for 0 <= i < M
 
     float invTemperature = 10.0f;
 
@@ -118,6 +136,7 @@ struct MPPIConfig
 
     float outsideCost = 1000.0f;
     float winCost = 1000.0f;
+    float oppWinCost = 1000.0f;
 
     // terminal costs
     float finalAdvWeight = 10.0f;
@@ -153,6 +172,7 @@ struct PRMPPIConfig
     float boundaryThresholdFactor = 1.5f;
 
     float winCost = 1000.0f;
+    float oppWinCost = 1000.0f;
 
     // terminal costs
     float finalAdvWeight = 10.0f;

@@ -11,7 +11,7 @@ void MPPIConfig::unpackHeader(Reader& reader)
         throw std::runtime_error(std::format(
             "Received invalid number of knots: got {}, but MAX_N_KNOTS is set to {}. Edit this constant and recompile", nKnots, MAX_N_KNOTS));
 
-    int nRecv = reader.readIntArray(knots);
+    int nRecv = reader.readArray<int, MAX_N_KNOTS, true>(knots);
     if (nRecv != nKnots)
         throw std::runtime_error(std::format("Received invalid number of knots: got {} elements, but received nKnots={}", nRecv, nKnots));
 
@@ -35,6 +35,7 @@ void MPPIConfig::unpackHeader(Reader& reader)
 
     outsideCost = reader.readFloat();
     winCost = reader.readFloat();
+    oppWinCost = reader.readFloat();
 
     finalAdvWeight = reader.readFloat();
     finalOppAdvWeight = reader.readFloat();
@@ -47,7 +48,8 @@ void MPPIConfig::unpackHeader(Reader& reader)
     maxVerifEps = reader.readFloat();
 
     std::cout << "loaded MPPI samples " << nSamples << " timesteps " << nTimesteps << " collDistFactor " << collDistFactor << " invTemp "
-              << invTemperature << " with " << N_TRUE_MODELS << " opponent strats\n";
+              << invTemperature << " finalAdvWeight " << finalAdvWeight << " finalOppAdvWeight " << finalOppAdvWeight << " with " << N_TRUE_MODELS
+              << " opponent strats, maxVerifEps " << maxVerifEps << "\n";
 }
 
 void PRMPPIConfig::unpackHeader(Reader& reader)
@@ -66,6 +68,7 @@ void PRMPPIConfig::unpackHeader(Reader& reader)
     boundaryThresholdFactor = reader.readFloat();
 
     winCost = reader.readFloat();
+    oppWinCost = reader.readFloat();
 
     finalAdvWeight = reader.readFloat();
     finalOppAdvWeight = reader.readFloat();

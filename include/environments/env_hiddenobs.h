@@ -90,7 +90,7 @@ HD INLINE float distToCircle(float x, float y, float xcenter, float ycenter, flo
 }
 
 // Boundary distance = distance of point to closest boundary or opponent (<= 0 if outside), does not take into account agent's radius
-HD INLINE float trackBoundaryDist(const SimState& state, const EnvironmentConfig& envConfig, int trueTheta)
+template <bool loseOnOppWin = true> HD INLINE float trackBoundaryDist(const SimState& state, const EnvironmentConfig& envConfig, int trueTheta)
 {
     float sqMinDist = INFINITY;
     float x = state.pos[0], y = state.pos[1];
@@ -128,14 +128,19 @@ HD INLINE float trackBoundaryDist(const SimState& state, const EnvironmentConfig
 }
 
 // radius should be e.g. droneRadius in the actual dynamics and droneRadius*factor for MPPI
-HD INLINE bool isOutside(const SimState& state, const EnvironmentConfig& envConfig, float radius, int trueTheta)
+template <bool loseOnOppWin = true> HD INLINE bool isOutside(const SimState& state, const EnvironmentConfig& envConfig, float radius, int trueTheta)
 {
-    return trackBoundaryDist(state, envConfig, trueTheta) < radius;
+    return trackBoundaryDist<loseOnOppWin>(state, envConfig, trueTheta) < radius;
 }
 
 HD INLINE bool isWinner(const SimState& state, const EnvironmentConfig& envConfig)
 {
     return state.laps >= envConfig.nWinLaps;
+}
+
+HD INLINE bool isOppWinner(const SimState& /* state */, const EnvironmentConfig& /* envConfig */)
+{
+    return false;
 }
 
 // return true if line from (px, py) to (qx, qy) intersects the rectangle
@@ -299,8 +304,8 @@ HD INLINE float getAdvance(const SimState& state, const EnvironmentConfig& envCo
                         // for example means that reward will be between 0.0 and 0.5
                         // before the first gate, 1 and 1.5 between 1st and 2nd, etc
 
-    const float* __restrict__ prevGateCenter = envConfig.gateCenters + state.gates * DIM;
-    const float* __restrict__ nextGateCenter = envConfig.gateCenters + nextGate * DIM;
+    const float* __restrict__ prevGateCenter = envConfig.gateCenters.data() + state.gates * DIM;
+    const float* __restrict__ nextGateCenter = envConfig.gateCenters.data() + nextGate * DIM;
 
     for (int d = 0; d < DIM; d++)
     {
@@ -370,7 +375,7 @@ HD INLINE void updateGates(const EnvironmentConfig& envConfig, SimState& state, 
 
 // compute env dynamics, belief update (only if shouldUpdateBelief) and branch update (only if considerBranching is true; if we become specialized,
 // set corresponding branching time to t+1)
-template <bool shouldUpdateBelief, bool considerBranching, bool addMargin, typename RNG>
+template <bool shouldUpdateBelief, bool considerBranching, bool addMargin, bool loseOnOppWin = true, typename RNG>
 HD INLINE TerminalType environmentStep(
     int t, int trueTheta, const EnvironmentConfig& envConfig,
     const float* __restrict__ egoAction, // (dim)
@@ -438,7 +443,7 @@ HD INLINE TerminalType environmentStep(
         }
 
     // 8. Update gates with prev pos
-    updateGates<addMargin>(envConfig, state, scratch.prevPos, gateMargin);
+    updateGates<addMargin>(envConfig, state, scratch.prevPos.data(), gateMargin);
 
     // 9. Update belief & branching time
     if constexpr (shouldUpdateBelief)
@@ -457,7 +462,7 @@ HD INLINE TerminalType environmentStep(
     if constexpr (considerBranching)
     {
         int newPredTheta[N_MODEL_FACTORS];
-        findConfident(branchState.belief, minConfidence, newPredTheta);
+        findConfident(branchState.belief.data(), minConfidence, newPredTheta);
 
         for (int k = 0; k < N_MODEL_FACTORS; k++)
             if (branchState.predTheta[k] == 0 && newPredTheta[k] != 0)

@@ -3,12 +3,15 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 import math
 import random
-from typing import Any, ClassVar, Optional
-from matplotlib import patches
-from matplotlib.path import Path
-import matplotlib.pyplot as plt
+from typing import Callable, ClassVar, Literal, Optional, Self
+from scipy.interpolate import CubicSpline
+
 
 import numpy as np
+
+
+def _errorTrack(_: float) -> np.ndarray:
+    raise ValueError("Undefined track function")
 
 
 class MSG_TYPE(IntEnum):
@@ -21,7 +24,8 @@ class MSG_TYPE(IntEnum):
 class EVENT_TYPE(IntEnum):
     EVT_OUTSIDE = 0
     EVT_WINNER = 1
-    EVT_TRUNCATED = 2
+    EVT_OPP_WINNER = 2
+    EVT_TRUNCATED = 3
 
 
 class CONTROLLER_KIND(IntEnum):
@@ -34,6 +38,7 @@ class ENV_KIND(IntEnum):
     ENV_INVALID = -1
     ENV_DRONERACE = 0
     ENV_HIDDENOBS = 1
+    ENV_STRATRACE = 2
 
 
 @dataclass
@@ -95,138 +100,6 @@ class BaseEnvironmentConfig(ABC):
 
 @dataclass
 class BaseSimState: ...
-
-
-class BaseEnvironmentRenderer[EnvConfigT: BaseEnvironmentConfig](ABC):
-    def __init__(
-        self,
-        envConfig: EnvConfigT,
-        contConfig: BaseControllerConfig,
-        ax: plt.Axes,  # type: ignore
-        ax_status: plt.Axes,  # type: ignore
-        oppNames: list[list[str]],
-        **kwargs: Any,
-    ):
-        self.envConfig = envConfig
-        self.contConfig = contConfig
-        self.ax = ax
-        self.ax_status = ax_status
-        self.oppNames = oppNames
-
-        self.postInit(**kwargs)
-
-    @abstractmethod
-    def postInit(self, **kwargs) -> None: ...
-
-    @abstractmethod
-    def drawBackground(self) -> None: ...
-
-    @abstractmethod
-    def drawFrame(self, stateLog: list["FullStateInfo"], iFrame: int) -> None: ...
-
-    @abstractmethod
-    def getZoomPos(self, stateLog: list["FullStateInfo"], iFrame: int) -> tuple[float, float]: ...
-
-    def drawRectangle(self, omin: tuple[float, float], omax: tuple[float, float]) -> None:
-        self.ax.add_patch(
-            patches.Rectangle(
-                omin,
-                width=omax[0] - omin[0],
-                height=omax[1] - omin[1],
-                facecolor="gray",
-                hatch="/",
-                fill=True,
-            )
-        )
-
-    def drawCircle(
-        self, center: tuple[float, float], radius: float, fill: bool = True, edge: bool = True, dottedEdge: bool = False
-    ) -> None:
-        self.ax.add_patch(
-            patches.Circle(
-                center,
-                radius,
-                linewidth=3 if edge else 0,
-                edgecolor="black",
-                facecolor="gray",
-                hatch="/",
-                fill=fill,
-                linestyle="dotted" if dottedEdge else "solid",
-            )
-        )
-
-    def drawTriangle(self, p1: tuple[float, float], p2: tuple[float, float], p3: tuple[float, float]) -> None:
-        self.ax.add_patch(
-            patches.Polygon(
-                [p1, p2, p3],
-                facecolor="gray",
-                hatch="/",
-                fill=True,
-            )
-        )
-
-    def drawHalfPlane(self, minx: float, maxx: float, lambdaTop: float, lambdaBot: float, isRight: bool) -> None:
-        "isRight should be False for first dbl-half-plane and True for 2nd"
-
-        xFact = 1 if isRight else -1  # plane is xFact*x +- y = lambdaTop/Bot
-
-        # top part
-        yTop = lambdaTop + (-minx if isRight else maxx)
-        self.drawTriangle((minx, lambdaTop - xFact * minx), (maxx, lambdaTop - xFact * maxx), (maxx if isRight else minx, yTop))
-        self.drawRectangle((minx, yTop), (maxx, self.envConfig.arenaMax[1] + 1))
-
-        # bottom part
-        yBot = -lambdaBot + (minx if isRight else -maxx)
-        self.drawTriangle((minx, -lambdaBot + xFact * minx), (maxx, -lambdaBot + xFact * maxx), (maxx if isRight else minx, yBot))
-        self.drawRectangle((minx, self.envConfig.arenaMin[1] - 1), (maxx, yBot))
-
-    def drawAnnulus(self, xcenter: float, ycenter: float, minr: float, maxr: float) -> None:
-        # inner circle
-        self.ax.add_patch(
-            patches.Wedge(
-                (xcenter, ycenter),
-                minr,
-                90,
-                180,
-                facecolor="gray",
-                hatch="/",
-                fill=True,
-                linewidth=0,
-            )
-        )
-
-        # outer circle: we have to discretize the path
-        nThetas = 20
-
-        thetas = np.linspace(np.pi / 2, np.pi, nThetas)
-        arc_x = maxr * np.cos(thetas) + xcenter
-        arc_y = maxr * np.sin(thetas) + ycenter
-
-        # path: topleft -> topright -> arc -> bottomleft -> back to topleft
-        minx = self.envConfig.arenaMin[0] - 1
-        maxy = self.envConfig.arenaMax[1] + 1
-
-        path = Path(
-            [
-                (minx, maxy),
-                (xcenter, maxy),
-                (xcenter, maxr + ycenter),
-                *zip(arc_x, arc_y),
-                (-maxr + xcenter, ycenter),
-                (minx, ycenter),
-                (minx, maxy),
-            ],
-            closed=True,
-        )
-
-        self.ax.add_patch(
-            patches.PathPatch(
-                path,
-                facecolor="gray",
-                hatch="/",
-                fill=True,
-            )
-        )
 
 
 @dataclass
@@ -404,6 +277,183 @@ class HiddenObsSimState(BaseSimState):
 
 
 @dataclass
+class StratRaceEnvironmentConfig(BaseEnvironmentConfig):
+    @dataclass
+    class OppConfig:
+        s1_i: np.ndarray  # = field(default_factory=lambda: np.array([]))
+        s2_i: np.ndarray  # = field(default_factory=lambda: np.array([]))
+        s3_i: np.ndarray  # = field(default_factory=lambda: np.array([]))
+        speedScale: np.ndarray  # = field(default_factory=lambda: np.array([]))
+
+        actionNoise: np.ndarray  # = field(default_factory=lambda: np.array([]))
+
+        @classmethod
+        def preset(
+            cls,
+            droneRadius: float,
+            nOpps: int,
+            s1: float | np.ndarray | Literal["insensitive"] | Literal["default"] | Literal["conservative"] = "default",
+            s2: float | np.ndarray | Literal["infinite"] | Literal["default"] | Literal["insensitive"] = "default",
+            s3: float | np.ndarray | Literal["no-block"] | Literal["default"] = "default",
+            speedScale: float | np.ndarray = 1.0,
+            actionNoise: float | np.ndarray = 0.1,
+        ) -> Self:
+            values: dict[str, np.ndarray] = {}
+
+            def set_val(attr_name: str, val: float | np.ndarray | str, defaultValues: dict[str, float]) -> None:
+                if isinstance(val, str) and val in defaultValues:
+                    val = defaultValues[val]
+                elif isinstance(val, str):
+                    raise ValueError(
+                        f"Invalid string literal provided for {attr_name} (got {val}, possible values are {'; '.join(defaultValues.keys())})"
+                    )
+
+                if isinstance(val, float):
+                    values[attr_name] = np.full(nOpps, val)
+                elif isinstance(val, np.ndarray):
+                    values[attr_name] = val
+                else:
+                    raise ValueError(f"Invalid value for {attr_name} (got {val})")
+
+            set_val(
+                "s1_i",
+                s1,
+                {
+                    "insensitive": 0.0,
+                    "default": 2.5 * droneRadius,
+                    "conservative": 4 * droneRadius,
+                },
+            )
+
+            set_val(
+                "s2_i",
+                s2,
+                {
+                    "infinite": 0.0,
+                    "default": 1 / (4 * droneRadius) ** 2,
+                    "insensitive": 1 / (1e-5 * droneRadius) ** 2,
+                },
+            )
+
+            set_val("s3_i", s3, {"no-block": 0.0, "default": 20 / droneRadius})
+
+            set_val("speedScale", speedScale, {})
+            set_val("actionNoise", actionNoise, {})
+
+            return cls(**values)
+
+    nOppAgents: int = 2
+    dim: int = 2
+    dt: float = 0.1
+
+    sendStates: bool = True
+
+    droneRadius: float = 0.2
+    posNoiseLevel: float = 0.0
+    speedNoiseLevel: float = 0.0
+    actionNoiseLevel: float = 0.0
+
+    maxSpeed: np.ndarray = field(default_factory=lambda: np.array([]))  # in L_2 norm, MPPI is first
+    maxAccel: np.ndarray = field(default_factory=lambda: np.array([]))  # in L_inf norm, MPPI is first
+
+    nTrackSamples: int = 512  # track is discretized with this number of samples
+    trackWidth: float = 2
+    nWinLaps: int = 1
+
+    seed: int = 42  # if -1, then it will be set to a random value
+
+    initBelief: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    opponentConfigs: tuple[OppConfig, ...] = ()
+    trueTheta: int = 0
+
+    kP: float = 10.0
+    kV: float = -1.0
+    maxOppLatDistFact: float = 1.1
+
+    trackFunction: Callable[[float], np.ndarray] = field(metadata={"send": False}, default=_errorTrack)
+
+    trackLength: float = field(init=False)
+    p_grid: np.ndarray = field(init=False)
+    dp_grid: np.ndarray = field(init=False)
+    t_grid: np.ndarray = field(init=False)
+    kappa_grid: np.ndarray = field(init=False)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.envKind = ENV_KIND.ENV_STRATRACE
+        self.actionDim = self.dim
+
+        if self.kV == -1.0:
+            self.kV = 2 * self.kP**0.5
+
+        # compute track data
+        q = np.array([self.trackFunction(k / self.nTrackSamples) for k in range(self.nTrackSamples)])
+        diffs = np.diff(q, axis=0, append=q[0:1])
+        d_k = np.linalg.norm(diffs, axis=1)
+
+        # s_k = cumulative sum with s_0 = 0
+        s_k = np.zeros(self.nTrackSamples + 1)
+        s_k[1:] = np.cumsum(d_k)
+
+        self.trackLength = s_k[-1]
+
+        q_periodic = np.vstack([q, q[0:1]])
+
+        # Compute periodic cubic splines x(s), y(s)
+        cs_x = CubicSpline(s_k, q_periodic[:, 0], bc_type="periodic")
+        cs_y = CubicSpline(s_k, q_periodic[:, 1], bc_type="periodic")
+
+        # Uniform grid in arc-length
+        s_grid = np.linspace(0, self.trackLength, self.nTrackSamples, endpoint=False)
+
+        # p_grid = [x(s), y(s)]
+        self.p_grid = np.column_stack([cs_x(s_grid), cs_y(s_grid)])
+
+        # dp_grid = [x'(s), y'(s)] (first derivatives)
+        dx = cs_x(s_grid, 1)
+        dy = cs_y(s_grid, 1)
+        self.dp_grid = np.column_stack([dx, dy])
+
+        # t_grid = normalize(dp_grid)
+        dp_norm = np.linalg.norm(self.dp_grid, axis=1, keepdims=True)
+        self.t_grid = self.dp_grid / np.maximum(dp_norm, 1e-6)
+
+        # Second derivatives for curvature
+        ddx = cs_x(s_grid, 2)
+        ddy = cs_y(s_grid, 2)
+
+        # kappa = (x' * y'' - y' * x'') / (x'^2 + y'^2)^1.5
+        self.kappa_grid = (dx * ddy - dy * ddx) / np.maximum((dx**2 + dy**2) ** 1.5, 1e-6)
+
+        if self.arenaMin.shape == (0,):
+            self.arenaMin = np.min(self.p_grid, axis=0) - self.trackWidth * 2
+            self.arenaMax = np.max(self.p_grid, axis=0) + self.trackWidth * 2
+
+        if self.seed == -1:
+            self.seed = random.randrange(2**31)
+
+        if self.initBelief.size == 0:
+            self.initBelief = np.full(self.nTrueModels, 1.0 / self.nTrueModels)
+
+    def getMaxAccel(self) -> float:
+        return self.maxAccel[0]
+
+
+@dataclass
+class StratRaceSimState(BaseSimState):
+    pos: np.ndarray
+    vel: np.ndarray
+    S: np.ndarray
+    latDist: np.ndarray
+    laps: np.ndarray
+
+    latDistTarget: np.ndarray = field(
+        default_factory=lambda: np.array([]), metadata={"send": False}
+    )  # proxy for the received additional info, is not sent
+
+
+@dataclass
 class MPPIConfig(BaseControllerConfig):
     nSamples: int = 10000
     nTimesteps: int = 60
@@ -425,6 +475,7 @@ class MPPIConfig(BaseControllerConfig):
 
     outsideCost: float = 1000
     winCost: float = 1000
+    oppWinCost: float = 1000
 
     # final cost: - distance to the gate * finalDistWeight + min(opp. dist to the gate) * finalOppDistWeight - finalSpeedWeight * dot(finalSpeed, targetDirection)
     finalAdvWeight: float = 10
@@ -467,6 +518,7 @@ class PRMPPIConfig(BaseControllerConfig):
     boundaryThresholdFactor: float = 1.5
 
     winCost: float = 1000
+    oppWinCost: float = 1000
 
     # final cost: - distance to the gate * finalDistWeight + min(opp. dist to the gate) * finalOppDistWeight - finalSpeedWeight * dot(finalSpeed, targetDirection)
     finalAdvWeight: float = 10
@@ -538,7 +590,7 @@ class PRMPPIStateInfo:
 class FullStateInfo[SimStateT: BaseSimState, contInfoT]:
     # kind of a hack, but this is a class member which should be set by the protocol part based on the actual controller type
     # this way, we can automatically unpack the state information corresponding to the given controller
-    SimStateType: ClassVar[type[DroneRaceSimState] | type[HiddenObsSimState]]
+    SimStateType: ClassVar[type[DroneRaceSimState] | type[HiddenObsSimState] | type[StratRaceSimState]]
     ContStateType: ClassVar[type[MPPIStateInfo] | type[PRMPPIStateInfo]]
 
     step: int
@@ -555,6 +607,8 @@ class FullStateInfo[SimStateT: BaseSimState, contInfoT]:
             cls.SimStateType = DroneRaceSimState
         elif envConfig.envKind == ENV_KIND.ENV_HIDDENOBS:
             cls.SimStateType = HiddenObsSimState
+        elif envConfig.envKind == ENV_KIND.ENV_STRATRACE:
+            cls.SimStateType = StratRaceSimState
         else:
             raise ValueError(f"Unknown environment kind {envConfig.envKind}")
 

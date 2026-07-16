@@ -64,6 +64,8 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
     Env::pushSimState(writer, state);
 
+    Env::pushAddInfo(writer, state, prevState, envConfig, trueTheta);
+
     writer.pushFloatArray(egoAction);
 
     ScratchEnvBuffer buffer;
@@ -109,16 +111,16 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
             for (int t = 0; t < mppiConfig.nTimesteps; t++)
             {
-                int startInd = (flattenBranchIndex(bstate.predTheta) * mppiConfig.nTimesteps + t - tOrigin) * ACTION_DIM;
+                int startInd = (flattenBranchIndex(bstate.predTheta.data()) * mppiConfig.nTimesteps + t - tOrigin) * ACTION_DIM;
 
                 for (int d = 0; d < ACTION_DIM; d++)
                     egoActions[t * ACTION_DIM + d] = mppiCont->h_nominal[startInd + d];
 
                 bool branched = false;
 
-                TerminalType term = environmentStep<true, true, false>(t, theta, envConfig, egoActions.data() + t * ACTION_DIM,
-                                                                       false, // no PID noise for reproducible display
-                                                                       predState, bstate, branched, mppiConfig.minConfidence, buffer, hrng);
+                TerminalType term = environmentStep<true, true, false, false>(t, theta, envConfig, egoActions.data() + t * ACTION_DIM,
+                                                                              false, // no PID noise for reproducible display
+                                                                              predState, bstate, branched, mppiConfig.minConfidence, buffer, hrng);
 
                 if (branched)
                     tOrigin = t + 1;
@@ -184,6 +186,10 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
         for (int j = 0; j <= N_TRUE_MODELS; j++)
         {
+            float cost = 0.0f;
+            float safetyCost = -INFINITY;
+            float decay = 1.0f;
+
             int theta = std::min(j, N_TRUE_MODELS - 1);
 
             SimState predState = initState;
@@ -208,9 +214,13 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
                 bool branched = false;
 
-                TerminalType term = Env::environmentStep<false, false, false>(t, theta, envConfig, egoActions.data() + t * ACTION_DIM,
-                                                                              false, // no PID noise for reproducible display
-                                                                              predState, bstate, branched, 0.0f, buffer, hrng);
+                TerminalType term = Env::environmentStep<false, false, false, false>(t, theta, envConfig, egoActions.data() + t * ACTION_DIM,
+                                                                                     false, // no PID noise for reproducible display
+                                                                                     predState, bstate, branched, 0.0f, buffer, hrng);
+
+                safetyCost = fmaxf(safetyCost, PRMPPIsafetyCost(state, t, envConfig, prmppiConfig, theta));
+                cost += PRMPPIstateCost(state, t, envConfig, prmppiConfig, theta) * decay;
+                decay *= DECAY;
 
                 states.push_back(predState);
 
@@ -219,6 +229,10 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
                     states.insert(states.end(), prmppiConfig.nTimesteps - t - 1, predState);
 
                     std::cout << "STOPPING SIMULATION at step " << t << " term " << (int)term << std::endl;
+                    std::cout << "safety cost " << PRMPPIsafetyCost(state, t, envConfig, prmppiConfig, theta) << " isOutside "
+                              << EnvStratRace::isOutside(state, envConfig, envConfig.droneRadius, theta) << " BD "
+                              << EnvStratRace::trackBoundaryDist(state, envConfig, theta) << " bli " << envConfig.droneRadius << " * "
+                              << prmppiConfig.collDistFactor << "\n";
 
                     stopTime = t;
                     std::optional<EventType> parsed = parseTerm(term);
@@ -227,6 +241,12 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
                     break;
                 }
             }
+
+            cost += PRMPPIfinalCost(state, envConfig, prmppiConfig, theta);
+            float fullCost = cost + (safetyCost > 0.0f ? prmppiConfig.safetyWeight : 0.0f);
+
+            std::cout << "for theta=" << theta << " controller " << (j == N_TRUE_MODELS ? "robust" : "nominal") << " PRMPPI full cost is " << fullCost
+                      << "\t(performance cost " << cost << ")\tsafety cost " << safetyCost << "\n";
 
             // writer.pushFloatArray(fullPos);
             Env::pushPredictions(writer, states);
@@ -279,11 +299,12 @@ std::optional<EventType> SimulationEngine::dynStep(const std::array<float, ACTIO
 
     if (auto mppiCont = dynamic_cast<MPPIController*>(controller.get()))
         // MPPI needs belief & branching update
-        term = environmentStep<true, true, false>(t, trueTheta, envConfig, action.data(), true, state, branchState, branched,
-                                                  mppiCont->mppiConfig.minConfidence, buffer, hrng);
+        term = environmentStep<true, true, false, false>(t, trueTheta, envConfig, action.data(), true, state, branchState, branched,
+                                                         mppiCont->mppiConfig.minConfidence, buffer, hrng);
     else
         // other controllers may only use belief update
-        term = environmentStep<true, false, false>(t, trueTheta, envConfig, action.data(), true, state, branchState, branched, 0.0f, buffer, hrng);
+        term = environmentStep<true, false, false, false>(t, trueTheta, envConfig, action.data(), true, state, branchState, branched, 0.0f, buffer,
+                                                          hrng);
 
     std::copy(std::begin(branchState.belief), std::end(branchState.belief), belief.begin());
 
@@ -337,6 +358,8 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
         std::cout << "Agent is outside\n";
     else if (*stopInfo == EVT_WINNER)
         std::cout << "Agent wins\n";
+    else if (*stopInfo == EVT_OPP_WINNER)
+        std::cout << "Opponent wins\n";
 }
 
 std::optional<EventType> SimulationEngine::parseTerm(TerminalType term)
@@ -349,6 +372,8 @@ std::optional<EventType> SimulationEngine::parseTerm(TerminalType term)
         return {EVT_OUTSIDE};
     case TERM_WIN:
         return {EVT_WINNER};
+    case TERM_OPP_WIN:
+        return {EVT_OPP_WINNER};
     default:
         throw std::runtime_error("Unexpected TerminalType value");
     }

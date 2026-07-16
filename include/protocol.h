@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cuda/std/array>
 #include <span>
 #include <vector>
 #include <zmq.hpp>
@@ -17,7 +18,8 @@ enum EventType : uint32_t
 {
     EVT_OUTSIDE = 0,
     EVT_WINNER = 1,
-    EVT_TRUNCATED = 2,
+    EVT_OPP_WINNER = 2,
+    EVT_TRUNCATED = 3,
 };
 
 // byte reader util
@@ -29,16 +31,78 @@ struct Reader
 
     Reader(const void* buffer, size_t s);
 
-    template <typename T> T readPod();
+    template <typename T> T readPod()
+    {
+        if (offset + sizeof(T) > size)
+            throw std::runtime_error("failed to read scalar from buffer (underflow)");
+
+        T val;
+        std::memcpy(&val, data + offset, sizeof(T));
+        offset += sizeof(T);
+
+        return val;
+    }
 
     int32_t readInt32();
     float readFloat();
 
-    std::vector<float> readFloatArray();
-    std::vector<int> readIntArray();
+    // necessary to be able to call readArray(arr); with float arr[2] (otherwise, it cannot be automatically converted to std::span)
+    template <typename T, size_t N, bool acceptUncomplete = false> size_t readArray(T (&arr)[N])
+    {
+        return readArray<T, N, acceptUncomplete>(std::span<T, N>(arr));
+    }
 
-    int readFloatArray(float* arr); // returns length. assumes array is allocated and has the right size
-    int readIntArray(int* arr);     // returns length. assumes array is allocated and has the right size
+    template <typename T, size_t N, bool acceptUncomplete = false> size_t readArray(cuda::std::array<T, N>& arr)
+    {
+        return readArray<T, N, acceptUncomplete>(std::span<T, N>(arr));
+    }
+
+    template <typename T, size_t S, bool acceptUncomplete = false> size_t readArray(std::span<T, S> arr)
+    {
+        size_t length = readInt32();
+
+        if constexpr (acceptUncomplete)
+        {
+            if (length > arr.size())
+                throw std::runtime_error(std::format("Wrong size when reading array: read length {}, allocated length {}", length, arr.size()));
+        }
+        else
+        {
+            if (length != arr.size())
+                throw std::runtime_error(std::format("Wrong size when reading array: read length {}, allocated length {}", length, arr.size()));
+        }
+
+        for (size_t i = 0; i < length; i++)
+            arr[i] = (T)readPod<float>();
+
+        return length;
+    }
+
+    template <typename T> std::vector<T> readArray()
+    {
+        size_t length = readInt32();
+
+        std::vector<T> arr(length);
+
+        for (size_t i = 0; i < length; i++)
+            arr[i] = (T)readPod<float>();
+
+        return arr;
+    }
+
+    template <typename T> size_t allocReadArray(T*& arr, size_t length)
+    {
+        size_t r_length = readInt32();
+        if (r_length != length)
+            throw std::runtime_error(std::format("Failed to alloc & read array: expected length {}, read length {}", length, r_length));
+
+        arr = (T*)malloc(length * sizeof(T));
+
+        for (size_t i = 0; i < length; i++)
+            arr[i] = (T)readPod<float>();
+
+        return length;
+    }
 
     void assertFinished();
 };
