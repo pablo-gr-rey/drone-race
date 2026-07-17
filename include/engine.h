@@ -19,7 +19,7 @@ class SimulationEngine
     void sendDone(zmq::socket_t& sock);
 
     // Run until termination or maxSteps. Publishes over ZMQ.
-    void run(int maxSteps, zmq::socket_t& sock);
+    void run(int maxSteps, zmq::socket_t& sock, std::optional<zmq::socket_t>& rosSock);
 
     // public config & track data
     EnvironmentConfig envConfig;
@@ -40,7 +40,9 @@ class SimulationEngine
 
     std::mt19937 rng;
 
-    std::optional<EventType> dynStep(const std::array<float, ACTION_DIM>& action, int t, std::array<float, N_TRUE_MODELS>& belief);
+    std::optional<EventType> dynStep(const std::array<float, ACTION_DIM>& action, int t, std::array<float, N_TRUE_MODELS>& belief,
+                                     std::span<float> fullActions = {});
+    void sendRosAction(zmq::socket_t& rosSock, const std::array<float, EnvStratRace::N_AGENTS * ACTION_DIM>& action, int step);
 
     std::optional<EventType> parseTerm(TerminalType term);
 };

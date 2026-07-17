@@ -282,8 +282,20 @@ void SimulationEngine::sendDone(zmq::socket_t& sock)
     sock.send(zmq::buffer(writer.data));
 }
 
+void SimulationEngine::sendRosAction(zmq::socket_t& rosSock, const std::array<float, EnvStratRace::N_AGENTS * ACTION_DIM>& action, int step)
+{
+    Writer writer;
+
+    writer.pushInt32(MSG_STATE);
+    writer.pushInt32(step);
+    writer.pushFloatArray(action);
+
+    rosSock.send(zmq::buffer(writer.data));
+}
+
 // simulate one state for the given action. belief is updated in-place if given
-std::optional<EventType> SimulationEngine::dynStep(const std::array<float, ACTION_DIM>& action, int t, std::array<float, N_TRUE_MODELS>& belief)
+std::optional<EventType> SimulationEngine::dynStep(const std::array<float, ACTION_DIM>& action, int t, std::array<float, N_TRUE_MODELS>& belief,
+                                                   std::span<float> fullActions)
 {
     static ScratchEnvBuffer buffer;
 
@@ -308,10 +320,13 @@ std::optional<EventType> SimulationEngine::dynStep(const std::array<float, ACTIO
 
     std::copy(std::begin(branchState.belief), std::end(branchState.belief), belief.begin());
 
+    if (!fullActions.empty())
+        std::copy(buffer.actions.begin(), buffer.actions.end(), fullActions.begin());
+
     return parseTerm(term);
 }
 
-void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
+void SimulationEngine::run(int maxSteps, zmq::socket_t& sock, std::optional<zmq::socket_t>& rosSock)
 {
     std::array<float, ACTION_DIM> dummyAction{};
     sendState(sock, 0, dummyAction, state);
@@ -325,27 +340,83 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
         std::cout << "\nSTEP " << step << "\n";
 
         std::array<float, ACTION_DIM> action;
+        std::array<float, EnvStratRace::N_AGENTS * ACTION_DIM> fullActions;
+
         controller->getControl(state, action.data());
 
         SimState prevState = state;
 
-        stopInfo = dynStep(action, step, controller->h_belief);
+        stopInfo = dynStep(action, step, controller->h_belief, fullActions);
 
-        sendState(sock, step, action, prevState);
+        if (rosSock)
+        {
+            std::cout << "sending control to ROS bridge...";
+            for (float c : fullActions)
+                std::cout << c << " ";
+            std::cout << "\n";
+            sendRosAction(*rosSock, fullActions, step);
+        }
 
         std::cout << std::fixed << std::setprecision(2);
         std::cout << "Current state at step " << step << ":\n";
         Env::printState(state);
 
+        if (rosSock)
+        {
+            std::cout << "Receiving new state from ROS bridge...\n";
+
+            zmq::message_t msg;
+            auto res = rosSock->recv(msg);
+            if (!res)
+                throw std::runtime_error("Failed to receive ROS new state!");
+
+            auto [physSimState, recvStep] = Env::unpackSimStateRaw(msg.data(), msg.size(), envConfig, prevState);
+
+            // update stopInfo
+            // TODO: only works for strat race env
+            if (Env::isOutside(physSimState, envConfig, envConfig.droneRadius, trueTheta))
+                stopInfo = EVT_OUTSIDE;
+            else if (Env::isWinner(physSimState, envConfig))
+                stopInfo = EVT_WINNER;
+            else if (Env::isOppWinner(physSimState, envConfig))
+                stopInfo = EVT_OPP_WINNER;
+            else
+                stopInfo = std::nullopt;
+
+            std::cout << "Received ROS state at step " << step << ":\n";
+            Env::printState(physSimState);
+
+            if (recvStep != step)
+            {
+                std::cout << "ERROR: received ROS status for step " << recvStep << " but expected step " << step << "\n";
+                std::cout << "sending emergency stop...\n";
+                stopInfo = EVT_EMERGENCY_STOP;
+
+                break;
+            }
+
+            state = physSimState;
+        }
+
+        sendState(sock, step, action, prevState);
+
         if (stopInfo)
         {
             std::cout << "Event " << *stopInfo << "\n";
             sendEvent(sock, *stopInfo);
+
+            if (rosSock)
+                sendEvent(*rosSock, *stopInfo);
+
             break;
         }
 
         if (step == maxSteps)
+        {
             sendEvent(sock, EVT_TRUNCATED);
+            if (rosSock)
+                sendEvent(*rosSock, EVT_TRUNCATED);
+        }
     }
 
     sendDone(sock);
@@ -360,6 +431,8 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock)
         std::cout << "Agent wins\n";
     else if (*stopInfo == EVT_OPP_WINNER)
         std::cout << "Opponent wins\n";
+    else
+        std::cout << "Emergency stop\n";
 }
 
 std::optional<EventType> SimulationEngine::parseTerm(TerminalType term)

@@ -25,6 +25,10 @@ void printState(const SimState& state);
 
 SimState unpackSimState(const void* buf, size_t len, const EnvironmentConfig& envConfig);
 
+// to use with ROS. returns new state and step included in message. prevState should be the previous state, not the engine new step (which already
+// contains the laps update, for example)
+std::pair<SimState, int> unpackSimStateRaw(const void* buf, size_t len, const EnvironmentConfig& envConfig, const SimState& prevState);
+
 OppConfig unpackOppConfig(Reader& reader);
 
 // return (seed, trueTheta)
@@ -460,8 +464,8 @@ HD INLINE cuda::std::pair<float, float> computeOppTargetLatDist(int iOpp, const 
     return {latDis, speedGoal};
 }
 
-/*
 // Control function, 1 <= iOpp <= N_OPP. does not apply noise
+/*
 HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const EnvironmentConfig& envConfig, float* outAction, int trueTheta)
 {
     auto [latDis, speedGoal] = computeOppTargetLatDist(iOpp, state, envConfig, trueTheta);
@@ -474,6 +478,7 @@ HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const Envi
     sampleNormalizedSpeed(envConfig.t_grid, state.S[iOpp], tang_i, L);
 
     float s_dot = computeSdot(iOpp, state, envConfig);
+    s_dot = fmaxf(s_dot, envConfig.maxSpeed[iOpp] * 0.5f);
     float s_target = state.S[iOpp] + PID_TARGET * envConfig.dt * s_dot;
 
     float p_target[2];
@@ -529,6 +534,111 @@ HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const Envi
     }
 }
 */
+
+HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const EnvironmentConfig& envConfig, float* outAction, int trueTheta)
+{
+    auto [latDis_target, speedGoal] = computeOppTargetLatDist(iOpp, state, envConfig, trueTheta);
+
+    float L = envConfig.trackLength;
+    float dt = envConfig.dt;
+    float a_max = envConfig.maxAccel[iOpp];
+    float v_max = envConfig.maxSpeed[iOpp];
+
+    // --- Current state in Frenet frame ---
+    float s_cur = state.S[iOpp];
+    float e_cur = state.latDist[iOpp];
+
+    // Sample track geometry at current position
+    float tang_cur[2], norm_cur[2];
+    float kappa_cur;
+    sampleNormalizedSpeed(envConfig.t_grid, s_cur, tang_cur, L);
+    sampleTrackArray<false>(envConfig.kappa_grid, s_cur, &kappa_cur, L);
+
+    // Normal is tangent rotated 90° CCW (or however rotateVec works)
+    norm_cur[0] = rotateVec(0, tang_cur[0], tang_cur[1]);
+    norm_cur[1] = rotateVec(1, tang_cur[0], tang_cur[1]);
+
+    // Decompose velocity into Frenet components
+    float vx = state.vel[iOpp * 2 + 0];
+    float vy = state.vel[iOpp * 2 + 1];
+
+    // s_dot and e_dot from velocity projection
+    float metric = 1.0f - kappa_cur * e_cur;
+    if (fabsf(metric) < 1e-6f)
+        metric = copysignf(1e-6f, metric);
+
+    float s_dot = (tang_cur[0] * vx + tang_cur[1] * vy) / metric;
+    float e_dot = norm_cur[0] * vx + norm_cur[1] * vy;
+
+    // --- Look-ahead for curvature feedforward ---
+    // Use curvature slightly ahead to compensate for delay
+    float tau_lookahead = 3.0f * dt; // tune: ~3 timesteps ahead
+    float s_ahead = s_cur + s_dot * tau_lookahead;
+    float kappa_ahead;
+    sampleTrackArray<false>(envConfig.kappa_grid, s_ahead, &kappa_ahead, L);
+
+    // Effective curvature on the offset path
+    float metric_ahead = 1.0f - kappa_ahead * e_cur;
+    if (fabsf(metric_ahead) < 1e-6f)
+        metric_ahead = copysignf(1e-6f, metric_ahead);
+    float kappa_eff = kappa_ahead / metric_ahead;
+
+    // --- Lateral control: critically-damped (slightly overdamped) PD + feedforward ---
+    // Tuning parameters
+    float omega_n = envConfig.kP; // natural frequency (e.g., 3.0-6.0 rad/s)
+    float xi = 1.2;               // damping ratio (e.g., 1.1-1.2 for overdamped, no overshoot)  // TODO: hardcoded
+
+    float delta_e = e_cur - latDis_target;
+
+    // Lateral acceleration in Frenet frame
+    // PD terms + centripetal feedforward
+    float a_lat = -omega_n * omega_n * delta_e - 2.0f * xi * omega_n * e_dot + kappa_eff * s_dot * s_dot;
+
+    // Clamp lateral acceleration to full budget (priority)
+    float a_lat_clamped = fminf(fabsf(a_lat), a_max);
+    a_lat_clamped = copysignf(a_lat_clamped, a_lat);
+
+    // --- Longitudinal control: P on speed with curvature speed limit ---
+    float maxCurvatureSpeed = sqrtf(a_max / fmaxf(fabsf(kappa_eff), 1e-6f));
+    float v_target = fminf(speedGoal, fminf(v_max, maxCurvatureSpeed));
+
+    float k_lon = envConfig.kV; // longitudinal speed gain (e.g., 2.0-5.0)
+    float a_lon_desired = k_lon * (v_target - s_dot);
+
+    // Remaining acceleration budget for longitudinal after lateral takes priority
+    float a_lon_budget = sqrtf(fmaxf(a_max * a_max - a_lat_clamped * a_lat_clamped, 0.0f));
+
+    // Clamp longitudinal
+    float a_lon = fminf(fabsf(a_lon_desired), a_lon_budget);
+    a_lon = copysignf(a_lon, a_lon_desired);
+
+    // --- Convert Frenet accelerations to world frame ---
+    // In Frenet frame for a double integrator on a curved path:
+    //   world_accel = a_lon * metric * tang + a_lat * norm
+    //                 + correction terms (Coriolis, etc.)
+    // For simplicity and robustness, use the dominant terms:
+    //   - Tangential: a_lon along tangent direction (scaled by metric for actual arc)
+    //   - Normal: a_lat along normal direction
+    // The centripetal feedforward is already embedded in a_lat.
+
+    // We need to subtract the "geometric" centripetal that naturally arises
+    // from following the curve. The feedforward in a_lat handles this.
+    // Transform: accel_world = a_lon * tang + a_lat * norm
+    // (The metric factor on a_lon accounts for s being arc-length of centerline, not offset path.
+    //  For the acceleration command we want actual acceleration, so we just use tang direction.)
+
+    outAction[0] = a_lon * tang_cur[0] + a_lat_clamped * norm_cur[0];
+    outAction[1] = a_lon * tang_cur[1] + a_lat_clamped * norm_cur[1];
+
+    // Final safety clamp (should rarely trigger due to budget allocation above)
+    float normSq = outAction[0] * outAction[0] + outAction[1] * outAction[1];
+    if (normSq > a_max * a_max)
+    {
+        float scale = a_max / sqrtf(normSq);
+        outAction[0] *= scale;
+        outAction[1] *= scale;
+    }
+}
 
 // better? Does not use a lookahead point, simply tries to maintain good position, velocity & position
 /*
@@ -608,6 +718,7 @@ HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const Envi
 */
 
 // second try?
+/*
 HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const EnvironmentConfig& envConfig, float* outAction, int trueTheta)
 {
     float L = envConfig.trackLength;
@@ -704,6 +815,7 @@ HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const Envi
     outAction[0] = a_t_cmd * tang[0] + a_n_total * norm[0];
     outAction[1] = a_t_cmd * tang[1] + a_n_total * norm[1];
 }
+*/
 
 // compute opp. nominal actions, opp noise + env noise (only if applyNoise is True), env dynamics, belief update (only if
 // shouldUpdateBelief) and branch update (only if considerBranching is true; if we become specialized, set corresponding branching

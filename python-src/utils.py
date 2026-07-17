@@ -26,6 +26,7 @@ class EVENT_TYPE(IntEnum):
     EVT_WINNER = 1
     EVT_OPP_WINNER = 2
     EVT_TRUNCATED = 3
+    EVT_EMERGENCY_STOP = 4
 
 
 class CONTROLLER_KIND(IntEnum):

@@ -22,6 +22,8 @@
 // with this mode, opponent get to set their desired lateral offset instead of having to play it fair
 // #define CHEATING
 
+inline bool REAL_EXPERIMENT = true;
+
 inline constexpr bool USE_SPLINES = true;
 
 inline constexpr int MAX_N_KNOTS = 60;

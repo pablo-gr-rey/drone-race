@@ -117,6 +117,37 @@ SimState unpackSimState(const void* buf, size_t len, const EnvironmentConfig& /*
     return state;
 }
 
+std::pair<SimState, int> unpackSimStateRaw(const void* buf, size_t len, const EnvironmentConfig& envConfig, const SimState& prevState)
+{
+    Reader reader(buf, len);
+
+    int kind = reader.readInt32();
+    if (kind != MSG_STATE)
+        throw std::runtime_error(
+            std::format("Expected header message type for environment config (type {}) but got type {} instead", static_cast<int>(MSG_STATE), kind));
+
+    int step = reader.readInt32();
+
+    SimState state = prevState;
+    reader.readArray(state.pos);
+    reader.readArray(state.vel);
+
+    reader.assertFinished();
+
+    for (int a = 0; a < N_AGENTS; a++)
+        state.S[a] = fastProjectOnTrack<false>(envConfig, state.pos.data() + a * DIM, state.S[a], nullptr, state.latDist[a]);
+
+    for (int a = 0; a < N_AGENTS; a++)
+    {
+        if (state.S[a] < prevState.S[a] - envConfig.trackLength * 0.5f)
+            state.laps[a]++;
+        if (state.S[a] > prevState.S[a] + envConfig.trackLength * 0.5f)
+            state.laps[a]--;
+    }
+
+    return {state, step};
+}
+
 OppConfig unpackOppConfig(Reader& reader)
 {
     OppConfig oppConfig;

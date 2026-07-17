@@ -21,23 +21,23 @@ inline constexpr int N_MODEL_FACTORS = 1;
 HD INLINE constexpr int MODEL_SIZE(int /* k */)
 {
     // for several models with different sizes, tests are fine: return (k == 0) ? 2 : 3 or a switch, but here we can just fold it
-    return 2;
-    // return 1;
+    // return 2;
+    return 1;
 }
 
 HD INLINE constexpr int BRANCH_SIZE(int /* k */)
 {
     // same comment as above
-    return 3;
-    // return 2;
+    // return 3;
+    return 2;
 }
 
 inline constexpr int N_TRUE_MODELS = N_MODEL_FACTORS == 1 ? MODEL_SIZE(0) : MODEL_SIZE(0) * MODEL_SIZE(1);
 inline constexpr int N_BRANCH_PLANS = N_MODEL_FACTORS == 1 ? BRANCH_SIZE(0) : BRANCH_SIZE(0) * BRANCH_SIZE(1);
 inline constexpr int MAX_MODEL_SIZE = N_MODEL_FACTORS == 1 ? MODEL_SIZE(0) : (MODEL_SIZE(0) > MODEL_SIZE(1) ? MODEL_SIZE(0) : MODEL_SIZE(1));
 
-inline constexpr int WINDOW_SIZE = 10;    // on each side
-inline constexpr float PID_TARGET = 3.0f; // as multiples of dt, ie. PID will reach for target at expected s in future time PID_TARGET * dt
+inline constexpr int WINDOW_SIZE = 10;     // on each side
+inline constexpr float PID_TARGET = 20.0f; // as multiples of dt, ie. PID will reach for target at expected s in future time PID_TARGET * dt
 
 struct OppConfig
 {
