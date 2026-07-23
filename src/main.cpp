@@ -4,11 +4,12 @@
 #include <chrono>
 #include <cstdio>
 #include <iostream>
+#include <thread>
 #include <zmq.hpp>
 
-void runEngine(zmq::socket_t& sock, std::optional<zmq::socket_t>& rosSock)
+void runEngine(zmq::socket_t& sock, std::optional<zmq::socket_t>& rosStateSock, std::optional<zmq::socket_t>& rosAccSock)
 {
-    int max_steps = 500;
+    int max_steps = REAL_EXPERIMENT ? 10000 : 500;
 
     std::cout << "Waiting for track configuration header...\n";
     zmq::message_t msg;
@@ -32,47 +33,47 @@ void runEngine(zmq::socket_t& sock, std::optional<zmq::socket_t>& rosSock)
 
     bool errorMode = false;
 
-    if (rosSock)
+    if (rosStateSock)
     {
-        std::cout << "Waiting for ROS handshake...\n";
-        if (!rosSock->recv(msg))
-            throw std::runtime_error("Failed to receive ROS handshake!");
-        std::cout << "Sending ROS handshake...\n";
+        std::this_thread::sleep_for(std::chrono::milliseconds(500)); // make sure bridge has time to subscribe
 
-        Writer writer;
-        writer.pushInt32(MSG_HEADER);
-        if (!rosSock->send(zmq::buffer(writer.data)))
-            throw std::runtime_error("Failed to send ROS handshake!");
+        for (int i = 0; i < 2; i++)
+        {
+            std::cout << "Waiting for ROS handshake (" << (i + 1) << "/2)...\n";
+            if (!rosStateSock->recv(msg))
+                throw std::runtime_error("Failed to receive ROS handshake!");
 
-        Reader reader(msg.data(), msg.size());
-        if (reader.readInt32() != MSG_HEADER)
-            throw std::runtime_error("Invalid ROS handshake");
-        reader.assertFinished();
+            Reader reader(msg.data(), msg.size());
+            if (reader.readInt32() != MSG_HEADER)
+                throw std::runtime_error("Invalid ROS handshake");
+            reader.assertFinished();
+
+            std::cout << "Sending ROS handshake...\n";
+
+            Writer writer;
+            writer.pushInt32(MSG_HEADER);
+            if (!rosAccSock->send(zmq::buffer(writer.data)))
+                throw std::runtime_error("Failed to send ROS handshake!");
+        }
 
         std::cout << "Sending first state position...\n";
-        writer = {};
+        Writer writer;
         writer.pushInt32(MSG_HEADER);
         writer.pushFloatArray(initSimState.pos);
 
-        if (!rosSock->send(zmq::buffer(writer.data)))
+        if (!rosAccSock->send(zmq::buffer(writer.data)))
             throw std::runtime_error("Failed to send init state!");
 
         std::cout << "Waiting for ROS first state...\n";
-        if (!rosSock->recv(msg))
+        if (!rosStateSock->recv(msg))
             throw std::runtime_error("Failed to receive ROS first state!");
 
-        auto [physSimState, step] = Env::unpackSimStateRaw(msg.data(), msg.size(), envConfig, initSimState);
+        SimState physSimState = Env::unpackSimStateRaw(msg.data(), msg.size(), envConfig, initSimState);
 
         std::cout << "Received physical state:\n";
         Env::printState(physSimState);
         std::cout << "\nExpected state:\n";
         Env::printState(initSimState);
-
-        if (step != 0)
-        {
-            std::cout << "ERROR: received first step " << step << ", expected 0\n. Sending emergency stop\n";
-            errorMode = true;
-        }
 
         initSimState = physSimState;
     }
@@ -82,11 +83,11 @@ void runEngine(zmq::socket_t& sock, std::optional<zmq::socket_t>& rosSock)
     SimulationEngine engine(envConfig, contConfig, initSimState, seed, trueTheta);
 
     if (errorMode)
-        engine.sendEvent(*rosSock, EVT_EMERGENCY_STOP);
+        engine.sendEvent(*rosAccSock, EVT_EMERGENCY_STOP);
 
     auto begin = std::chrono::steady_clock::now();
 
-    engine.run(max_steps, sock, rosSock);
+    engine.run(max_steps, sock, rosStateSock, rosAccSock);
 
     auto end = std::chrono::steady_clock::now();
 
@@ -132,33 +133,43 @@ int main(int argc, char** argv)
     std::cout << "Binding ZMQ to Python frontend: addr " << zmqAddr << "...\n";
     sock.bind(zmqAddr);
 
-    std::optional<zmq::context_t> ros_ctx = std::nullopt;
-    std::optional<zmq::socket_t> ros_sock = std::nullopt;
+    std::optional<zmq::socket_t> ros_state_sock = std::nullopt;
+    std::optional<zmq::socket_t> ros_acc_sock = std::nullopt;
     if (REAL_EXPERIMENT)
     {
-        std::string rosAddr = "tcp://*:5556";
-        if (argc > 2)
-            rosAddr = argv[2];
+        std::string rosStateAddr = "tcp://*:5556", rosAccAddr = "tcp://*:5557";
+        if (argc > 3)
+        {
+            rosStateAddr = argv[2];
+            rosAccAddr = argv[3];
+        }
 
-        ros_ctx = zmq::context_t(1);
-        ros_sock = zmq::socket_t(ctx, zmq::socket_type::pair);
-        ros_sock->set(zmq::sockopt::linger, 0);
+        ros_state_sock = zmq::socket_t(ctx, zmq::socket_type::sub);
+        ros_acc_sock = zmq::socket_t(ctx, zmq::socket_type::pub);
 
-        std::cout << "Binding ZMQ to ROS on addr " << rosAddr << "...\n";
-        ros_sock->bind(rosAddr);
+        ros_state_sock->set(zmq::sockopt::conflate, 1); // only keep latest state
+        ros_state_sock->set(zmq::sockopt::subscribe, "");
+
+        std::cout << "Binding ZMQ to ROS on addrs " << rosStateAddr << " and " << rosAccAddr << "...\n";
+        ros_state_sock->bind(rosStateAddr);
+        ros_acc_sock->bind(rosAccAddr);
     }
     else
         std::cout << "Running on pure simulation\n";
 
     // while (1)
-    runEngine(sock, ros_sock);
+    runEngine(sock, ros_state_sock, ros_acc_sock);
 
+    sock.set(zmq::sockopt::linger, 0);
     sock.close();
-    ctx.close();
 
-    if (ros_ctx)
+    if (ros_state_sock)
     {
-        ros_sock->close();
-        ros_ctx->close();
+        ros_state_sock->set(zmq::sockopt::linger, 0);
+        ros_acc_sock->set(zmq::sockopt::linger, 0);
+        ros_state_sock->close();
+        ros_acc_sock->close();
     }
+
+    ctx.close();
 }

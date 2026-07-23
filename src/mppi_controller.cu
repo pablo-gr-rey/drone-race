@@ -140,6 +140,11 @@ std::vector<float> MPPIController::buildSplineMatrix()
     return B;
 }
 
+void MPPIController::init()
+{
+    allocDevice();
+}
+
 void MPPIController::allocDevice()
 {
     if (deviceReady)

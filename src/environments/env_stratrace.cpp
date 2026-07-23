@@ -117,16 +117,14 @@ SimState unpackSimState(const void* buf, size_t len, const EnvironmentConfig& /*
     return state;
 }
 
-std::pair<SimState, int> unpackSimStateRaw(const void* buf, size_t len, const EnvironmentConfig& envConfig, const SimState& prevState)
+SimState unpackSimStateRaw(const void* buf, size_t len, const EnvironmentConfig& envConfig, const SimState& prevState)
 {
     Reader reader(buf, len);
 
     int kind = reader.readInt32();
     if (kind != MSG_STATE)
-        throw std::runtime_error(
-            std::format("Expected header message type for environment config (type {}) but got type {} instead", static_cast<int>(MSG_STATE), kind));
-
-    int step = reader.readInt32();
+        throw std::runtime_error(std::format("Expected MSG_STATE message type for unpackSimStateRaw config (type {}) but got type {} instead",
+                                             static_cast<int>(MSG_STATE), kind));
 
     SimState state = prevState;
     reader.readArray(state.pos);
@@ -145,7 +143,7 @@ std::pair<SimState, int> unpackSimStateRaw(const void* buf, size_t len, const En
             state.laps[a]--;
     }
 
-    return {state, step};
+    return state;
 }
 
 OppConfig unpackOppConfig(Reader& reader)

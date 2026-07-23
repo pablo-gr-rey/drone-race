@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <iostream>
 #include <optional>
+#include <thread>
 #include <type_traits>
 #include <variant>
 #include <zmq.h>
@@ -45,6 +46,7 @@ SimulationEngine::SimulationEngine(const EnvironmentConfig& config, const AnyCon
         contConfig);
 
     controller->engine = this;
+    controller->init();
 }
 
 SimulationEngine::~SimulationEngine()
@@ -263,11 +265,13 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
     sock.send(zmq::buffer(writer.data));
 }
 
-void SimulationEngine::sendEvent(zmq::socket_t& sock, EventType type)
+void SimulationEngine::sendEvent(zmq::socket_t& sock, EventType type, const std::optional<float> timestamp)
 {
     Writer writer;
 
     writer.pushInt32(MSG_EVENT);
+    if (timestamp)
+        writer.pushFloat(*timestamp);
     writer.pushInt32(type);
 
     sock.send(zmq::buffer(writer.data));
@@ -282,12 +286,12 @@ void SimulationEngine::sendDone(zmq::socket_t& sock)
     sock.send(zmq::buffer(writer.data));
 }
 
-void SimulationEngine::sendRosAction(zmq::socket_t& rosSock, const std::array<float, EnvStratRace::N_AGENTS * ACTION_DIM>& action, int step)
+void SimulationEngine::sendRosAction(zmq::socket_t& rosSock, const std::array<float, EnvStratRace::N_AGENTS * ACTION_DIM>& action, float timestamp)
 {
     Writer writer;
 
     writer.pushInt32(MSG_STATE);
-    writer.pushInt32(step);
+    writer.pushFloat(timestamp);
     writer.pushFloatArray(action);
 
     rosSock.send(zmq::buffer(writer.data));
@@ -326,7 +330,7 @@ std::optional<EventType> SimulationEngine::dynStep(const std::array<float, ACTIO
     return parseTerm(term);
 }
 
-void SimulationEngine::run(int maxSteps, zmq::socket_t& sock, std::optional<zmq::socket_t>& rosSock)
+void SimulationEngine::run(int maxSteps, zmq::socket_t& sock, std::optional<zmq::socket_t>& rosStateSock, std::optional<zmq::socket_t>& rosAccSock)
 {
     std::array<float, ACTION_DIM> dummyAction{};
     sendState(sock, 0, dummyAction, state);
@@ -335,9 +339,15 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock, std::optional<zmq:
 
     std::optional<EventType> stopInfo = std::nullopt;
 
+    auto interval = std::chrono::duration_cast<std::chrono::high_resolution_clock::duration>(std::chrono::duration<float>(envConfig.dt));
+
+    auto firstTime = std::chrono::high_resolution_clock::now();
+    auto nextTick = std::chrono::high_resolution_clock::now();
+
     for (step = 1; step <= maxSteps; step++)
     {
         std::cout << "\nSTEP " << step << "\n";
+        nextTick = std::chrono::high_resolution_clock::now();
 
         std::array<float, ACTION_DIM> action;
         std::array<float, EnvStratRace::N_AGENTS * ACTION_DIM> fullActions;
@@ -348,74 +358,84 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock, std::optional<zmq:
 
         stopInfo = dynStep(action, step, controller->h_belief, fullActions);
 
-        if (rosSock)
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double, std::milli> duration = end - nextTick, totDuration = end - firstTime;
+
+        std::cout << "Control took " << duration.count() << " ms;\t since beginning, " << totDuration.count() << " ms; \ton average "
+                  << (totDuration.count() / step) << " ms per step\n";
+
+        if (rosStateSock)
         {
             std::cout << "sending control to ROS bridge...";
             for (float c : fullActions)
                 std::cout << c << " ";
             std::cout << "\n";
-            sendRosAction(*rosSock, fullActions, step);
+            sendRosAction(*rosAccSock, fullActions, std::chrono::duration<float>(end - firstTime).count());
         }
 
         std::cout << std::fixed << std::setprecision(2);
         std::cout << "Current state at step " << step << ":\n";
         Env::printState(state);
 
-        if (rosSock)
+        sendState(sock, step, action, prevState);
+
+        if (rosStateSock)
         {
             std::cout << "Receiving new state from ROS bridge...\n";
 
             zmq::message_t msg;
-            auto res = rosSock->recv(msg);
+            auto res = rosStateSock->recv(msg);
             if (!res)
-                throw std::runtime_error("Failed to receive ROS new state!");
-
-            auto [physSimState, recvStep] = Env::unpackSimStateRaw(msg.data(), msg.size(), envConfig, prevState);
-
-            // update stopInfo
-            // TODO: only works for strat race env
-            if (Env::isOutside(physSimState, envConfig, envConfig.droneRadius, trueTheta))
-                stopInfo = EVT_OUTSIDE;
-            else if (Env::isWinner(physSimState, envConfig))
-                stopInfo = EVT_WINNER;
-            else if (Env::isOppWinner(physSimState, envConfig))
-                stopInfo = EVT_OPP_WINNER;
+                std::cout << "no new state from ROS bridge! using integrated state\n";
             else
-                stopInfo = std::nullopt;
-
-            std::cout << "Received ROS state at step " << step << ":\n";
-            Env::printState(physSimState);
-
-            if (recvStep != step)
             {
-                std::cout << "ERROR: received ROS status for step " << recvStep << " but expected step " << step << "\n";
-                std::cout << "sending emergency stop...\n";
-                stopInfo = EVT_EMERGENCY_STOP;
+                SimState physSimState = Env::unpackSimStateRaw(msg.data(), msg.size(), envConfig, prevState);
 
-                break;
+                // update stopInfo
+                // TODO: only works for strat race env
+                if (Env::isOutside<false>(physSimState, envConfig, envConfig.droneRadius, trueTheta))
+                    stopInfo = EVT_OUTSIDE;
+                else if (Env::isWinner(physSimState, envConfig))
+                    stopInfo = EVT_WINNER;
+                else if (Env::isOppWinner(physSimState, envConfig))
+                    stopInfo = EVT_OPP_WINNER;
+                else
+                    stopInfo = std::nullopt;
+
+                std::cout << "Received ROS state at step " << step << ":\n";
+                Env::printState(physSimState);
+
+                state = physSimState;
             }
-
-            state = physSimState;
         }
 
-        sendState(sock, step, action, prevState);
+        if (!stopInfo && step == maxSteps)
+            stopInfo = EVT_TRUNCATED;
 
         if (stopInfo)
         {
             std::cout << "Event " << *stopInfo << "\n";
             sendEvent(sock, *stopInfo);
 
-            if (rosSock)
-                sendEvent(*rosSock, *stopInfo);
+            if (rosAccSock)
+                sendEvent(*rosAccSock, *stopInfo, std::chrono::duration<float>(end - firstTime).count());
 
             break;
         }
 
-        if (step == maxSteps)
+        end = std::chrono::high_resolution_clock::now();
+        duration = end - nextTick;
+        std::cout << "Full control step took " << duration.count() << " ms\n";
+        nextTick += interval;
+        duration = nextTick - end;
+
+        if (REAL_EXPERIMENT)
         {
-            sendEvent(sock, EVT_TRUNCATED);
-            if (rosSock)
-                sendEvent(*rosSock, EVT_TRUNCATED);
+            // in a real experiment, we want to compute control in actual dt time
+            if (nextTick < end)
+                std::cout << "Cannot keep up! Engine is running " << (-duration).count() << "ms late\n";
+            else
+                std::this_thread::sleep_until(nextTick);
         }
     }
 
@@ -423,7 +443,7 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock, std::optional<zmq:
 
     std::cout << "Simulation finished after " << step << " steps.\nStop reason: ";
 
-    if (!stopInfo)
+    if (!stopInfo || stopInfo == EVT_TRUNCATED)
         std::cout << "Simulation truncated (maxSteps reached)\n";
     else if (*stopInfo == EVT_OUTSIDE)
         std::cout << "Agent is outside\n";

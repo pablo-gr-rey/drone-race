@@ -1003,7 +1003,7 @@ def stratRaceEnv(usePR=False, useSplines=True, mppiPos=0, nConfigs=1, firstConfi
 def physRaceEnv(usePR=False, useSplines=True, mppiPos=0, nConfigs=1, firstConfig=0):
     "mppiPos should be 0 if last, 1 if 2nd-to-last, etc. -1 = first"
 
-    TRACK_RADIUS = 1.5
+    TRACK_RADIUS = 1.4
     CONTROL_FREQ = 20  # hz
 
     def roundTrack(f: float) -> np.ndarray:
@@ -1035,15 +1035,17 @@ def physRaceEnv(usePR=False, useSplines=True, mppiPos=0, nConfigs=1, firstConfig
         nOppAgents=nOpps,
         dt=dt,
         droneRadius=droneRadius,
-        maxSpeed=swapArray([0.05, 0.03]) * TRACK_RADIUS / dt,
-        maxAccel=np.array([0.003, 0.005]) * TRACK_RADIUS / dt**2,
+        # maxSpeed=swapArray([0.05, 0.03]) * TRACK_RADIUS / dt,
+        maxSpeed=swapArray([0.8, 0.6]),
+        # maxAccel=np.array([0.003, 0.005]) * TRACK_RADIUS / dt**2,
+        maxAccel=swapArray([0.7, 0.7]),
         nTrackSamples=512,
-        trackWidth=TRACK_RADIUS / 3,
+        trackWidth=TRACK_RADIUS / 2.8,
         nWinLaps=1,
         opponentConfigs=oppConfigs,
         # kP=1000,
         # kV=1000,
-        kP=3,
+        kP=5,
         kV=2,
         maxOppLatDistFact=1.9,
         trackFunction=roundTrack,
@@ -1093,18 +1095,18 @@ def physRaceEnv(usePR=False, useSplines=True, mppiPos=0, nConfigs=1, firstConfig
             # nSamples=1,
             nTimesteps=80,
             inv_temperature=10,
-            samplingNoise=0.5,
+            samplingNoise=envConfig.maxAccel[0] / 4,
             # samplingNoise=0.5,
-            collDistFactor=1.4,
+            collDistFactor=1.3,
             # collDistFactor=1.2,
             # finalAdvWeight=500,
-            finalAdvWeight=500,
+            finalAdvWeight=5000,
             finalOppAdvWeight=0,
             # finalOppAdvWeight=500,
             # boundaryCost=5,
             # boundaryCost=0.0,
             boundaryCost=50.0,
-            boundaryThresholdFactor=1.8,
+            boundaryThresholdFactor=1.6,
             outsideCost=1e7,
             winCost=1e5,
             oppWinCost=1e5,

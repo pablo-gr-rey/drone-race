@@ -25,9 +25,9 @@ void printState(const SimState& state);
 
 SimState unpackSimState(const void* buf, size_t len, const EnvironmentConfig& envConfig);
 
-// to use with ROS. returns new state and step included in message. prevState should be the previous state, not the engine new step (which already
+// to use with ROS. returns new state. prevState should be the previous state, not the engine new step (which already
 // contains the laps update, for example)
-std::pair<SimState, int> unpackSimStateRaw(const void* buf, size_t len, const EnvironmentConfig& envConfig, const SimState& prevState);
+SimState unpackSimStateRaw(const void* buf, size_t len, const EnvironmentConfig& envConfig, const SimState& prevState);
 
 OppConfig unpackOppConfig(Reader& reader);
 
@@ -586,7 +586,7 @@ HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const Envi
     // --- Lateral control: critically-damped (slightly overdamped) PD + feedforward ---
     // Tuning parameters
     float omega_n = envConfig.kP; // natural frequency (e.g., 3.0-6.0 rad/s)
-    float xi = 1.2;               // damping ratio (e.g., 1.1-1.2 for overdamped, no overshoot)  // TODO: hardcoded
+    float xi = 1.05;              // damping ratio (e.g., 1.1-1.2 for overdamped, no overshoot)  // TODO: hardcoded
 
     float delta_e = e_cur - latDis_target;
 

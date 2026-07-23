@@ -15,11 +15,11 @@ class SimulationEngine
     ~SimulationEngine();
 
     void sendState(zmq::socket_t& sock, int step, const std::array<float, ACTION_DIM>& egoAction, const SimState& prevState);
-    void sendEvent(zmq::socket_t& sock, EventType type);
+    void sendEvent(zmq::socket_t& sock, EventType type, const std::optional<float> timestamp = std::nullopt);
     void sendDone(zmq::socket_t& sock);
 
     // Run until termination or maxSteps. Publishes over ZMQ.
-    void run(int maxSteps, zmq::socket_t& sock, std::optional<zmq::socket_t>& rosSock);
+    void run(int maxSteps, zmq::socket_t& sock, std::optional<zmq::socket_t>& rosStateSock, std::optional<zmq::socket_t>& rosAccSock);
 
     // public config & track data
     EnvironmentConfig envConfig;
@@ -42,7 +42,7 @@ class SimulationEngine
 
     std::optional<EventType> dynStep(const std::array<float, ACTION_DIM>& action, int t, std::array<float, N_TRUE_MODELS>& belief,
                                      std::span<float> fullActions = {});
-    void sendRosAction(zmq::socket_t& rosSock, const std::array<float, EnvStratRace::N_AGENTS * ACTION_DIM>& action, int step);
+    void sendRosAction(zmq::socket_t& rosSock, const std::array<float, EnvStratRace::N_AGENTS * ACTION_DIM>& action, float timestamp);
 
     std::optional<EventType> parseTerm(TerminalType term);
 };

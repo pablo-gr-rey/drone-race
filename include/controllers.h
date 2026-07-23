@@ -16,6 +16,10 @@ class Controller
 
     virtual void getControl(const SimState& state, float* outAction) = 0;
 
+    virtual void init()
+    {
+    }
+
     SimulationEngine* engine = nullptr;
     std::array<float, N_TRUE_MODELS> h_belief; // host belief (nTrueModels). this is updated by the engine
 };
@@ -31,6 +35,7 @@ class MPPIController : public Controller
     ~MPPIController();
 
     void getControl(const SimState& state, float* outAction) override;
+    void init() override;
 
     MPPIConfig mppiConfig;
 
