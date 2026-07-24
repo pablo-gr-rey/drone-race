@@ -426,7 +426,6 @@ HD INLINE cuda::std::pair<float, float> computeOppTargetLatDist(int iOpp, const 
             overtakeTerm = (state.latDist[j] - copysignf(config.s1[iOpp - 1], deltaE)) * factor;
             latDis += overtakeTerm;
 
-            // TODO: hardcoded
             float oppLongSpeed = state.vel[2 * j] * tang_j[0] + state.vel[2 * j + 1] * tang_j[1];
 
             if (deltaS < 3 * envConfig.droneRadius)
@@ -445,13 +444,6 @@ HD INLINE cuda::std::pair<float, float> computeOppTargetLatDist(int iOpp, const 
         //     // printf("%f %f %f %d %f\n", state.latDist[j], (1 - expf(-config.s3[iOpp - 1] * (sdot_j - sdot_i))), factor, iOpp, config.s3[iOpp -
         //     // 1]);
         // }
-
-        // we should only apply the overtake term if we are not trying to block; otherwise, they fight each other
-        // blocking term
-        // if (shouldBlock)
-        // latDis += state.latDist[j] * (1 - expf(-config.s3[iOpp - 1] * (v_j_tang - v_i_tang))) * expf(-config.s2[iOpp - 1] * deltaS * deltaS);
-        // else // overtaking term
-        // latDis -= copysignf(fmaxf(0.0f, (config.s1[iOpp - 1] - fabsf(deltaE)) * expf(-config.s2[iOpp - 1] * deltaS * deltaS)), deltaE);
     }
 
     float maxLatDis = envConfig.trackWidth - envConfig.droneRadius * envConfig.maxOppLatDistFact;
@@ -544,25 +536,22 @@ HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const Envi
     float a_max = envConfig.maxAccel[iOpp];
     float v_max = envConfig.maxSpeed[iOpp];
 
-    // --- Current state in Frenet frame ---
+    // current state
     float s_cur = state.S[iOpp];
     float e_cur = state.latDist[iOpp];
 
-    // Sample track geometry at current position
+    // sample track geometry at current position
     float tang_cur[2], norm_cur[2];
     float kappa_cur;
     sampleNormalizedSpeed(envConfig.t_grid, s_cur, tang_cur, L);
     sampleTrackArray<false>(envConfig.kappa_grid, s_cur, &kappa_cur, L);
 
-    // Normal is tangent rotated 90° CCW (or however rotateVec works)
     norm_cur[0] = rotateVec(0, tang_cur[0], tang_cur[1]);
     norm_cur[1] = rotateVec(1, tang_cur[0], tang_cur[1]);
 
-    // Decompose velocity into Frenet components
     float vx = state.vel[iOpp * 2 + 0];
     float vy = state.vel[iOpp * 2 + 1];
 
-    // s_dot and e_dot from velocity projection
     float metric = 1.0f - kappa_cur * e_cur;
     if (fabsf(metric) < 1e-6f)
         metric = copysignf(1e-6f, metric);
@@ -570,67 +559,44 @@ HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const Envi
     float s_dot = (tang_cur[0] * vx + tang_cur[1] * vy) / metric;
     float e_dot = norm_cur[0] * vx + norm_cur[1] * vy;
 
-    // --- Look-ahead for curvature feedforward ---
-    // Use curvature slightly ahead to compensate for delay
-    float tau_lookahead = 3.0f * dt; // tune: ~3 timesteps ahead
+    // use curvature slightly ahead to compensate for delay
+    float tau_lookahead = 3.0f * dt; // 3 timesteps ahead
     float s_ahead = s_cur + s_dot * tau_lookahead;
     float kappa_ahead;
     sampleTrackArray<false>(envConfig.kappa_grid, s_ahead, &kappa_ahead, L);
 
-    // Effective curvature on the offset path
+    // effective curvature at offset path
     float metric_ahead = 1.0f - kappa_ahead * e_cur;
     if (fabsf(metric_ahead) < 1e-6f)
         metric_ahead = copysignf(1e-6f, metric_ahead);
     float kappa_eff = kappa_ahead / metric_ahead;
 
-    // --- Lateral control: critically-damped (slightly overdamped) PD + feedforward ---
-    // Tuning parameters
-    float omega_n = envConfig.kP; // natural frequency (e.g., 3.0-6.0 rad/s)
-    float xi = 1.05;              // damping ratio (e.g., 1.1-1.2 for overdamped, no overshoot)  // TODO: hardcoded
+    // lateral control: critically-damped (slightly overdamped) PD + feedforward
+    float omega_n = envConfig.kP;
+    float xi = 1.05; // damping ratio (slightly overdamped to make sure to avoid overshoot even with delay)
 
     float delta_e = e_cur - latDis_target;
 
-    // Lateral acceleration in Frenet frame
-    // PD terms + centripetal feedforward
     float a_lat = -omega_n * omega_n * delta_e - 2.0f * xi * omega_n * e_dot + kappa_eff * s_dot * s_dot;
 
-    // Clamp lateral acceleration to full budget (priority)
     float a_lat_clamped = fminf(fabsf(a_lat), a_max);
     a_lat_clamped = copysignf(a_lat_clamped, a_lat);
 
-    // --- Longitudinal control: P on speed with curvature speed limit ---
+    // longitudinal control: P on speed with curvature speed limit
     float maxCurvatureSpeed = sqrtf(a_max / fmaxf(fabsf(kappa_eff), 1e-6f));
     float v_target = fminf(speedGoal, fminf(v_max, maxCurvatureSpeed));
 
-    float k_lon = envConfig.kV; // longitudinal speed gain (e.g., 2.0-5.0)
+    float k_lon = envConfig.kV;
     float a_lon_desired = k_lon * (v_target - s_dot);
 
-    // Remaining acceleration budget for longitudinal after lateral takes priority
     float a_lon_budget = sqrtf(fmaxf(a_max * a_max - a_lat_clamped * a_lat_clamped, 0.0f));
 
-    // Clamp longitudinal
     float a_lon = fminf(fabsf(a_lon_desired), a_lon_budget);
     a_lon = copysignf(a_lon, a_lon_desired);
-
-    // --- Convert Frenet accelerations to world frame ---
-    // In Frenet frame for a double integrator on a curved path:
-    //   world_accel = a_lon * metric * tang + a_lat * norm
-    //                 + correction terms (Coriolis, etc.)
-    // For simplicity and robustness, use the dominant terms:
-    //   - Tangential: a_lon along tangent direction (scaled by metric for actual arc)
-    //   - Normal: a_lat along normal direction
-    // The centripetal feedforward is already embedded in a_lat.
-
-    // We need to subtract the "geometric" centripetal that naturally arises
-    // from following the curve. The feedforward in a_lat handles this.
-    // Transform: accel_world = a_lon * tang + a_lat * norm
-    // (The metric factor on a_lon accounts for s being arc-length of centerline, not offset path.
-    //  For the acceleration command we want actual acceleration, so we just use tang direction.)
 
     outAction[0] = a_lon * tang_cur[0] + a_lat_clamped * norm_cur[0];
     outAction[1] = a_lon * tang_cur[1] + a_lat_clamped * norm_cur[1];
 
-    // Final safety clamp (should rarely trigger due to budget allocation above)
     float normSq = outAction[0] * outAction[0] + outAction[1] * outAction[1];
     if (normSq > a_max * a_max)
     {
@@ -639,183 +605,6 @@ HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const Envi
         outAction[1] *= scale;
     }
 }
-
-// better? Does not use a lookahead point, simply tries to maintain good position, velocity & position
-/*
-HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const EnvironmentConfig& envConfig, float* outAction, int trueTheta)
-{
-    float L = envConfig.trackLength;
-    float maxAccel = envConfig.maxAccel[iOpp];
-    float dt = envConfig.dt;
-
-    // --- Desired lateral offset ---
-    float latDis = computeOppTargetLatDist(iOpp, state, envConfig, trueTheta);
-    float latDisPrev = state.latDist[iOpp];
-    float latDis_dot = (latDis - latDisPrev) / dt;
-
-    // --- Current state ---
-    float s_now = state.S[iOpp];
-    float pos_i[2] = {state.pos[iOpp * 2], state.pos[iOpp * 2 + 1]};
-    float vel_i[2] = {state.vel[iOpp * 2], state.vel[iOpp * 2 + 1]};
-
-    // --- Track geometry at current s ---
-    float p_center[2], tang[2], kappa;
-    sampleTrackArray<true>(envConfig.p_grid, s_now, p_center, L);
-    sampleNormalizedSpeed(envConfig.t_grid, s_now, tang, L);
-    sampleTrackArray<false>(envConfig.kappa_grid, s_now, &kappa, L);
-
-    float norm[2] = {-tang[1], tang[0]};
-
-    // --- Decompose current state into Frenet ---
-    float e_n = (pos_i[0] - p_center[0]) * norm[0] + (pos_i[1] - p_center[1]) * norm[1];
-    float v_t = vel_i[0] * tang[0] + vel_i[1] * tang[1];
-    float v_n = vel_i[0] * norm[0] + vel_i[1] * norm[1];
-
-    // --- Metric at ACTUAL position (for feedforward) ---
-    float metric_actual = 1.0f - kappa * e_n;
-    if (fabsf(metric_actual) < 1e-6f)
-        metric_actual = copysignf(1e-6f, metric_actual);
-
-    // --- Desired path speed ---
-    float kappa_at_target = kappa / (1.0f - kappa * latDis); // for speed limit
-    float speedScale = envConfig.oppConfigs[trueTheta].speedScale[iOpp - 1];
-    float maxCurvatureSpeed = sqrtf(maxAccel / fmaxf(fabsf(kappa_at_target), 1e-12f));
-    float pathSpeed = speedScale * fminf(envConfig.maxSpeed[iOpp], maxCurvatureSpeed);
-
-    // =========================================================
-    // LATERAL: PD toward target + centripetal at actual position
-    // =========================================================
-    float e_n_error = latDis - e_n;
-    float v_n_error = latDis_dot - v_n;
-
-    float a_n_pd = envConfig.kP * e_n_error + envConfig.kV * v_n_error;
-    float a_n_centripetal = v_t * v_t * kappa / metric_actual;
-
-    float a_n_total = a_n_pd + a_n_centripetal;
-
-    // =========================================================
-    // LONGITUDINAL: velocity tracking + Coriolis at actual position
-    // =========================================================
-
-    // TODO: hardcoded
-    float v_t_error = pathSpeed - v_t;
-    float a_t_pd = 5.0f * v_t_error;
-    float a_t_coriolis = -v_n * kappa * v_t / metric_actual;
-
-    float a_t_total = a_t_pd + a_t_coriolis;
-
-    // =========================================================
-    // Priority saturation: lateral first
-    // =========================================================
-    float a_n_clamped = fmaxf(-maxAccel, fminf(maxAccel, a_n_total));
-    float a_t_max = sqrtf(fmaxf(maxAccel * maxAccel - a_n_clamped * a_n_clamped, 0.0f));
-    float a_t_clamped = fmaxf(-a_t_max, fminf(a_t_max, a_t_total));
-
-    // Convert to Cartesian
-    outAction[0] = a_t_clamped * tang[0] + a_n_clamped * norm[0];
-    outAction[1] = a_t_clamped * tang[1] + a_n_clamped * norm[1];
-}
-*/
-
-// second try?
-/*
-HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const EnvironmentConfig& envConfig, float* outAction, int trueTheta)
-{
-    float L = envConfig.trackLength;
-    float maxAccel = envConfig.maxAccel[iOpp];
-    float dt = envConfig.dt;
-
-    auto [latDisRaw, speedGoal] = computeOppTargetLatDist(iOpp, state, envConfig, trueTheta);
-
-    // --- Current Frenet state ---
-    float s_now = state.S[iOpp];
-    float pos_i[2] = {state.pos[iOpp * 2], state.pos[iOpp * 2 + 1]};
-    float vel_i[2] = {state.vel[iOpp * 2], state.vel[iOpp * 2 + 1]};
-
-    float p_center[2], tang[2], kappa;
-    sampleTrackArray<true>(envConfig.p_grid, s_now, p_center, L);
-    sampleNormalizedSpeed(envConfig.t_grid, s_now, tang, L);
-    sampleTrackArray<false>(envConfig.kappa_grid, s_now, &kappa, L);
-
-    float norm[2] = {-tang[1], tang[0]};
-    float e_n = (pos_i[0] - p_center[0]) * norm[0] + (pos_i[1] - p_center[1]) * norm[1];
-    float v_t = vel_i[0] * tang[0] + vel_i[1] * tang[1];
-    float v_n = vel_i[0] * norm[0] + vel_i[1] * norm[1];
-
-    // --- Geometry ---
-    float e_n_max = envConfig.trackWidth - envConfig.droneRadius * 1.2f;
-    float metric_actual = 1.0f - kappa * e_n;
-    if (fabsf(metric_actual) < 1e-6f)
-        metric_actual = copysignf(1e-6f, metric_actual);
-    float a_centripetal = v_t * v_t * kappa / metric_actual;
-    float a_lat_max = fmaxf(maxAccel - fabsf(a_centripetal), maxAccel * 0.2f);
-
-    // --- Lateral: bang-bang with boundary safety ---
-    float latDis = fmaxf(-e_n_max, fminf(e_n_max, latDisRaw));
-    float e_error = latDis - e_n;
-    float dist_to_pos_wall = fmaxf(e_n_max - e_n, 0.001f);
-    float dist_to_neg_wall = fmaxf(e_n_max + e_n, 0.001f);
-
-    float a_n_cmd;
-
-    // Emergency brake if can't stop before wall
-    if (v_n > 0.0f && v_n * v_n > 1.8f * a_lat_max * dist_to_pos_wall)
-        a_n_cmd = -a_lat_max;
-    else if (v_n < 0.0f && v_n * v_n > 1.8f * a_lat_max * dist_to_neg_wall)
-        a_n_cmd = a_lat_max;
-    else if (fabsf(e_error) < 0.02f)
-    {
-        // Small error: PD settling
-        float kp = a_lat_max / 0.02f;
-        a_n_cmd = kp * e_error - 2.0f * sqrtf(kp) * v_n;
-        a_n_cmd = fmaxf(-a_lat_max, fminf(a_lat_max, a_n_cmd));
-    }
-    else
-    {
-        // Bang-bang: accelerate or decelerate toward target
-        float stopping_dist = v_n * v_n / (2.0f * a_lat_max);
-        bool v_toward = (e_error > 0.0f && v_n > 0.0f) || (e_error < 0.0f && v_n < 0.0f);
-        bool decel_phase = v_toward && stopping_dist >= fabsf(e_error) * 0.95f;
-
-        a_n_cmd = (e_error > 0.0f) ? a_lat_max : -a_lat_max;
-        if (decel_phase)
-            a_n_cmd = -a_n_cmd;
-
-        // Velocity cap: don't exceed stoppable speed toward walls
-        float v_n_next = v_n + a_n_cmd * dt;
-        if (v_n_next > 0.0f)
-        {
-            float v_safe = sqrtf(2.0f * a_lat_max * dist_to_pos_wall);
-            if (v_n_next > v_safe)
-                a_n_cmd = (v_safe - v_n) / dt;
-        }
-        else
-        {
-            float v_safe = sqrtf(2.0f * a_lat_max * dist_to_neg_wall);
-            if (-v_n_next > v_safe)
-                a_n_cmd = (-v_safe - v_n) / dt;
-        }
-    }
-
-    // --- Combine lateral + centripetal, prioritize lateral ---
-    float a_n_total = fmaxf(-maxAccel, fminf(maxAccel, a_n_cmd + a_centripetal));
-    float a_t_max = sqrtf(fmaxf(maxAccel * maxAccel - a_n_total * a_n_total, 0.0f));
-
-    // --- Longitudinal: speed tracking with reduced speed during lateral maneuvers ---
-    float kappa_eff = kappa / (1.0f - kappa * latDis + 1e-6f);
-    float pathSpeed = fminf(speedGoal, sqrtf(maxAccel / fmaxf(fabsf(kappa_eff), 1e-12f)));
-
-    if (fabsf(a_n_cmd) > a_lat_max * 0.5f)
-        pathSpeed *= fmaxf(0.4f, 1.5f - fabsf(a_n_cmd) / a_lat_max);
-
-    float a_t_cmd = envConfig.kV * (pathSpeed - v_t) - v_n * kappa * v_t / metric_actual;
-    a_t_cmd = fmaxf(-a_t_max, fminf(a_t_max, a_t_cmd));
-
-    // --- Output ---
-    outAction[0] = a_t_cmd * tang[0] + a_n_total * norm[0];
-    outAction[1] = a_t_cmd * tang[1] + a_n_total * norm[1];
-}
-*/
 
 // compute opp. nominal actions, opp noise + env noise (only if applyNoise is True), env dynamics, belief update (only if
 // shouldUpdateBelief) and branch update (only if considerBranching is true; if we become specialized, set corresponding branching
