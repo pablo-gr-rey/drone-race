@@ -21,15 +21,15 @@ inline constexpr int N_MODEL_FACTORS = 1;
 HD INLINE constexpr int MODEL_SIZE(int /* k */)
 {
     // for several models with different sizes, tests are fine: return (k == 0) ? 2 : 3 or a switch, but here we can just fold it
-    // return 2;
-    return 1;
+    return 2;
+    // return 1;
 }
 
 HD INLINE constexpr int BRANCH_SIZE(int /* k */)
 {
     // same comment as above
-    // return 3;
-    return 2;
+    return 3;
+    // return 2;
 }
 
 inline constexpr int N_TRUE_MODELS = N_MODEL_FACTORS == 1 ? MODEL_SIZE(0) : MODEL_SIZE(0) * MODEL_SIZE(1);

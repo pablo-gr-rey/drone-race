@@ -1003,7 +1003,7 @@ def stratRaceEnv(usePR=False, useSplines=True, mppiPos=0, nConfigs=1, firstConfi
 def physRaceEnv(usePR=False, useSplines=True, mppiPos=0, nConfigs=1, firstConfig=0):
     "mppiPos should be 0 if last, 1 if 2nd-to-last, etc. -1 = first"
 
-    TRACK_RADIUS = 1.4
+    TRACK_RADIUS = 1.3
     CONTROL_FREQ = 20  # hz
 
     def roundTrack(f: float) -> np.ndarray:
@@ -1019,7 +1019,7 @@ def physRaceEnv(usePR=False, useSplines=True, mppiPos=0, nConfigs=1, firstConfig
         arr = np.asarray(arr)
         return np.concat((arr[mppiPos : mppiPos + 1], arr[:mppiPos], arr[mppiPos + 1 :]))
 
-    s2 = 1 / (16 * droneRadius) ** 2
+    s2 = 1 / (6 * droneRadius) ** 2
     oppConfigs = (
         StratRaceEnvironmentConfig.OppConfig.preset(droneRadius=droneRadius, nOpps=nOpps, s1="insensitive", s2=s2, s3="default"),
         StratRaceEnvironmentConfig.OppConfig.preset(droneRadius=droneRadius, nOpps=nOpps, s1="insensitive", s2=s2, s3="no-block"),
@@ -1162,9 +1162,9 @@ def mainGate():
     # envConfig, initState, mppiconfig, oppNames = stratRaceEnv(usePR=True, useSplines=True, mppiPos=0, nConfigs=2, firstConfig=0)
     # envConfig, initState, mppiconfig, oppNames = stratRaceEnv(usePR=False, useSplines=True, mppiPos=1, nConfigs=1, firstConfig=2)
 
-    envConfig, initState, mppiconfig, oppNames = physRaceEnv(usePR=False, useSplines=True, mppiPos=0, nConfigs=1, firstConfig=0)
+    envConfig, initState, mppiconfig, oppNames = physRaceEnv(usePR=False, useSplines=True, mppiPos=0, nConfigs=2, firstConfig=0)
 
-    envConfig.trueTheta = 0
+    envConfig.trueTheta = 1
     # envConfig.iMppi = 1
 
     if isinstance(mppiconfig, MPPIConfig):
