@@ -120,9 +120,10 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
                 bool branched = false;
 
-                TerminalType term = environmentStep<true, true, false, false>(t, theta, envConfig, egoActions.data() + t * ACTION_DIM,
-                                                                              false, // no PID noise for reproducible display
-                                                                              predState, bstate, branched, mppiConfig.minConfidence, buffer, hrng);
+                TerminalType term =
+                    environmentStep<true, true, false, false, false>(t, theta, envConfig, egoActions.data() + t * ACTION_DIM,
+                                                                     false, // no PID noise for reproducible display
+                                                                     predState, bstate, branched, mppiConfig.minConfidence, buffer, hrng);
 
                 if (branched)
                     tOrigin = t + 1;
@@ -216,9 +217,9 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
                 bool branched = false;
 
-                TerminalType term = Env::environmentStep<false, false, false, false>(t, theta, envConfig, egoActions.data() + t * ACTION_DIM,
-                                                                                     false, // no PID noise for reproducible display
-                                                                                     predState, bstate, branched, 0.0f, buffer, hrng);
+                TerminalType term = Env::environmentStep<false, false, false, false, false>(t, theta, envConfig, egoActions.data() + t * ACTION_DIM,
+                                                                                            false, // no PID noise for reproducible display
+                                                                                            predState, bstate, branched, 0.0f, buffer, hrng);
 
                 safetyCost = fmaxf(safetyCost, PRMPPIsafetyCost(state, t, envConfig, prmppiConfig, theta));
                 cost += PRMPPIstateCost(state, t, envConfig, prmppiConfig, theta) * decay;
@@ -343,6 +344,7 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock, std::optional<zmq:
 
     auto firstTime = std::chrono::high_resolution_clock::now();
     auto nextTick = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> totalControlTime{};
 
     for (step = 1; step <= maxSteps; step++)
     {
@@ -359,10 +361,11 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock, std::optional<zmq:
         stopInfo = dynStep(action, step, controller->h_belief, fullActions);
 
         auto end = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double, std::milli> duration = end - nextTick, totDuration = end - firstTime;
+        std::chrono::duration<double, std::milli> duration = end - nextTick;
+        totalControlTime += duration;
 
-        std::cout << "Control took " << duration.count() << " ms;\t since beginning, " << totDuration.count() << " ms; \ton average "
-                  << (totDuration.count() / step) << " ms per step\n";
+        std::cout << "Control took " << duration.count() << " ms;\t since beginning, " << totalControlTime.count() << " ms; \ton average "
+                  << (totalControlTime.count() / step) << " ms per step\n";
 
         if (rosStateSock)
         {

@@ -235,7 +235,10 @@ std::tuple<EnvironmentConfig, int, int> unpackEnvConfig(const void* buf, size_t 
 
     envConfig.kP = reader.readFloat();
     envConfig.kV = reader.readFloat();
+    envConfig.xi = reader.readFloat();
+    envConfig.minLatReactionFactor = reader.readFloat();
     envConfig.maxOppLatDistFact = reader.readFloat();
+    envConfig.maxLatAccBudget = reader.readFloat();
 
     envConfig.trackLength = reader.readFloat();
 

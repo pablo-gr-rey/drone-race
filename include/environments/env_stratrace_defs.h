@@ -76,7 +76,10 @@ struct EnvironmentConfig
     cuda::std::array<OppConfig, N_TRUE_MODELS> oppConfigs;
     float kP;
     float kV;
-    float maxOppLatDistFact; // max reference lateral displacement for opponents is trackWidth - maxOppLatDistFact * droneRadius
+    float xi;                   // damping ratio for opp. PID
+    float minLatReactionFactor; // opp drones will start reacting if |e - eTarget| > minLatReactionFactor * droneRadius
+    float maxOppLatDistFact;    // max reference lateral displacement for opponents is trackWidth - maxOppLatDistFact * droneRadius
+    float maxLatAccBudget;      // max budget of acceleration for lateral displacement
 
     float trackLength;
     float* p_grid;     // (nTrackSamples, dim)

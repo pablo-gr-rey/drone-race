@@ -208,7 +208,7 @@ class ZMQRecv:
                 contConfig,
                 oppNames,
                 interval=0,
-                frameSkipWaiting=2,
+                frameSkipWaiting=5,
                 frameSkipPlayback=2,
                 defaultZoomAgent=-1,
                 **kwargs,

@@ -560,7 +560,7 @@ HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const Envi
     float e_dot = norm_cur[0] * vx + norm_cur[1] * vy;
 
     // use curvature slightly ahead to compensate for delay
-    float tau_lookahead = 3.0f * dt; // 3 timesteps ahead
+    float tau_lookahead = 3.0f * dt;
     float s_ahead = s_cur + s_dot * tau_lookahead;
     float kappa_ahead;
     sampleTrackArray<false>(envConfig.kappa_grid, s_ahead, &kappa_ahead, L);
@@ -573,13 +573,17 @@ HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const Envi
 
     // lateral control: critically-damped (slightly overdamped) PD + feedforward
     float omega_n = envConfig.kP;
-    float xi = 1.05; // damping ratio (slightly overdamped to make sure to avoid overshoot even with delay)
+    float xi = envConfig.xi; // damping ratio (slightly overdamped to make sure to avoid overshoot even with delay)
 
     float delta_e = e_cur - latDis_target;
 
+    // TODO: hardcoded
+    if (fabsf(delta_e) < envConfig.droneRadius * envConfig.minLatReactionFactor)
+        delta_e = 0.0f;
+
     float a_lat = -omega_n * omega_n * delta_e - 2.0f * xi * omega_n * e_dot + kappa_eff * s_dot * s_dot;
 
-    float a_lat_clamped = fminf(fabsf(a_lat), a_max);
+    float a_lat_clamped = fminf(fabsf(a_lat), a_max * envConfig.maxLatAccBudget);
     a_lat_clamped = copysignf(a_lat_clamped, a_lat);
 
     // longitudinal control: P on speed with curvature speed limit
@@ -609,7 +613,7 @@ HD INLINE void computeOpponentAction(int iOpp, const SimState& state, const Envi
 // compute opp. nominal actions, opp noise + env noise (only if applyNoise is True), env dynamics, belief update (only if
 // shouldUpdateBelief) and branch update (only if considerBranching is true; if we become specialized, set corresponding branching
 // time to t+1). does not use trackMargin
-template <bool shouldUpdateBelief, bool considerBranching, bool addMargin, bool loseOnOppWin = true, typename RNG>
+template <bool shouldUpdateBelief, bool considerBranching, bool addMargin, bool loseOnOppWin = true, bool applyEnvNoise = true, typename RNG>
 HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentConfig& envConfig,
                                        const float* __restrict__ egoAction, // (dim)
                                        bool applyNoise, // TODO: this could be a template (but probably doesn't matter if we're inlined anyway)
@@ -667,8 +671,9 @@ HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentCo
             float& v = scratch.actions[a * DIM + d];
             v *= factor;
 
-            if (envConfig.actionNoiseLevel != 0.0f && applyNoise)
-                v += sampleNormal(rng) * envConfig.actionNoiseLevel;
+            if constexpr (applyEnvNoise)
+                if (envConfig.actionNoiseLevel != 0.0f)
+                    v += sampleNormal(rng) * envConfig.actionNoiseLevel;
         }
     }
 
@@ -714,17 +719,18 @@ HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentCo
     }
 
     // 7. State noise (pos + speed)
-    if ((envConfig.posNoiseLevel != 0.0f || envConfig.speedNoiseLevel != 0.0f) && applyNoise)
-    {
-        for (int a = 0; a < N_AGENTS; a++)
-            for (int d = 0; d < DIM; d++)
-            {
-                if (envConfig.posNoiseLevel != 0.0f)
-                    state.pos[a * DIM + d] += sampleNormal(rng) * envConfig.posNoiseLevel;
-                if (envConfig.speedNoiseLevel != 0.0f)
-                    state.vel[a * DIM + d] += sampleNormal(rng) * envConfig.speedNoiseLevel;
-            }
-    }
+    if constexpr (applyEnvNoise)
+        if ((envConfig.posNoiseLevel != 0.0f || envConfig.speedNoiseLevel != 0.0f) && applyNoise)
+        {
+            for (int a = 0; a < N_AGENTS; a++)
+                for (int d = 0; d < DIM; d++)
+                {
+                    if (envConfig.posNoiseLevel != 0.0f)
+                        state.pos[a * DIM + d] += sampleNormal(rng) * envConfig.posNoiseLevel;
+                    if (envConfig.speedNoiseLevel != 0.0f)
+                        state.vel[a * DIM + d] += sampleNormal(rng) * envConfig.speedNoiseLevel;
+                }
+        }
 
     // 8. Update S & latDisp
     for (int a = 0; a < N_AGENTS; a++)

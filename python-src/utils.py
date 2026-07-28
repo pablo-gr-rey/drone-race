@@ -370,7 +370,10 @@ class StratRaceEnvironmentConfig(BaseEnvironmentConfig):
 
     kP: float = 10.0
     kV: float = -1.0
-    maxOppLatDistFact: float = 1.1
+    xi: float = 1.3
+    minLatReactionFactor: float = 0.1  # opp drones will start reacting if |e - eTarget| > minLatReactionFactor * droneRadius
+    maxOppLatDistFact: float = 2  #  max lat dist target for opponents is trackWidth - maxOppLatDistFact * droneRadius
+    maxLatAccBudget: float = 0.7  # max budget of acceleration for lateral displacement
 
     trackFunction: Callable[[float], np.ndarray] = field(metadata={"send": False}, default=_errorTrack)
 

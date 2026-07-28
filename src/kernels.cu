@@ -138,9 +138,9 @@ __global__ void fullRolloutKernel(const EnvironmentConfig envConfig, const MPPIC
             bool branched = false;
 
             TerminalType term =
-                environmentStep<true, true, false>(t, trueThetaFlat, envConfig, egoAction,
-                                                   true, // applyPidNoise
-                                                   state, branchState, branched, mc.minConfidence, buffer, drng, mc.gateTraversalMargin);
+                environmentStep<true, true, false, true, false>(t, trueThetaFlat, envConfig, egoAction,
+                                                                true, // applyPidNoise
+                                                                state, branchState, branched, mc.minConfidence, buffer, drng, mc.gateTraversalMargin);
 
             if (branched)
                 tOrigin = t + 1;
@@ -526,9 +526,9 @@ __global__ void verifyNominalFailureKernel(EnvironmentConfig envConfig, MPPIConf
 
         bool branched = false;
 
-        TerminalType term = environmentStep<true, true, false, false>(t, theta, envConfig, egoAction,
-                                                                      true, // applyPidNoise in real verification
-                                                                      state, branchState, branched, mc.minConfidence, buffer, drng);
+        TerminalType term = environmentStep<true, true, false, false, false>(t, theta, envConfig, egoAction,
+                                                                             true, // applyPidNoise in real verification
+                                                                             state, branchState, branched, mc.minConfidence, buffer, drng);
 
         if (branched)
             tOrigin = t + 1;

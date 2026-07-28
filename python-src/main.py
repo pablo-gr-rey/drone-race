@@ -1005,6 +1005,7 @@ def physRaceEnv(usePR=False, useSplines=True, mppiPos=0, nConfigs=1, firstConfig
 
     TRACK_RADIUS = 1.3
     CONTROL_FREQ = 20  # hz
+    # CONTROL_FREQ = 50  # hz
 
     def roundTrack(f: float) -> np.ndarray:
         return TRACK_RADIUS * np.array([np.cos(2 * np.pi * f), np.sin(2 * np.pi * f)])
@@ -1019,7 +1020,7 @@ def physRaceEnv(usePR=False, useSplines=True, mppiPos=0, nConfigs=1, firstConfig
         arr = np.asarray(arr)
         return np.concat((arr[mppiPos : mppiPos + 1], arr[:mppiPos], arr[mppiPos + 1 :]))
 
-    s2 = 1 / (6 * droneRadius) ** 2
+    s2 = 1 / (8 * droneRadius) ** 2
     oppConfigs = (
         StratRaceEnvironmentConfig.OppConfig.preset(droneRadius=droneRadius, nOpps=nOpps, s1="insensitive", s2=s2, s3="default"),
         StratRaceEnvironmentConfig.OppConfig.preset(droneRadius=droneRadius, nOpps=nOpps, s1="insensitive", s2=s2, s3="no-block"),
@@ -1040,15 +1041,19 @@ def physRaceEnv(usePR=False, useSplines=True, mppiPos=0, nConfigs=1, firstConfig
         # maxAccel=np.array([0.003, 0.005]) * TRACK_RADIUS / dt**2,
         maxAccel=swapArray([0.7, 0.7]),
         nTrackSamples=512,
-        trackWidth=TRACK_RADIUS / 2.8,
+        trackWidth=TRACK_RADIUS / 2.6,
         nWinLaps=1,
         opponentConfigs=oppConfigs,
-        # kP=1000,
-        # kV=1000,
-        kP=5,
-        kV=2,
+        kP=3,
+        kV=3,
+        xi=1.2,
+        minLatReactionFactor=0.1,
         maxOppLatDistFact=1.9,
+        maxLatAccBudget=0.9,
         trackFunction=roundTrack,
+        posNoiseLevel=0.005,
+        speedNoiseLevel=0.005,
+        actionNoiseLevel=0.01,
         # initBelief=np.array([0.0, 1.0]),
     )
 
@@ -1094,6 +1099,7 @@ def physRaceEnv(usePR=False, useSplines=True, mppiPos=0, nConfigs=1, firstConfig
             nSamples=2**16,
             # nSamples=1,
             nTimesteps=80,
+            # nTimesteps=200,
             inv_temperature=10,
             samplingNoise=envConfig.maxAccel[0] / 4,
             # samplingNoise=0.5,
@@ -1171,6 +1177,7 @@ def mainGate():
         mppiconfig.nVerifSamples = 2**17
         mppiconfig.beta = 1e-5
         mppiconfig.verifHorizon = 40
+        # mppiconfig.verifHorizon = 100
         mppiconfig.maxVerifEps = 0.001
         # mppiconfig.maxVerifEps = 10
 
