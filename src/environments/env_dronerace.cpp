@@ -28,6 +28,12 @@ void freeDeviceConfig(EnvironmentConfig& d_config)
     }
 }
 
+// nothing to do for env dronerace
+void pushAddInfo(Writer& /* writer */, const SimState& /* state */, const SimState& /* prevState */, const EnvironmentConfig& /* envConfig */,
+                 int /* trueTheta */)
+{
+}
+
 void pushSimState(Writer& writer, const SimState& state)
 {
     writer.pushFloatArray(state.pos);
@@ -36,6 +42,11 @@ void pushSimState(Writer& writer, const SimState& state)
 
     writer.pushIntArray<int>(state.laps);
     writer.pushIntArray<int>(state.gates);
+}
+
+SimState unpackSimStateRaw(const void* /* buf */, size_t /* len */, const EnvironmentConfig& /* envConfig */, const SimState& /* prevState */)
+{
+    throw std::runtime_error("ROS bridge not implemented with env dronerace!");
 }
 
 // only push full pos
@@ -240,8 +251,9 @@ std::tuple<EnvironmentConfig, int, int> unpackEnvConfig(const void* buf, size_t 
 
     reader.assertFinished();
 
-    std::cout << "loaded envConfig, nAgents " << nAgents << " nWinLaps " << envConfig.nWinLaps << " true theta " << trueTheta << " max speed "
-              << envConfig.maxSpeed[0] << ' ' << envConfig.maxSpeed[1] << " nTrackSamples" << nTrackSamples << " gate vectors:";
+    std::cout << "loaded envConfig, nAgents " << nAgents << " iMppi " << envConfig.iMppi << " nWinLaps " << envConfig.nWinLaps << " true theta "
+              << trueTheta << " max speed " << envConfig.maxSpeed[0] << ' ' << envConfig.maxSpeed[1] << " nTrackSamples" << nTrackSamples
+              << " gate vectors:";
     for (int i = 0; i < nGates * dim; i++)
         std::cout << envConfig.gateVectors[i] << (i % dim ? " " : ";  ");
     std::cout << "\n";

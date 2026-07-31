@@ -13,6 +13,7 @@ inline constexpr int N_TRACK_SAMPLES = 512;
 inline constexpr int N_AGENTS = N_OPP + 1;
 
 inline constexpr int ACTION_DIM = DIM;
+inline constexpr int FULL_ACTION_DIM = N_AGENTS * DIM;
 
 inline constexpr int N_MODEL_FACTORS = 1;
 

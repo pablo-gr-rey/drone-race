@@ -22,7 +22,7 @@
 // with this mode, opponent get to set their desired lateral offset instead of having to play it fair
 // #define CHEATING
 
-inline bool REAL_EXPERIMENT = true;
+inline constexpr bool REAL_EXPERIMENT = false;
 
 inline constexpr bool USE_SPLINES = true;
 
@@ -30,6 +30,8 @@ inline constexpr int MAX_N_KNOTS = 60;
 
 inline constexpr float MIN_COEFF_THRESHOLD = 0.01f; // minimum probability threshold for samples to contribute
 inline constexpr float DECAY = 0.97f;
+
+// END OF DEFINITIONS
 
 #ifdef USE_ENV_DRONERACE
 #include "environments/env_dronerace_defs.h"
@@ -49,6 +51,7 @@ using SimState = Env::SimState;
 using ScratchEnvBuffer = Env::ScratchEnvBuffer;
 
 inline constexpr int ACTION_DIM = Env::ACTION_DIM;
+inline constexpr int FULL_ACTION_DIM = Env::FULL_ACTION_DIM;
 
 inline constexpr int N_MODEL_FACTORS = Env::N_MODEL_FACTORS;
 inline constexpr int N_TRUE_MODELS = Env::N_TRUE_MODELS;

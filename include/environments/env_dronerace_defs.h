@@ -2,15 +2,18 @@
 
 #include "common.h"
 
+#include <cuda/std/array>
+
 namespace EnvDroneRace
 {
 inline constexpr int DIM = 2;
 inline constexpr int N_AGENTS = 2;
 inline constexpr int N_GATES = 2;
 inline constexpr int N_TRACK_SAMPLES = 512;
-inline constexpr int N_OBSTACLES = 0;
+inline constexpr int N_OBSTACLES = 1;
 
 inline constexpr int ACTION_DIM = DIM;
+inline constexpr int FULL_ACTION_DIM = N_AGENTS * DIM;
 
 // 0/1 obstacle
 inline constexpr int N_ROUND_OBSTACLES = 0;

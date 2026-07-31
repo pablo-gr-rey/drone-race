@@ -27,6 +27,12 @@ void pushSimState(Writer& writer, const SimState& state)
     writer.pushInt32(state.gates);
 }
 
+// nothing to do for env stratrace
+void pushAddInfo(Writer& /* writer */, const SimState& /* state */, const SimState& /* prevState */, const EnvironmentConfig& /* envConfig */,
+                 int /* trueTheta */)
+{
+}
+
 // only push full pos
 void pushPredictions(Writer& writer, const std::vector<SimState>& preds)
 {
@@ -50,6 +56,11 @@ void printState(const SimState& state)
         std::cout << " " << state.vel[d];
 
     std::cout << std::endl;
+}
+
+SimState unpackSimStateRaw(const void* /* buf */, size_t /* len */, const EnvironmentConfig& /* envConfig */, const SimState& /* prevState */)
+{
+    throw std::runtime_error("ROS bridge not implemented with env hiddenobs!");
 }
 
 SimState unpackSimState(const void* buf, size_t len, const EnvironmentConfig& /* envConfig */)

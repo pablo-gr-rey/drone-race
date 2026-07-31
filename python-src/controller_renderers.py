@@ -135,6 +135,8 @@ class ControllerRenderer[EnvConfigT: BaseEnvironmentConfig, ContConfigT: BaseCon
 class BaseMPPIRenderer[EnvConfigT: BaseEnvironmentConfig, SimStateT: BaseSimState](ControllerRenderer[EnvConfigT, MPPIConfig]):
     def baseInit(self, nAdditionalTrajs: int = 0, **kwargs: Any) -> None:
         "nAdditionalTrajs should be the number of lines (other than MPPI's) we should create, for example 1 if there's another agent/moving stuff and 0 otherwise"
+        self.renderPreds = bool(kwargs.get("renderPreds", True))
+
         self.severalModels = self.envConfig.nModelFactors > 1
         self.nAddTrajs = nAdditionalTrajs
 
@@ -272,67 +274,68 @@ class BaseMPPIRenderer[EnvConfigT: BaseEnvironmentConfig, SimStateT: BaseSimStat
             print(f"WARNING: len(mppiState.preds) = {len(mppiState.preds)} is different from {self.envConfig.nTrueModels=}")
             return
 
-        for theta, (lTrajs, pred, fullPos) in enumerate(zip(self.lcs_pred, mppiState.preds, fullPoss)):
-            thetaTuple = self.envConfig.unflattenTheta(theta)
+        if self.renderPreds:
+            for theta, (lTrajs, pred, fullPos) in enumerate(zip(self.lcs_pred, mppiState.preds, fullPoss)):
+                thetaTuple = self.envConfig.unflattenTheta(theta)
 
-            fullPos = np.concat([[curPos], fullPos])
+                fullPos = np.concat([[curPos], fullPos])
 
-            vHor = self.config.verifHorizon
+                vHor = self.config.verifHorizon
 
-            initPredTheta = [int(round(t)) for t in pred.initPredTheta]
-            predTheta = [int(round(t)) for t in pred.predTheta]
-            branchTime = [
-                int(round(b)) if pT != 0 else self.config.nTimesteps + 1 for (b, pT) in zip(pred.branchTime, pred.predTheta)
-            ]
-            # from a rendering point of view, if we're already committed at beginning, then it's as if we committed at time t=0; if we never commit, then it's as if we committed at time T+1 (but it is stored as 0)
+                initPredTheta = [int(round(t)) for t in pred.initPredTheta]
+                predTheta = [int(round(t)) for t in pred.predTheta]
+                branchTime = [
+                    int(round(b)) if pT != 0 else self.config.nTimesteps + 1 for (b, pT) in zip(pred.branchTime, pred.predTheta)
+                ]
+                # from a rendering point of view, if we're already committed at beginning, then it's as if we committed at time t=0; if we never commit, then it's as if we committed at time T+1 (but it is stored as 0)
 
-            sides = np.arange(-self.envConfig.nModelFactors + 1, self.envConfig.nModelFactors, 2)
+                sides = np.arange(-self.envConfig.nModelFactors + 1, self.envConfig.nModelFactors, 2)
 
-            # if we branch at time 0, only show the corresponding plot (otherwise, it might get confusing) (skip if we are already committed to a theta, which is different from the current theta)
-            compatible = True
-            for k in range(self.envConfig.nModelFactors):
-                if initPredTheta[k] != 0 and initPredTheta[k] != thetaTuple[k] + 1:
-                    compatible = False
+                # if we branch at time 0, only show the corresponding plot (otherwise, it might get confusing) (skip if we are already committed to a theta, which is different from the current theta)
+                compatible = True
+                for k in range(self.envConfig.nModelFactors):
+                    if initPredTheta[k] != 0 and initPredTheta[k] != thetaTuple[k] + 1:
+                        compatible = False
 
-            for k, (nomMppi, branchMppi, *addTrajs) in enumerate(lTrajs):
-                self.set_data(*nomMppi, fullPos[: (branchTime[k] + 1), 0, :], vHor, sides[k])
+                for k, (nomMppi, branchMppi, *addTrajs) in enumerate(lTrajs):
+                    self.set_data(*nomMppi, fullPos[: (branchTime[k] + 1), 0, :], vHor, sides[k])
 
-                if compatible:
-                    color = self.pred_colors[k][predTheta[k]]
+                    if compatible:
+                        color = self.pred_colors[k][predTheta[k]]
 
-                    self.set_data(
-                        *branchMppi,
-                        fullPos[branchTime[k] :, 0, :],
-                        vHor - branchTime[k],
-                        sides[k],
-                        color=color,
-                    )
-
-                    for i, addTraj in enumerate(addTrajs):
-                        self.set_data(*addTraj, fullPos[:, i + 1, :], vHor, sides[k])
-
-                    if pred.stopReason == EVENT_TYPE.EVT_OUTSIDE:
-                        marker = next(collMarkers)
-                        marker.set_data(
-                            [fullPos[pred.stopTime + 1, 0, self.axis[0]]],
-                            [fullPos[pred.stopTime + 1, 0, self.axis[1]]],
+                        self.set_data(
+                            *branchMppi,
+                            fullPos[branchTime[k] :, 0, :],
+                            vHor - branchTime[k],
+                            sides[k],
+                            color=color,
                         )
-                        if (
-                            pred.stopTime < self.config.verifHorizon - 1
-                        ):  # the prediction timescale is shifted by one (since it starts from the already actuated state)
-                            marker.set_alpha(0.8)
-                            marker.set_markersize(20)
-                        else:
-                            marker.set_alpha(0.4)
-                            marker.set_markersize(10)
-                else:
-                    self.set_data(*branchMppi, None, 0)
-                    for addTraj in addTrajs:
-                        self.set_data(*addTraj, None, 0)
 
-        # hide remaining coll markers
-        for marker in collMarkers:
-            marker.set_data([], [])
+                        for i, addTraj in enumerate(addTrajs):
+                            self.set_data(*addTraj, fullPos[:, i + 1, :], vHor, sides[k])
+
+                        if pred.stopReason == EVENT_TYPE.EVT_OUTSIDE:
+                            marker = next(collMarkers)
+                            marker.set_data(
+                                [fullPos[pred.stopTime + 1, 0, self.axis[0]]],
+                                [fullPos[pred.stopTime + 1, 0, self.axis[1]]],
+                            )
+                            if (
+                                pred.stopTime < self.config.verifHorizon - 1
+                            ):  # the prediction timescale is shifted by one (since it starts from the already actuated state)
+                                marker.set_alpha(0.8)
+                                marker.set_markersize(20)
+                            else:
+                                marker.set_alpha(0.4)
+                                marker.set_markersize(10)
+                    else:
+                        self.set_data(*branchMppi, None, 0)
+                        for addTraj in addTrajs:
+                            self.set_data(*addTraj, None, 0)
+
+            # hide remaining coll markers
+            for marker in collMarkers:
+                marker.set_data([], [])
 
         # Update fail count
         failCount, eps = mppiState.failCount, mppiState.epsilon

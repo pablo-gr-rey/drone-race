@@ -38,7 +38,7 @@ class NpJsonEncoder(json.JSONEncoder):
 
 
 def tinyGateEnv(
-    roundObs: bool = True, afraid: bool = False, useSplines: bool = True, usePR: bool = False
+    roundObs: bool = True, afraid: bool = False, useSplines: bool = True, usePR: bool = False, example: bool = False
 ) -> tuple[DroneRaceEnvironmentConfig, DroneRaceSimState, BaseControllerConfig, list[list[str]]]:
     nAgents = 2
     dim = 2
@@ -71,7 +71,8 @@ def tinyGateEnv(
         nRaceLines=2,
         nWinLaps=1,
         nGates=nGates,
-        maxSpeed=np.linspace(2.05, 2.5, nAgents),
+        # maxSpeed=np.linspace(2.05, 2.5, nAgents),
+        maxSpeed=np.linspace(1.95, 2.5, nAgents) if not example else np.linspace(1.95, 0.0, nAgents),
         # maxSpeed=np.linspace(2, 3, nAgents),
         maxAccel=np.linspace(3, 3, nAgents),
         nTrackSamples=nTrackSamples,
@@ -79,7 +80,8 @@ def tinyGateEnv(
         gateCenters=gateCenters,
         gateVectors=gateVectors,
         gateRadius=gateRadius,
-        droneRadius=0.75,
+        # droneRadius=0.75,
+        droneRadius=0.6,
         arenaMin=np.array([-0.1 * length, -2 * height * heightFactor]),
         arenaMax=np.array([1.1 * length, 2 * height * heightFactor]),
         seed=42,
@@ -142,10 +144,10 @@ def tinyGateEnv(
         mppiconfig = MPPIConfig(
             nSamples=2**16,
             # nSamples=3,
-            nTimesteps=60,
-            inv_temperature=10,
+            nTimesteps=70,
+            inv_temperature=3,
             # samplingNoise=3,
-            samplingNoise=2,
+            samplingNoise=0.5,
             gateTraversalMargin=0.9,  # restrict 5% on each side
             collDistFactor=1.1,
             # collDistFactor=1.3,
@@ -1156,9 +1158,12 @@ def physRaceEnv(usePR=False, useSplines=True, mppiPos=0, nConfigs=1, firstConfig
 def mainGate():
     # envConfig, mppiconfig, pid0, pid1, oppNames = standardGateEnv()  # pid0 = afraid; pid1 = bold
     # envConfig, mppiconfig, pids, oppNames = tinyGateEnv(afraid=False, useSplines=True)  # pid0 = top; pid1 = bottom
-    # envConfig, mppiconfig, pids, oppNames = tinyGateEnv(afraid=False, useSplines=False)  # pid0 = top; pid1 = bottom
-    # envConfig, mppiconfig, pids, oppNames = tinyGateEnv(afraid=False, usePR=True)  # pid0 = top; pid1 = bottom
-    # envConfig, mppiconfig, pids, oppNames = tinyGateEnv2Models(roundObs=True, usePR=False)
+
+    # envConfig, initState, mppiconfig, oppNames = tinyGateEnv(afraid=False, useSplines=True, usePR=False, roundObs=False)
+    # envConfig, initState, mppiconfig, oppNames = tinyGateEnv(
+    #     afraid=False, useSplines=True, usePR=False, roundObs=False, example=False
+    # )
+    # envConfig, initState, mppiconfig, oppNames = tinyGateEnv2Models(roundObs=True, usePR=False)
     # envConfig, mppiconfig, pid0, pid1, oppNames = activeEnv()  # pid0 = afraid; pid1 = bold
 
     # envConfig, initState, mppiconfig, oppNames = highInertiaEnv(usePR=True, useSplines=True)
@@ -1170,22 +1175,32 @@ def mainGate():
 
     envConfig, initState, mppiconfig, oppNames = physRaceEnv(usePR=False, useSplines=True, mppiPos=0, nConfigs=2, firstConfig=0)
 
-    envConfig.trueTheta = 1
-    # envConfig.iMppi = 1
+    envConfig.trueTheta = 0
+
+    if isinstance(envConfig, DroneRaceEnvironmentConfig):
+        envConfig.iMppi = 1
 
     if isinstance(mppiconfig, MPPIConfig):
         mppiconfig.nVerifSamples = 2**17
         mppiconfig.beta = 1e-5
         mppiconfig.verifHorizon = 40
         # mppiconfig.verifHorizon = 100
-        mppiconfig.maxVerifEps = 0.001
+        mppiconfig.maxVerifEps = 0.0001
         # mppiconfig.maxVerifEps = 10
 
     envConfig.sendStates = True
 
     z = ZMQRecv()
 
-    evt = z.runSim(envConfig, mppiconfig, initState, render=envConfig.sendStates, oppNames=oppNames, renderTrails=False)
+    evt = z.runSim(
+        envConfig,
+        mppiconfig,
+        initState,
+        render=envConfig.sendStates,
+        oppNames=oppNames,
+        renderTrails=False,
+        # renderPreds=False,
+    )
 
     print(f"result: {evt.name}")
 

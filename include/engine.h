@@ -42,7 +42,8 @@ class SimulationEngine
 
     std::optional<EventType> dynStep(const std::array<float, ACTION_DIM>& action, int t, std::array<float, N_TRUE_MODELS>& belief,
                                      std::span<float> fullActions = {});
-    void sendRosAction(zmq::socket_t& rosSock, const std::array<float, EnvStratRace::N_AGENTS * ACTION_DIM>& action, float timestamp);
+
+    void sendRosAction(zmq::socket_t& rosSock, const std::array<float, FULL_ACTION_DIM>& action, float timestamp);
 
     std::optional<EventType> parseTerm(TerminalType term);
 };

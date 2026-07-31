@@ -122,6 +122,11 @@ int main(int argc, char** argv)
         printf("\tWarp size:                        %d\n", prop.warpSize);
     }
 
+#ifndef USE_ENV_STRATRACE
+    if constexpr (REAL_EXPERIMENT)
+        throw std::runtime_error("ROS bridge only implemented on env stratrace");
+#endif
+
     std::string zmqAddr = "tcp://*:5555";
     if (argc > 1)
         zmqAddr = argv[1];

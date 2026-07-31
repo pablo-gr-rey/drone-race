@@ -14,6 +14,8 @@ void freeDeviceConfig(EnvironmentConfig& d_config);
 
 void pushSimState(Writer& writer, const SimState& state);
 
+void pushAddInfo(Writer& writer, const SimState& state, const SimState& prevState, const EnvironmentConfig& envConfig, int trueTheta);
+
 // only push full pos
 void pushPredictions(Writer& writer, const std::vector<SimState>& preds);
 
@@ -22,6 +24,8 @@ void printState(const SimState& state);
 SimState unpackSimState(const void* buf, size_t len, const EnvironmentConfig& envConfig);
 
 std::tuple<EnvironmentConfig, int, int> unpackEnvConfig(const void* buf, size_t len); // return seed, trueTheta
+
+SimState unpackSimStateRaw(const void* buf, size_t len, const EnvironmentConfig& envConfig, const SimState& prevState);
 
 // square distance to rectangle (0 if inside)
 HD INLINE float sqDistToRectangle(float x, float y, float xmin, float ymin, float xmax, float ymax)
@@ -375,11 +379,11 @@ HD INLINE void updateGates(const EnvironmentConfig& envConfig, SimState& state, 
 
 // compute env dynamics, belief update (only if shouldUpdateBelief) and branch update (only if considerBranching is true; if we become specialized,
 // set corresponding branching time to t+1)
-template <bool shouldUpdateBelief, bool considerBranching, bool addMargin, bool loseOnOppWin = true, typename RNG>
+template <bool shouldUpdateBelief, bool considerBranching, bool addMargin, bool loseOnOppWin = true, bool applyEnvNoise = true, typename RNG>
 HD INLINE TerminalType environmentStep(
     int t, int trueTheta, const EnvironmentConfig& envConfig,
     const float* __restrict__ egoAction, // (dim)
-    bool applyNoise,                     // TODO: this could be a template (but probably doesn't matter if we're inlined anyway)
+    bool /* applyNoise */,               // no PID noise in env hiddenobs
     SimState& state,
     BranchState&
         branchState,     // belief is updated in-place if shouldUpdateBelief. branchingTime and branchUsed are updated if considerBranching is true
@@ -408,8 +412,9 @@ HD INLINE TerminalType environmentStep(
     {
         scratch.action[d] *= factor;
 
-        if (envConfig.actionNoiseLevel != 0.0f && applyNoise)
-            scratch.action[d] += sampleNormal(rng) * envConfig.actionNoiseLevel;
+        if constexpr (applyEnvNoise)
+            if (envConfig.actionNoiseLevel != 0.0f)
+                scratch.action[d] += sampleNormal(rng) * envConfig.actionNoiseLevel;
     }
 
     // 3. Integrate position
@@ -433,14 +438,15 @@ HD INLINE TerminalType environmentStep(
     }
 
     // 7. State noise (pos + speed)
-    if (applyNoise && (envConfig.posNoiseLevel != 0.0f || envConfig.speedNoiseLevel != 0.0f))
-        for (int d = 0; d < DIM; d++)
-        {
-            if (envConfig.posNoiseLevel != 0.0f)
-                state.pos[d] += sampleNormal(rng) * envConfig.posNoiseLevel;
-            if (envConfig.speedNoiseLevel != 0.0f)
-                state.vel[d] += sampleNormal(rng) * envConfig.speedNoiseLevel;
-        }
+    if constexpr (applyEnvNoise)
+        if (envConfig.posNoiseLevel != 0.0f || envConfig.speedNoiseLevel != 0.0f)
+            for (int d = 0; d < DIM; d++)
+            {
+                if (envConfig.posNoiseLevel != 0.0f)
+                    state.pos[d] += sampleNormal(rng) * envConfig.posNoiseLevel;
+                if (envConfig.speedNoiseLevel != 0.0f)
+                    state.vel[d] += sampleNormal(rng) * envConfig.speedNoiseLevel;
+            }
 
     // 8. Update gates with prev pos
     updateGates<addMargin>(envConfig, state, scratch.prevPos.data(), gateMargin);

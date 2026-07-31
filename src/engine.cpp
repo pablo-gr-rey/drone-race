@@ -233,8 +233,8 @@ void SimulationEngine::sendState(zmq::socket_t& sock, int step, const std::array
 
                     std::cout << "STOPPING SIMULATION at step " << t << " term " << (int)term << std::endl;
                     std::cout << "safety cost " << PRMPPIsafetyCost(state, t, envConfig, prmppiConfig, theta) << " isOutside "
-                              << EnvStratRace::isOutside(state, envConfig, envConfig.droneRadius, theta) << " BD "
-                              << EnvStratRace::trackBoundaryDist(state, envConfig, theta) << " bli " << envConfig.droneRadius << " * "
+                              << Env::isOutside(state, envConfig, envConfig.droneRadius, theta) << " BD "
+                              << Env::trackBoundaryDist(state, envConfig, theta) << " bli " << envConfig.droneRadius << " * "
                               << prmppiConfig.collDistFactor << "\n";
 
                     stopTime = t;
@@ -287,7 +287,7 @@ void SimulationEngine::sendDone(zmq::socket_t& sock)
     sock.send(zmq::buffer(writer.data));
 }
 
-void SimulationEngine::sendRosAction(zmq::socket_t& rosSock, const std::array<float, EnvStratRace::N_AGENTS * ACTION_DIM>& action, float timestamp)
+void SimulationEngine::sendRosAction(zmq::socket_t& rosSock, const std::array<float, Env::FULL_ACTION_DIM>& action, float timestamp)
 {
     Writer writer;
 
@@ -325,8 +325,12 @@ std::optional<EventType> SimulationEngine::dynStep(const std::array<float, ACTIO
 
     std::copy(std::begin(branchState.belief), std::end(branchState.belief), belief.begin());
 
+#ifdef USE_ENV_STRATRACE
     if (!fullActions.empty())
         std::copy(buffer.actions.begin(), buffer.actions.end(), fullActions.begin());
+#else
+    std::fill(fullActions.begin(), fullActions.end(), 0.0f);
+#endif
 
     return parseTerm(term);
 }
@@ -352,7 +356,7 @@ void SimulationEngine::run(int maxSteps, zmq::socket_t& sock, std::optional<zmq:
         nextTick = std::chrono::high_resolution_clock::now();
 
         std::array<float, ACTION_DIM> action;
-        std::array<float, EnvStratRace::N_AGENTS * ACTION_DIM> fullActions;
+        std::array<float, FULL_ACTION_DIM> fullActions;
 
         controller->getControl(state, action.data());
 

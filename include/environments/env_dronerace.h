@@ -14,6 +14,8 @@ void freeDeviceConfig(EnvironmentConfig& d_config);
 
 void pushSimState(Writer& writer, const SimState& state);
 
+void pushAddInfo(Writer& writer, const SimState& state, const SimState& prevState, const EnvironmentConfig& envConfig, int trueTheta);
+
 // only push full pos
 void pushPredictions(Writer& writer, const std::vector<SimState>& preds);
 
@@ -22,6 +24,8 @@ void printState(const SimState& state);
 SimState unpackSimState(const void* buf, size_t len, const EnvironmentConfig& envConfig);
 
 PIDConfig unpackPIDConfig(Reader& reader);
+
+SimState unpackSimStateRaw(const void* buf, size_t len, const EnvironmentConfig& envConfig, const SimState& prevState);
 
 // return (seed, trueTheta)
 std::tuple<EnvironmentConfig, int, int> unpackEnvConfig(const void* buf, size_t len);
@@ -543,7 +547,7 @@ HD INLINE void computePIDAction(int agent, const SimState& state, const Environm
 // compute opp. nominal actions, PID noise + env noise (only if applyNoise is True), env dynamics, belief update (only if
 // shouldUpdateBelief) and branch update (only if considerBranching is true; if we become specialized, set corresponding branching
 // time to t+1)
-template <bool shouldUpdateBelief, bool considerBranching, bool addMargin, bool loseOnOppWin = true, typename RNG>
+template <bool shouldUpdateBelief, bool considerBranching, bool addMargin, bool loseOnOppWin = true, bool applyEnvNoise = true, typename RNG>
 HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentConfig& envConfig,
                                        const float* __restrict__ egoAction, // (dim)
                                        bool applyNoise, // TODO: this could be a template (but probably doesn't matter if we're inlined anyway)
@@ -600,8 +604,9 @@ HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentCo
             float& v = scratch.actions[a * DIM + d];
             v *= factor;
 
-            if (envConfig.actionNoiseLevel != 0.0f && applyNoise)
-                v += sampleNormal(rng) * envConfig.actionNoiseLevel;
+            if constexpr (applyEnvNoise)
+                if (envConfig.actionNoiseLevel != 0.0f)
+                    v += sampleNormal(rng) * envConfig.actionNoiseLevel;
         }
     }
 
@@ -628,17 +633,18 @@ HD INLINE TerminalType environmentStep(int t, int trueTheta, const EnvironmentCo
     }
 
     // 7. State noise (pos + speed)
-    if ((envConfig.posNoiseLevel != 0.0f || envConfig.speedNoiseLevel != 0.0f) && applyNoise)
-    {
-        for (int a = 0; a < N_AGENTS; a++)
-            for (int d = 0; d < DIM; d++)
-            {
-                if (envConfig.posNoiseLevel != 0.0f)
-                    state.pos[a * DIM + d] += sampleNormal(rng) * envConfig.posNoiseLevel;
-                if (envConfig.speedNoiseLevel != 0.0f)
-                    state.vel[a * DIM + d] += sampleNormal(rng) * envConfig.speedNoiseLevel;
-            }
-    }
+    if constexpr (applyEnvNoise)
+        if (envConfig.posNoiseLevel != 0.0f || envConfig.speedNoiseLevel != 0.0f)
+        {
+            for (int a = 0; a < N_AGENTS; a++)
+                for (int d = 0; d < DIM; d++)
+                {
+                    if (envConfig.posNoiseLevel != 0.0f)
+                        state.pos[a * DIM + d] += sampleNormal(rng) * envConfig.posNoiseLevel;
+                    if (envConfig.speedNoiseLevel != 0.0f)
+                        state.vel[a * DIM + d] += sampleNormal(rng) * envConfig.speedNoiseLevel;
+                }
+        }
 
     // 8. Update gates with prev pos
     updateGates<addMargin>(envConfig, state.pos.data(), prevPos, state.S.data(), state.gates.data(), state.laps.data(), gateMargin);

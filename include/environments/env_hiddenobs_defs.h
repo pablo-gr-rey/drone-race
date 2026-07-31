@@ -2,6 +2,8 @@
 
 #include "common.h"
 
+#include <cuda/std/array>
+
 /*
 Assumptions (ugly, but makes configuration somewhat simple and allows for more compile-time optimizations):
 - uncertain obstacles are circles
